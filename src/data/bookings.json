@@ -1,0 +1,26 @@
+[
+  {
+    "id": "b1",
+    "unitId": "rm1",
+    "start": 540,
+    "end": 630,
+    "by": "c2",
+    "purpose": "Sprint planning"
+  },
+  {
+    "id": "b2",
+    "unitId": "rm2",
+    "start": 840,
+    "end": 900,
+    "by": "c9",
+    "purpose": "Client review"
+  },
+  {
+    "id": "b3",
+    "unitId": "ws10",
+    "start": 540,
+    "end": 1020,
+    "by": "c14",
+    "purpose": "Visitor desk"
+  }
+]

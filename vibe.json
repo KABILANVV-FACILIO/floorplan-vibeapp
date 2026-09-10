@@ -1,0 +1,7 @@
+{
+  "name": "Floorplan Manager",
+  "app": "floorplan-manager",
+  "build": {
+    "publish": "dist"
+  }
+}

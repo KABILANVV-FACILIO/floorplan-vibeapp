@@ -1,0 +1,33 @@
+{
+  "name": "floorplan-vibeapp",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b",
+    "fn:create": "facilio vibe fn create floorplanApi --code functions/floorplanApi/code.ts --description \"Floorplan Manager app data (units, assignments, bookings, settings, files)\" && facilio vibe fn build floorplanApi",
+    "fn:push": "facilio vibe fn update floorplanApi --code functions/floorplanApi/code.ts && facilio vibe fn build floorplanApi",
+    "deploy": "npm run build && facilio vibe deploy"
+  },
+  "dependencies": {
+    "@facilio/vibe-sdk": "^0.3.3",
+    "@mlightcad/cad-simple-viewer": "1.5.7",
+    "axios": "^0.21.4",
+    "jsqr": "^1.4.0",
+    "pdfjs-dist": "^6.1.200",
+    "qs": "^6.15.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
