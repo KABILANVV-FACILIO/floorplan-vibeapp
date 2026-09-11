@@ -188,6 +188,10 @@ export class FacilioApiDataSource implements FloorplanDataSource {
     this.assertConfigured();
     const byType = await getFloorplanDetailsByType(floorId);
     const units: Unit[] = [];
+    // Real records already represented by a marker — matched on the marker's `recordId`, which this
+    // app sets when it creates the backing desk/locker/stall. A marker placed in the org's own
+    // editor may lack it, in which case that record also appears as unplaced (logged below).
+    const placedRecordIds = new Set<string>();
 
     for (const [typeNum, summary] of Object.entries(byType)) {
       const planId = PLAN_ID_BY_TYPE[Number(typeNum)];
@@ -218,6 +222,7 @@ export class FacilioApiDataSource implements FloorplanDataSource {
       console.info(`[facilio-api] getUnits: plan ${planId} (#${planRecordId}) -> ${markersRes.list?.length ?? 0} markers`);
 
       for (const marker of markersRes.list ?? []) {
+        if (marker.recordId) placedRecordIds.add(String(marker.recordId));
         const point = parsePointGeometry(marker.geometry);
         if (!point) continue; // polygons/zones live in floorplanmarkedzone, not here
         const [x, y] = lngLatToQuadFraction(quad, point[0], point[1]);
@@ -235,6 +240,42 @@ export class FacilioApiDataSource implements FloorplanDataSource {
         });
       }
     }
+
+    // The floor's REAL desks / lockers / parking stalls / rooms that have no marker yet, via the same
+    // verified relatedList pattern (floor -> <module> on the `floor` lookup). They enter the
+    // "Available to place" pool so they can be dragged onto the plan. `space` is the base table
+    // desks/lockers/stalls also live in, so rooms are whatever is left after excluding those ids and
+    // anything that isn't a plain SPACE (buildings/floors also answer to `space`).
+    const rel = (module: string) =>
+      facilioApi
+        .fetchAllRelatedList<any>({ moduleName: 'floor', id: floorId, relatedModuleName: module, relatedFieldName: 'floor' })
+        .then((r) => (r.error ? [] : r.list ?? []))
+        .catch(() => [] as any[]);
+    const [desks, lockers, stalls, spaces] = await Promise.all([rel('desks'), rel('lockers'), rel('parkingstall'), rel('space')]);
+    const pointIds = new Set([...desks, ...lockers, ...stalls].map((r: any) => String(r.id)));
+    const rooms = spaces.filter((r: any) => !pointIds.has(String(r.id)) && (r.spaceTypeEnum ?? 'SPACE') === 'SPACE');
+
+    let unmatchedMarkers = 0;
+    const addUnplaced = (rows: any[], type: Unit['type']) => {
+      for (const r of rows) {
+        const id = String(r.id);
+        if (placedRecordIds.has(id)) continue;
+        if (units.some((u) => u.id === id)) {
+          unmatchedMarkers++;
+          continue;
+        }
+        units.push(toUnplacedUnit(r, type, floorId));
+      }
+    };
+    addUnplaced(desks, 'workstation');
+    addUnplaced(lockers, 'locker');
+    addUnplaced(stalls, 'parking');
+    addUnplaced(rooms, 'room');
+    // eslint-disable-next-line no-console
+    console.info(
+      `[facilio-api] getUnits floor ${floorId}: ${units.filter((u) => !u.unplaced).length} placed markers; unplaced records: ${desks.length} desks, ${lockers.length} lockers, ${stalls.length} stalls, ${rooms.length} rooms (${placedRecordIds.size} already placed)` +
+        (unmatchedMarkers ? ` — ${unmatchedMarkers} records also appear as markers without a recordId link` : '')
+    );
     return units;
   }
 
@@ -266,6 +307,29 @@ export class FacilioApiDataSource implements FloorplanDataSource {
   async cancelBooking(): Promise<void> {
     throw new Error('facilio-api: spacebooking not wired');
   }
+}
+
+/** Real Facilio desk typing (`V3DeskContext.DeskType`): 1=ASSIGNED, 2=HOTEL, 3=HOT; -1/0 = unset. */
+const DESK_TYPE_BY_INT: Record<number, Unit['deskType']> = { 1: 'ASSIGNED', 2: 'HOTEL', 3: 'HOT' };
+
+/**
+ * A real org record with no marker -> an `unplaced` Unit for the "Available to place" pool. The
+ * geometry is a placeholder: the pool never draws, and placing it supplies the real position.
+ */
+function toUnplacedUnit(record: any, type: Unit['type'], floorId: string): Unit {
+  const deskType = type === 'workstation' ? DESK_TYPE_BY_INT[Number(record.deskType)] : undefined;
+  const isZone = type === 'room';
+  return {
+    id: String(record.id),
+    type,
+    label: record.name ?? record.deskCode ?? String(record.id),
+    room: null,
+    geom: isZone ? { kind: 'poly', pts: [] } : { kind: 'point', x: 0, y: 0 },
+    floor: floorId,
+    plan: isZone ? 'custom' : (type as PlanId),
+    unplaced: true,
+    ...(deskType ? { deskType } : {}),
+  };
 }
 
 /** Which unit type a plan type implies, for markers that carry no `properties.unitType`. */

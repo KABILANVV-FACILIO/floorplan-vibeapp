@@ -267,9 +267,9 @@ export function reducer(state: AppState, action: Action): AppState {
       if (!target || target.geom.kind !== 'point' || isRoomLike(target.type)) return state;
       const dragged = state.unplacedUnits.find((u) => u.id === action.unitId) ?? state.units.find((u) => u.id === action.unitId);
       if (!dragged || dragged.id === target.id) return state;
-      const placedDragged: Unit = { ...dragged, geom: { ...target.geom }, room: target.room, floor: state.floorId };
+      const placedDragged: Unit = { ...dragged, geom: { ...target.geom }, room: target.room, floor: state.floorId, unplaced: undefined };
       const units = state.units.filter((u) => u.id !== action.targetId && u.id !== action.unitId).concat(placedDragged);
-      const unplacedUnits = [...state.unplacedUnits.filter((u) => u.id !== action.unitId), target];
+      const unplacedUnits = [...state.unplacedUnits.filter((u) => u.id !== action.unitId), { ...target, unplaced: true }];
       return {
         ...state,
         units,
@@ -301,9 +301,16 @@ export function reducer(state: AppState, action: Action): AppState {
         floorImageLoading: true,
         ...resetSelectionState(state),
       };
-    case 'SELECT_FLOOR_DONE':
+    case 'SELECT_FLOOR_DONE': {
       if (action.floorId !== state.floorId) return state;
-      return { ...state, units: action.units, savedUnits: action.units, unsavedChanges: 0, assignments: action.assignments, bookings: action.bookings, loading: false };
+      // A floor load carries two kinds of record: placed (has a marker, drawn on the canvas) and
+      // `unplaced` (a real desk/locker/stall/room in the org with no marker yet). The latter go to
+      // the "Available to place" pool — every placement path reads that pool, so putting them in
+      // `units` would list them but leave them un-placeable.
+      const placed = action.units.filter((u) => !u.unplaced);
+      const pooled = action.units.filter((u) => u.unplaced);
+      return { ...state, units: placed, savedUnits: placed, unplacedUnits: pooled, unsavedChanges: 0, assignments: action.assignments, bookings: action.bookings, loading: false };
+    }
     case 'SET_PLAN':
       return { ...state, planId: action.planId, ...resetSelectionState(state) };
     case 'SET_STAGE_SIZE':
@@ -411,7 +418,9 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'PLACE_EXISTING_UNIT': {
       const pooled = state.unplacedUnits.find((u) => u.id === action.unitId);
       if (!pooled) return state;
-      const placed: Unit = { ...pooled, geom: action.geom, room: action.room, floor: state.floorId };
+      // `unplaced` must clear here: the canvas hides anything still flagged, so a real desk dragged
+      // onto the plan would vanish the instant it landed.
+      const placed: Unit = { ...pooled, geom: action.geom, room: action.room, floor: state.floorId, unplaced: undefined };
       const units = [...state.units, placed];
       return {
         ...state,

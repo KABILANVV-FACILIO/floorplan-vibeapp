@@ -52,7 +52,9 @@ export function SpacesList() {
   // list — everything already placed is visible (and draggable) on the canvas itself.
   // Disabled modules are filtered out before counting, so their chips read 0 and their rows
   // never appear.
-  const allUnits = isEdit ? state.unplacedUnits : state.units;
+  // Edit mode shows the pool alone (placed units are on the canvas, draggable there). Otherwise
+  // list everything on the floor: placed units plus the org's records that have no marker yet.
+  const allUnits = isEdit ? state.unplacedUnits : [...state.units, ...state.unplacedUnits];
   const units = allUnits.filter((u) => moduleEnabled(state, u.type));
 
   const counts: Record<string, number> = { all: units.length };

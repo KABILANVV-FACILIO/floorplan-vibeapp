@@ -554,7 +554,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       if (!target || !dragged || target.geom.kind !== 'point' || isRoomLike(target.type) || dragged.id === target.id) return;
       if (dragged.type !== target.type) return;
       dispatch({ type: 'REPLACE_UNIT_AT', unitId, targetId });
-      const placedDragged: Unit = { ...dragged, geom: { ...target.geom }, room: target.room, floor: state.floorId };
+      const placedDragged: Unit = { ...dragged, geom: { ...target.geom }, room: target.room, floor: state.floorId, unplaced: undefined };
       dataSource.saveUnits(
         state.floorId,
         state.units.filter((u) => u.id !== targetId && u.id !== unitId).concat(placedDragged),
@@ -568,7 +568,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       if (!spot || !pooled) return;
       const room = roomLabelAt(state, spot.x, spot.y);
       dispatch({ type: 'PLACE_EXISTING_UNIT', unitId, geom: { kind: 'point', x: spot.x, y: spot.y }, room });
-      dataSource.saveUnits(state.floorId, [...state.units, { ...pooled, geom: { kind: 'point', x: spot.x, y: spot.y }, room, floor: state.floorId }]);
+      dataSource.saveUnits(state.floorId, [...state.units, { ...pooled, geom: { kind: 'point', x: spot.x, y: spot.y }, room, floor: state.floorId, unplaced: undefined }]);
       showToast(`${pooled.label} placed`);
     },
     /**
@@ -611,7 +611,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       const pooled = state.unplacedUnits.find((u) => u.id === unitId);
       if (pooled) {
         dispatch({ type: 'PLACE_EXISTING_UNIT', unitId, geom: { kind: 'point', x, y }, room });
-        dataSource.saveUnits(state.floorId, [...state.units, { ...pooled, geom: { kind: 'point', x, y }, room, floor: state.floorId }]);
+        dataSource.saveUnits(state.floorId, [...state.units, { ...pooled, geom: { kind: 'point', x, y }, room, floor: state.floorId, unplaced: undefined }]);
         showToast(`${pooled.label} placed`);
         return;
       }
