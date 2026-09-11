@@ -1,11 +1,27 @@
+import { execSync } from 'node:child_process';
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import type { ProxyOptions } from 'vite';
+
+/**
+ * Stamped into the bundle and logged at boot. A deployed vibe app is served behind SSO and its
+ * hosted URLs give no version away, so without this there is no way to tell which build is
+ * actually live — which turned a config question into several rounds of guesswork.
+ */
+function buildStamp(): string {
+  try {
+    const sha = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
+    return `${sha} ${new Date().toISOString()}`;
+  } catch {
+    return `nogit ${new Date().toISOString()}`;
+  }
+}
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const apiTarget = env.VITE_FACILIO_API_BASE_URL;
   return {
+    define: { __BUILD_STAMP__: JSON.stringify(buildStamp()) },
     plugins: [react()],
     server: {
       port: 9090,

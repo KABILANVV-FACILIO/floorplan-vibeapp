@@ -23,13 +23,19 @@ function hostParam(name: string): string | null {
   return new URLSearchParams(window.location.hash.replace(/^#/, '')).get(name);
 }
 
+/** True when this page is inside an iframe — i.e. something is hosting it. */
+const isEmbedded = typeof window !== 'undefined' && window.self !== window.top;
+
 /**
- * Detected at RUNTIME as well as from the build flag: the same bundle is served both standalone
- * (as a vibe app) and embedded in a Facilio product, so whether it is embedded isn't knowable at
- * build time. Without this the V3 tier stayed inert when the app was registered as a connected
- * app, and everything it alone can reach — marker geometry, Moves, org forms — silently vanished.
+ * Detected at RUNTIME, with the build flag only as one of several signals.
+ *
+ * Whether the app is embedded is not knowable at build time — the same bundle is served both
+ * standalone and inside a Facilio product — and relying on the flag meant a build made before it
+ * was set reported "not configured" and silently dropped every V3 call: marker geometry, Moves,
+ * org forms, file previews. Being in an iframe is sufficient on its own, so the V3 tier now comes
+ * alive wherever a host actually exists, regardless of how the bundle was built.
  */
-export const isConnectedApp = import.meta.env.VITE_IS_CONNECTED_APP === 'true' || !!hostParam('capp_id');
+export const isConnectedApp = import.meta.env.VITE_IS_CONNECTED_APP === 'true' || !!hostParam('capp_id') || isEmbedded;
 
 /**
  * Where the V3 APIs live for absolute-URL needs: same-origin in connected mode (unless
