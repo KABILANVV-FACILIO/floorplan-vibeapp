@@ -293,8 +293,12 @@ async function crudFetchAllRelatedList<T = any>(
     const url = `v3/modules/${opts.moduleName}/${opts.id}/relatedList/${opts.relatedModuleName}/${opts.relatedFieldName}`;
     const env = v3Envelope(await customGet(url, params));
     if (env.error) return { ...env, list: null };
-    const { [opts.relatedModuleName]: list, ...rest } = env;
-    return { ...rest, error: null, list: ((list as unknown[] | undefined) ?? null) as T[] | null };
+    // The raw REST envelope nests the rows under `data`: {code, data:{<module>:[...]}, meta} —
+    // confirmed from a live relatedList response. The SDK's api.* wrappers pre-unwrap to
+    // res[<module>], which is what the old destructure assumed; reading the top level here
+    // returned an empty list for a request that had succeeded with rows.
+    const list = (env[opts.relatedModuleName] ?? env.data?.[opts.relatedModuleName] ?? null) as T[] | null;
+    return { ...env, error: null, list };
   }
   return devFetchAllRelatedList<T>(opts, params);
 }

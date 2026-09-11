@@ -160,7 +160,8 @@ export class FacilioApiDataSource implements FloorplanDataSource {
     this.assertConfigured();
     const body = await customGet('v3/modules/asset', { page: 1, perPage: 200 });
     if (body?.code !== 0) throw new Error(`facilio-api: asset fetch failed (${body?.code ?? '?'} ${body?.message ?? ''})`.trim());
-    const rows: any[] = body?.asset ?? [];
+    // Raw REST envelope: rows live under `data.<module>` (see fetchAllRelatedList).
+    const rows: any[] = body?.data?.asset ?? body?.asset ?? [];
     if (!rows.length) throw new Error('facilio-api: no assets returned');
     return rows.map((a: any) => ({
       id: String(a.id),
@@ -194,7 +195,8 @@ export class FacilioApiDataSource implements FloorplanDataSource {
       if (!planId || !planRecordId) continue;
 
       const recordRes = await facilioApi.fetchRecord<any>('indoorfloorplan', { id: planRecordId });
-      const quad = geometryStringToQuad(recordRes?.indoorfloorplan?.geometry);
+      const planRecord = recordRes?.indoorfloorplan ?? recordRes?.data?.indoorfloorplan;
+      const quad = geometryStringToQuad(planRecord?.geometry);
       if (!quad) {
         // eslint-disable-next-line no-console
         console.warn(`[facilio-api] getUnits: plan ${planId} (#${planRecordId}) has no calibrated geometry — its markers are skipped, not guessed`);
