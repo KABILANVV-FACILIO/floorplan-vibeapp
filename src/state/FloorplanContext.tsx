@@ -1114,9 +1114,10 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     },
 
     /**
-     * Edits already persist per-action (placePoint/updateUnit/deleteUnit/closeDraft all call
-     * persistUnits internally) — this is an explicit, user-triggered re-save with its own
-     * confirmation, for a visible "did my changes actually save" signal.
+     * THE write to the org. Per-action edits (placePoint/updateUnit/deleteUnit/closeDraft) persist
+     * to the browser only, via `dataSource.saveUnits`; this is the one path that syncs real
+     * `floorplanmarker` records, awaits that write, and reports honestly — "Changes saved" only if
+     * the org actually took them, "Could not save changes" otherwise (see persistUnits).
      */
     saveChanges: async () => {
       dispatch({ type: 'SET_SAVING', value: true });
