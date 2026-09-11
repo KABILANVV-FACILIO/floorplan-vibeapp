@@ -211,15 +211,19 @@ export function clearLocalData(): void {
 }
 
 /**
- * Tier order, first to resolve wins: CMMS connector → vibe DB → connected-app V3 → local JSON.
+ * Tier order, first to resolve wins: connected-app V3 → vibe DB → CMMS connector → local JSON.
  *
- * The split is by ownership, not by preference. Org records (portfolio, people, assets) belong to
- * the connector; records only this app has (placement geometry, its assignments and bookings)
- * belong to the vibe DB; the V3 tier picks up what neither can reach and doubles as the fallback
- * when the app runs as a plain connected app rather than a vibe app.
+ * V3 leads because this app is hosted as a connected app: the host bridge answers each module in
+ * ONE call, where the connector's list actions cap at 200 rows and must be paged. Against this org
+ * that was ~9 requests for the asset catalog alone, repeated on every load — same data, an order
+ * of magnitude more round trips.
+ *
+ * The connector keeps everything V3 can't do (the asset catalog when the module name differs, the
+ * floor's real space records) and is the whole data layer when the app runs outside a Facilio host.
+ * The vibe DB sits above it because it alone holds on-plan geometry — org records have no position.
  */
 function defaultTiers(): FloorplanDataSource[] {
-  return [new ConnectorDataSource(), new VibeDbDataSource(), new FacilioApiDataSource(), new LocalJsonDataSource()];
+  return [new FacilioApiDataSource(), new VibeDbDataSource(), new ConnectorDataSource(), new LocalJsonDataSource()];
 }
 
 /** Tries each tier in order for every call; first to resolve wins, logging which did. */

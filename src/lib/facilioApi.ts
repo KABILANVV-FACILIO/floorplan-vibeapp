@@ -176,6 +176,17 @@ const SDK_HANDSHAKE_TIMEOUT_MS = 8000;
 let sdkReady: Promise<any> | null = null;
 function facilioAppReady(): Promise<any> {
   if (sdkReady) return sdkReady;
+
+  // No iframe parent means no host can ever answer the handshake, so don't wait out the timeout —
+  // this tier now leads for every call, and an 8s stall per call would make a standalone open feel
+  // broken. Decided once and cached, so the fallthrough afterwards is instant.
+  if (typeof window !== 'undefined' && window.self === window.top) {
+    sdkReady = Promise.reject(new Error('facilio-api: not embedded in a Facilio host (no connected-app parent)'));
+    // Nothing awaits this until a caller does; mark it handled so it isn't an unhandled rejection.
+    sdkReady.catch(() => {});
+    return sdkReady;
+  }
+
   sdkReady = new Promise((resolve, reject) => {
     let settled = false;
     const done = (fn: () => void) => {
@@ -184,12 +195,11 @@ function facilioAppReady(): Promise<any> {
       clearTimeout(timer);
       fn();
     };
+    // The rejection is deliberately CACHED rather than cleared: a host that never completed the
+    // handshake won't complete it on the next call either, and re-arming the timer would make
+    // every subsequent request pay the full timeout again.
     const timer = setTimeout(() => {
-      done(() => {
-        // Let a later call retry: the app may genuinely be embedded on the next navigation.
-        sdkReady = null;
-        reject(new Error('facilio-api: connected-app handshake timed out (not embedded in a Facilio host?)'));
-      });
+      done(() => reject(new Error('facilio-api: connected-app handshake timed out (host did not respond)')));
     }, SDK_HANDSHAKE_TIMEOUT_MS);
 
     const start = () => {

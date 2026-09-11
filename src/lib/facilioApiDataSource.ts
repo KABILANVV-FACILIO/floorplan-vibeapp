@@ -113,10 +113,23 @@ export class FacilioApiDataSource implements FloorplanDataSource {
     }));
   }
 
+  /**
+   * The asset catalog in ONE call, rather than the connector's 200-row pages (~9 requests against
+   * this org, every load). Falls through to the connector tier on any error — including a module
+   * name this org doesn't use — so the connector remains the safety net rather than the default.
+   */
   async getAssets(): Promise<Asset[]> {
-    // Sourced from the CMMS connector (list-assets); not fetched by this tier. Throw so the
-    // composite falls through to the connector tier.
-    throw new Error('facilio-api: assets come from the CMMS connector, not this tier');
+    this.assertConfigured();
+    const res = await facilioApi.fetchAll('asset');
+    if (res.error) throw new Error(`facilio-api: asset fetch failed (${res.error.code ?? '?'} ${res.error.message ?? ''})`.trim());
+    const rows = res.list ?? [];
+    if (!rows.length) throw new Error('facilio-api: no assets returned');
+    return rows.map((a: any) => ({
+      id: String(a.id),
+      name: a.name,
+      category: a.category?.name ?? a.assetCategory?.name ?? 'Uncategorized',
+      detail: [a.space?.name ?? a.spaceName, a.serialNumber].filter(Boolean).join(' · '),
+    }));
   }
 
   async getUnits(_floorId: string): Promise<Unit[]> {
