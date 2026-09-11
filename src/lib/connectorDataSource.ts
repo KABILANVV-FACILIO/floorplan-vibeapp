@@ -87,8 +87,14 @@ export class ConnectorDataSource implements FloorplanDataSource {
     return rows.map((e: any) => ({ id: String(e.id), name: e.name }));
   }
 
+  /**
+   * Deliberately ONE page, not `listAll`. This feeds a search-and-drag picker, where the first 200
+   * rows are plenty; paging the full catalog cost ~10 requests against this org for a panel that is
+   * opened rarely. The V3 tier above returns everything in a single call anyway.
+   */
   async getAssets(): Promise<Asset[]> {
-    const rows = await this.listAll('list-assets', { expand: 'category,space' });
+    const res = await this.action<{ data?: any[] }>('list-assets', { page: 1, page_size: 200, expand: 'category,space' });
+    const rows = res?.data ?? [];
     return rows.map((a: any) => ({
       id: String(a.id),
       name: a.name,

@@ -113,15 +113,19 @@ export class FacilioApiDataSource implements FloorplanDataSource {
   }
 
   /**
-   * The asset catalog in ONE call, rather than the connector's 200-row pages (~9 requests against
-   * this org, every load). Falls through to the connector tier on any error — including a module
-   * name this org doesn't use — so the connector remains the safety net rather than the default.
+   * The asset catalog in ONE call, straight down the V3 list endpoint via `invokeFacilioAPI`.
+   *
+   * The connector's `list-assets` caps at 200 rows per action call, so paging this org's ~1800
+   * assets cost ~10 round trips on every load. V3 answers the same question once. `perPage` is
+   * bounded rather than unbounded because this feeds a search-and-drag picker, not a report.
+   *
+   * Throws on a bad envelope or an empty list so the connector tier below stays the safety net.
    */
   async getAssets(): Promise<Asset[]> {
     this.assertConfigured();
-    const res = await facilioApi.fetchAll('asset');
-    if (res.error) throw new Error(`facilio-api: asset fetch failed (${res.error.code ?? '?'} ${res.error.message ?? ''})`.trim());
-    const rows = res.list ?? [];
+    const body = await customGet('v3/modules/asset', { page: 1, perPage: 200 });
+    if (body?.code !== 0) throw new Error(`facilio-api: asset fetch failed (${body?.code ?? '?'} ${body?.message ?? ''})`.trim());
+    const rows: any[] = body?.asset ?? [];
     if (!rows.length) throw new Error('facilio-api: no assets returned');
     return rows.map((a: any) => ({
       id: String(a.id),
