@@ -232,6 +232,13 @@ function defaultTiers(): FloorplanDataSource[] {
   return [new FacilioApiDataSource(), new ConnectorDataSource(), new LocalJsonDataSource()];
 }
 
+/** ` (12 items)` for a list, ` (3 keys)` for a map — an empty answer from a real tier looks identical to "never called" without this. */
+function describe(result: unknown): string {
+  if (Array.isArray(result)) return ` (${result.length} items)`;
+  if (result && typeof result === 'object') return ` (${Object.keys(result as object).length} keys)`;
+  return '';
+}
+
 /** Tries each tier in order for every call; first to resolve wins, logging which did. */
 export class CompositeDataSource implements FloorplanDataSource {
   readonly name = 'composite';
@@ -263,7 +270,7 @@ export class CompositeDataSource implements FloorplanDataSource {
         // fact when the app is embedded in a host and the network tab shows nothing (connected-app
         // calls ride a postMessage bridge, so they never appear as requests).
         // eslint-disable-next-line no-console
-        console.info(`[dataSource] ${String(method)} <- ${tier.name}`);
+        console.info(`[dataSource] ${String(method)} <- ${tier.name}${describe(result)}`);
         return result;
       } catch (err) {
         lastErr = err;

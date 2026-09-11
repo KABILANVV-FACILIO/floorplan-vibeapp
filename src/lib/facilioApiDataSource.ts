@@ -160,7 +160,11 @@ export class FacilioApiDataSource implements FloorplanDataSource {
 
       const recordRes = await facilioApi.fetchRecord<any>('indoorfloorplan', { id: planRecordId });
       const quad = geometryStringToQuad(recordRes?.indoorfloorplan?.geometry);
-      if (!quad) continue;
+      if (!quad) {
+        // eslint-disable-next-line no-console
+        console.warn(`[facilio-api] getUnits: plan ${planId} (#${planRecordId}) has no calibrated geometry — its markers are skipped, not guessed`);
+        continue;
+      }
 
       const markersRes = await facilioApi.fetchAllRelatedList<any>({
         moduleName: 'indoorfloorplan',
@@ -168,7 +172,13 @@ export class FacilioApiDataSource implements FloorplanDataSource {
         relatedModuleName: 'floorplanmarker',
         relatedFieldName: 'indoorfloorplan',
       });
-      if (markersRes.error) continue;
+      if (markersRes.error) {
+        // eslint-disable-next-line no-console
+        console.warn(`[facilio-api] getUnits: marker list failed for plan ${planId} (#${planRecordId}):`, markersRes.error);
+        continue;
+      }
+      // eslint-disable-next-line no-console
+      console.info(`[facilio-api] getUnits: plan ${planId} (#${planRecordId}) -> ${markersRes.list?.length ?? 0} markers`);
 
       for (const marker of markersRes.list ?? []) {
         const point = parsePointGeometry(marker.geometry);
@@ -270,7 +280,13 @@ function lookupId(record: any, key: string): unknown {
 async function getFloorplanDetailsByType(floorId: string): Promise<Record<string, any>> {
   const body = await customGet('v3/floorplan/getFloorplanDetailsByType', { floorId });
   if (body?.code !== 0) throw new Error(body?.message || `code ${body?.code ?? '?'}`);
-  return body?.data?.indoorFloorPlans ?? {};
+  const plans = body?.data?.indoorFloorPlans ?? {};
+  // Over the host bridge this call never appears in the iframe's network tab, so this line is the
+  // only evidence it ran — and of what the org answered. An empty map is a floor with no floor
+  // plan configured, which otherwise looks identical to the call never happening.
+  // eslint-disable-next-line no-console
+  console.info(`[facilio-api] getFloorplanDetailsByType(${floorId}) -> plan types: ${Object.keys(plans).join(',') || '(none configured)'}`, body?.data ? '' : `(unexpected body keys: ${Object.keys(body ?? {}).join(',')})`);
+  return plans;
 }
 
 export interface FloorPlanTypeSummary {
