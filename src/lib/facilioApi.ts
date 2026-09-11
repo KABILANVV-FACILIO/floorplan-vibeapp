@@ -286,14 +286,15 @@ async function crudFetchAllRelatedList<T = any>(
   params: Record<string, unknown> = {}
 ): Promise<FacilioApiListResult<T>> {
   if (isConnectedApp) {
-    // The connected-app SDK exposes no dedicated related-list call (only generic module CRUD) —
-    // approximated by filtering the related module on the parent lookup field. NOT verified
-    // against a live org; the dev-mode path above uses the real `relatedList` V3 endpoint
-    // instead (verified — see the `@facilio/api` source this was copied from) since dev mode
-    // still talks to the org directly.
-    const app = await facilioAppReady();
-    const filters = JSON.stringify({ [opts.relatedFieldName]: { operatorId: 36, value: [String(opts.id)] } });
-    return app.api.fetchAll(opts.relatedModuleName, { ...params, filters });
+    // The SDK has no related-list wrapper, so this is the one module read that goes over
+    // `invokeFacilioAPI` — to the REAL `relatedList` endpoint, the same URL dev mode and
+    // `@facilio/api` use. It replaces a filter-based approximation that was never verified and
+    // sat directly under getUnits: a wrong guess there would have hidden every marker.
+    const url = `v3/modules/${opts.moduleName}/${opts.id}/relatedList/${opts.relatedModuleName}/${opts.relatedFieldName}`;
+    const env = v3Envelope(await customGet(url, params));
+    if (env.error) return { ...env, list: null };
+    const { [opts.relatedModuleName]: list, ...rest } = env;
+    return { ...rest, error: null, list: ((list as unknown[] | undefined) ?? null) as T[] | null };
   }
   return devFetchAllRelatedList<T>(opts, params);
 }
