@@ -362,7 +362,11 @@ export async function fetchFloorplanImage(floorId: string, planId: PlanId): Prom
   if (!isFacilioApiConfigured || !apiOrigin) return null;
   const byType = await getFloorplanDetailsByType(floorId);
   const summary = byType[String(FLOOR_PLAN_TYPE[planId])];
-  if (!summary?.id) return null;
+  if (!summary?.id) {
+    // eslint-disable-next-line no-console
+    console.info(`[facilio-api] fetchFloorplanImage: no ${planId} plan on floor ${floorId} (types present: ${Object.keys(byType).join(',') || 'none'})`);
+    return null;
+  }
 
   const viewerBody = await customPost(
     'v3/floorplan/viewerData',
@@ -370,12 +374,25 @@ export async function fetchFloorplanImage(floorId: string, planId: PlanId): Prom
     { devAbsoluteUrl: `${apiOrigin}/maintenance/api/v3/floorplan/viewerData` }
   );
   const fileId = viewerBody?.data?.indoorfloorplan?.fileId;
-  if (!fileId) return null;
+  if (!fileId) {
+    // eslint-disable-next-line no-console
+    console.warn(`[facilio-api] fetchFloorplanImage: viewerData for plan #${summary.id} carried no fileId (body keys: ${Object.keys(viewerBody?.data ?? viewerBody ?? {}).join(',')})`);
+    return null;
+  }
 
   const preview = await fetchFilePreview(fileId, { original: true });
   if (preview.dataUrl) return preview.dataUrl;
-  if (!preview.blob) return null;
-  return blobToRenderableDataUrl(preview.blob, preview.contentType);
+  if (!preview.blob) {
+    // eslint-disable-next-line no-console
+    console.warn(`[facilio-api] fetchFloorplanImage: file ${fileId} yielded no bytes`);
+    return null;
+  }
+  // DWG/DXF/PDF go through the same client-side renderers the upload flow uses; a plain image
+  // becomes an object URL. Either way the canvas gets something it can draw.
+  const url = await blobToRenderableDataUrl(preview.blob, preview.contentType);
+  // eslint-disable-next-line no-console
+  console.info(`[facilio-api] fetchFloorplanImage: floor ${floorId}/${planId} -> file ${fileId} (${preview.contentType}) rendered`);
+  return url;
 }
 
 export interface FloorplanFileUploadResult {

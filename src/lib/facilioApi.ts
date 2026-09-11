@@ -375,6 +375,46 @@ export async function customPost(path: string, data?: Record<string, unknown>, o
 }
 
 /**
+ * `common.toBase64` is documented only as "a base64 string for displaying attachments". Accept the
+ * shapes it could plausibly take — a bare string, a full data URL, or an object carrying it under a
+ * common key — rather than trusting one guess.
+ */
+function extractBase64(raw: unknown): string | null {
+  let value: unknown = raw;
+  if (value && typeof value === 'object') {
+    const o = value as Record<string, unknown>;
+    value = o.base64 ?? o.data ?? o.content ?? o.fileContent ?? o.result ?? null;
+  }
+  if (typeof value !== 'string' || !value) return null;
+  const comma = value.indexOf(',');
+  return value.startsWith('data:') && comma > 0 ? value.slice(comma + 1) : value;
+}
+
+function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
+  const bin = atob(b64.replace(/\s/g, ''));
+  // Explicit ArrayBuffer backing: a plain `new Uint8Array(n)` types as ArrayBufferLike, which
+  // BlobPart rejects under the current lib types.
+  const out = new Uint8Array(new ArrayBuffer(bin.length));
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/** Content type from magic bytes — the transport tells us nothing, and the wrong label is a blank canvas. */
+function sniffMime(b: Uint8Array): string {
+  const ascii = (n: number) => String.fromCharCode(...b.slice(0, n));
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  if (ascii(4) === 'GIF8') return 'image/gif';
+  if (ascii(4) === 'RIFF' && String.fromCharCode(...b.slice(8, 12)) === 'WEBP') return 'image/webp';
+  if (ascii(4) === '%PDF') return 'application/pdf';
+  if (ascii(4) === 'AC10') return 'image/vnd.dwg'; // AC1015/1018/1021/1024/1027/1032 version stamps
+  const head = new TextDecoder().decode(b.slice(0, 256)).trimStart();
+  if (head.startsWith('<') && /<svg[\s>]/i.test(head)) return 'image/svg+xml';
+  if (/^0\s*\r?\n\s*SECTION/.test(head) || /\bHEADER\b/.test(head)) return 'image/vnd.dxf';
+  return 'application/octet-stream';
+}
+
+/**
  * A stored file's bytes, for display. Dev mode returns the raw blob (as before — callers run it
  * through their own image/PDF/CAD rendering as needed). Connected mode has no blob/binary
  * access at all (per the SDK docs) — only `common.toBase64({fileId})`, which returns a bare
@@ -389,8 +429,20 @@ export async function customPost(path: string, data?: Record<string, unknown>, o
 export async function fetchFilePreview(fileId: number, opts?: { original?: boolean }): Promise<{ dataUrl: string | null; blob?: Blob; contentType?: string }> {
   if (isConnectedApp) {
     const app = await facilioAppReady();
-    const base64 = await app.common.toBase64({ fileId });
-    return { dataUrl: base64 ? `data:image/png;base64,${base64}` : null };
+    const raw = await app.common.toBase64({ fileId });
+    const base64 = extractBase64(raw);
+    if (!base64) {
+      // eslint-disable-next-line no-console
+      console.warn(`[facilio-api] toBase64(${fileId}) returned nothing usable:`, typeof raw, raw && typeof raw === 'object' ? Object.keys(raw) : String(raw).slice(0, 40));
+      return { dataUrl: null };
+    }
+    const bytes = base64ToBytes(base64);
+    const contentType = sniffMime(bytes);
+    // eslint-disable-next-line no-console
+    console.info(`[facilio-api] toBase64(${fileId}) -> ${bytes.length} bytes, sniffed ${contentType}`);
+    // Hand back a Blob with the REAL type, never a data URL labelled png: floor plans here are
+    // routinely DWG/PDF, and callers already own the CAD/PDF renderers for exactly that case.
+    return { dataUrl: null, blob: new Blob([bytes], { type: contentType }), contentType };
   }
   const res = await devInstance!.get(`v2/files/preview/${fileId}`, {
     params: opts?.original ? { fetchOriginal: true } : undefined,
