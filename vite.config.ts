@@ -11,7 +11,10 @@ import type { ProxyOptions } from 'vite';
 function buildStamp(): string {
   try {
     const sha = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
-    return `${sha} ${new Date().toISOString()}`;
+    // A build made before committing would otherwise be stamped with the PREVIOUS commit and look
+    // like a stale deploy. Mark it instead of lying about it.
+    const dirty = execSync('git status --porcelain', { encoding: 'utf8' }).trim() ? '+dirty' : '';
+    return `${sha}${dirty} ${new Date().toISOString()}`;
   } catch {
     return `nogit ${new Date().toISOString()}`;
   }

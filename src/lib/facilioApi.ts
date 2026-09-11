@@ -5,13 +5,13 @@ const envBaseURL = import.meta.env.VITE_FACILIO_API_BASE_URL;
 const token = import.meta.env.VITE_FACILIO_TOKEN;
 
 /**
- * Connected-app mode (VITE_IS_CONNECTED_APP=true): the app is served INSIDE a Facilio org
- * (connected app tab/iframe). Real backend access goes through the Facilio Connected-App
- * browser SDK (`FacilioAppSDK`, see `facilioAppReady` below) rather than a direct HTTP client —
- * the SDK bridges to the host org itself, so there's no bearer token, no CORS, and no
- * configurable base URL for it. This mode OVERRIDES dev mode and every other data tier: when
- * it's on, the real Facilio API tier is active unconditionally.
+ * Connected-app mode: the app is served INSIDE a Facilio org (connected-app tab/iframe). Real
+ * backend access goes through the Facilio Connected-App browser SDK (`FacilioAppSDK`, see
+ * `facilioAppReady`) rather than a direct HTTP client — the SDK bridges to the host org itself, so
+ * there's no bearer token, no CORS and no configurable base URL. It is detected at runtime, since
+ * the same bundle is served both embedded and standalone.
  */
+
 /**
  * `?capp_id=` / `#capp_id=` and `?origin=` are set by the Facilio host when it renders the app in
  * a connected-app iframe (the same params the SDK's own `initConnectedApp` reads).
@@ -27,15 +27,16 @@ function hostParam(name: string): string | null {
 const isEmbedded = typeof window !== 'undefined' && window.self !== window.top;
 
 /**
- * Detected at RUNTIME, with the build flag only as one of several signals.
+ * Connected-app mode requires an actual HOST, which is a runtime fact: every V3 call here rides
+ * `invokeFacilioAPI`, a postMessage bridge to the parent frame. Opened as a standalone tab there is
+ * no parent and no bridge, so claiming connected-app mode there just makes the V3 tier attempt and
+ * fail on every call.
  *
- * Whether the app is embedded is not knowable at build time — the same bundle is served both
- * standalone and inside a Facilio product — and relying on the flag meant a build made before it
- * was set reported "not configured" and silently dropped every V3 call: marker geometry, Moves,
- * org forms, file previews. Being in an iframe is sufficient on its own, so the V3 tier now comes
- * alive wherever a host actually exists, regardless of how the bundle was built.
+ * The build flag alone is therefore NOT enough — it was set in the bundle yet the app was being
+ * opened standalone, which is the shape of the "not configured"/no-V3-calls confusion. It is kept
+ * only as an explicit override for a host this check can't see.
  */
-export const isConnectedApp = import.meta.env.VITE_IS_CONNECTED_APP === 'true' || !!hostParam('capp_id') || isEmbedded;
+export const isConnectedApp = isEmbedded || !!hostParam('capp_id') || import.meta.env.VITE_IS_CONNECTED_APP === 'force';
 
 /**
  * Where the V3 APIs live for absolute-URL needs: same-origin in connected mode (unless

@@ -1101,7 +1101,12 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
       // The mock default floorId ('hqA3') isn't a real floor against the live backend —
       // sending it to per-floor endpoints (getFloorplanDetailsByType) just 500s. Start on the
       // real portfolio's actual first floor instead, when one's available.
-      const firstRealFloor = isFacilioApiConfigured ? firstFloorId(portfolio) : undefined;
+      //
+      // Keyed off whether the portfolio is actually real, NOT off isFacilioApiConfigured: the
+      // portfolio can come from the connector with no V3 host at all (a standalone tab), and
+      // gating on the API would strand that session on the mock floor, showing demo units beside
+      // a real org tree.
+      const firstRealFloor = portfolio === MOCK_PORTFOLIO ? undefined : firstFloorId(portfolio);
       const floorId = firstRealFloor ?? state.floorId;
       if (floorId !== state.floorId) dispatch({ type: 'SELECT_FLOOR_START', floorId });
 
