@@ -169,6 +169,13 @@ async function ensureFloorplanImage(dispatch: Dispatch<Action>, floorId: string,
 }
 
 /** The room polygon (if any) containing an image-fraction point — placed units inherit its label. */
+/**
+ * Session guard for the lazily-fetched asset catalog. Module scope rather than a ref so it survives
+ * a provider remount — the catalog doesn't change within a session, and re-fetching it because a
+ * panel remounted is the cost this laziness exists to avoid.
+ */
+let assetsRequested = false;
+
 function roomLabelAt(state: AppState, x: number, y: number): string | null {
   const room = state.units.find((u) => u.type === 'room' && u.geom.kind === 'poly' && pointInPoly({ x, y }, u.geom.pts));
   return room ? room.label : null;
@@ -943,6 +950,17 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     setModuleColor: (key: string, hex: string) => dispatch({ type: 'SET_MODULE_COLOR', key, hex }),
     setModuleEnabled: (module: ModuleKey, enabled: boolean) => dispatch({ type: 'SET_MODULE_ENABLED', module, enabled }),
     setModuleOpt: (key: string, value: boolean) => dispatch({ type: 'SET_MODULE_OPT', key, value }),
+    /**
+     * Fetches the asset catalog on first use of the Edit-mode asset picker. Idempotent: the guard
+     * is checked before the await, so mounting the picker twice in quick succession still issues
+     * one request.
+     */
+    loadAssets: async () => {
+      if (assetsRequested) return;
+      assetsRequested = true;
+      const assets = await dataSource.getAssets().catch(() => DEMO_ASSETS);
+      dispatch({ type: 'ASSETS_LOADED', assets });
+    },
     setSlotGranularity: (minutes: number) => dispatch({ type: 'SET_SLOT_GRANULARITY', minutes }),
 
     showToast,
@@ -1071,12 +1089,14 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
     if (loadedRef.current) return;
     loadedRef.current = true;
     (async () => {
-      const [portfolio, employees, assets] = await Promise.all([
+      // The asset catalog is deliberately NOT fetched here. It feeds one thing — the Edit-mode
+      // asset picker — so a session that never arms the Asset tool should never pay for it.
+      // `loadAssets` fills it the first time that picker mounts.
+      const [portfolio, employees] = await Promise.all([
         dataSource.getPortfolio().catch(() => MOCK_PORTFOLIO),
         dataSource.getEmployees().catch(() => MOCK_EMPLOYEES),
-        dataSource.getAssets().catch(() => DEMO_ASSETS),
       ]);
-      dispatch({ type: 'PORTFOLIO_LOADED', portfolio, employees, assets });
+      dispatch({ type: 'PORTFOLIO_LOADED', portfolio, employees });
 
       // The mock default floorId ('hqA3') isn't a real floor against the live backend —
       // sending it to per-floor endpoints (getFloorplanDetailsByType) just 500s. Start on the

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { DragEvent as ReactDragEvent, ReactNode } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { moduleEnabled, unitById } from '../../state/selectors';
@@ -525,8 +525,13 @@ function makeAssetDragImage(): HTMLElement {
 }
 
 function AssetListCard() {
-  const { state } = useFloorplan();
+  const { state, actions } = useFloorplan();
   const [assetQuery, setAssetQuery] = useState('');
+  // The only thing that reads the asset catalog, so it is also the only thing that fetches it.
+  useEffect(() => {
+    void actions.loadAssets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const placedAssetIds = useMemo(() => new Set(state.units.filter((u) => u.assetId).map((u) => u.assetId)), [state.units]);
   const filteredAssets = useMemo(() => {
     const q = assetQuery.trim().toLowerCase();
