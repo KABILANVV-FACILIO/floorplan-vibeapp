@@ -8,7 +8,8 @@ import type { AmenityIcon, Booking, FloorSearchHit, MarkerDef, ModuleKey, PlanId
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
-import { assignUnitReal, createRealBooking, fetchFloorplanImage, fetchMyDesk, findUnitIdForDeskRecord, getFloorPlanSummary, saveFloorplanMarkers, vacateUnitReal } from '../lib/facilioApiDataSource';
+import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchFloorplanImage, fetchMyDesk, findUnitIdForDeskRecord, getFloorPlanSummary, saveFloorplanMarkers, vacateUnitReal } from '../lib/facilioApiDataSource';
+import { measureImageDataUrl } from '../lib/geoReference';
 import { listFloorplanFloorIds, loadFloorplanFile, persistFloorplanFile } from '../lib/floorplanFileStore';
 import { loadSettings, saveSettings, settingsFromState } from '../lib/settingsStore';
 import { pathForView, viewFromLocation } from '../lib/routes';
@@ -166,6 +167,14 @@ async function loadFloorPlanTypesAndImage(dispatch: Dispatch<Action>, floorId: s
       const imageUrl = await fetchFloorplanImage(floorId, resolvedPlanId).catch(() => null);
       if (imageUrl) {
         dispatch({ type: 'SET_FLOOR_IMAGE', floorId, planId: resolvedPlanId, dataUrl: imageUrl });
+        // Now that the image's pixel size is known, make sure the plan carries the georeference
+        // quad marker positions are written and read through. No-op if it already has one.
+        void measureImageDataUrl(imageUrl)
+          .then((dims) => ensurePlanGeoreference(floorId, resolvedPlanId, dims))
+          .catch((err) => {
+            // eslint-disable-next-line no-console
+            console.warn('[facilio-api] georeference check failed', err);
+          });
         const storable = await toStorableDataUrl(imageUrl);
         if (storable && storable !== cached?.dataUrl) {
           void persistFloorplanFile(floorId, resolvedPlanId, { dataUrl: storable }).catch(() => {});

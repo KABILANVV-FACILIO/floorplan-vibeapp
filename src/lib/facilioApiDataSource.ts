@@ -192,6 +192,7 @@ export class FacilioApiDataSource implements FloorplanDataSource {
     // app sets when it creates the backing desk/locker/stall. A marker placed in the org's own
     // editor may lack it, in which case that record also appears as unplaced (logged below).
     const placedRecordIds = new Set<string>();
+    let outOfFrame = 0;
 
     for (const [typeNum, summary] of Object.entries(byType)) {
       const planId = PLAN_ID_BY_TYPE[Number(typeNum)];
@@ -226,6 +227,13 @@ export class FacilioApiDataSource implements FloorplanDataSource {
         const point = parsePointGeometry(marker.geometry);
         if (!point) continue; // polygons/zones live in floorplanmarkedzone, not here
         const [x, y] = lngLatToQuadFraction(quad, point[0], point[1]);
+        // A marker written in some other coordinate space (e.g. by the org's own editor before this
+        // plan had a quad) converts to a wildly out-of-frame fraction. Drop it and say so, rather
+        // than pinning it to an edge where it looks like a real, mis-placed unit.
+        if (x < -0.05 || x > 1.05 || y < -0.05 || y > 1.05) {
+          outOfFrame++;
+          continue;
+        }
         const props = safeJson<{ unitType?: string; secondary?: string | null }>(marker.properties) ?? {};
         const type = (props.unitType as Unit['type']) ?? PLAN_UNIT_TYPE[planId] ?? 'workstation';
         units.push({
@@ -274,15 +282,25 @@ export class FacilioApiDataSource implements FloorplanDataSource {
     // eslint-disable-next-line no-console
     console.info(
       `[facilio-api] getUnits floor ${floorId}: ${units.filter((u) => !u.unplaced).length} placed markers; unplaced records: ${desks.length} desks, ${lockers.length} lockers, ${stalls.length} stalls, ${rooms.length} rooms (${placedRecordIds.size} already placed)` +
-        (unmatchedMarkers ? ` — ${unmatchedMarkers} records also appear as markers without a recordId link` : '')
+        (unmatchedMarkers ? ` — ${unmatchedMarkers} records also appear as markers without a recordId link` : '') +
+        (outOfFrame ? ` — ${outOfFrame} markers dropped: outside the plan after conversion (written in another coordinate space?)` : '')
     );
     return units;
   }
 
-  /** Positions are persisted as real floorplanmarker records — the same path the save bar uses. */
+  /**
+   * Positions are persisted as real floorplanmarker records — the same path the save bar uses.
+   * Throws when NOTHING could be written (no plan on this floor has a georeference yet), so
+   * CompositeDataSource falls through to browser storage instead of treating a silent no-op as a
+   * successful save and losing the placement on refresh.
+   */
   async saveUnits(floorId: string, units: Unit[]): Promise<void> {
     this.assertConfigured();
-    await saveFloorplanMarkers(floorId, units);
+    const result = await saveFloorplanMarkers(floorId, units);
+    const hasPointUnits = units.some((u) => u.geom.kind === 'point' && u.type !== 'amenity');
+    if (hasPointUnits && result.plansSynced === 0) {
+      throw new Error(`facilio-api: no georeferenced plan on floor ${floorId} — positions not persisted to the org (${result.skipped.join(', ') || 'no plans'})`);
+    }
   }
   // Space creation is wired on the CMMS connector tier (create-space), not this raw module-CRUD
   // layer — throw so the composite falls through to it.
@@ -623,8 +641,16 @@ export async function uploadFloorplanFile(
  * this existed): there's no sane lng/lat to convert a unit's 0-1 fraction position into, and
  * guessing would silently misplace it rather than fail loudly.
  */
-export async function saveFloorplanMarkers(floorId: string, units: Unit[]): Promise<void> {
-  if (!isFacilioApiConfigured) return;
+export interface MarkerSaveResult {
+  /** Plan types whose markers were actually synced to the org. */
+  plansSynced: number;
+  /** Plan types skipped, with the reason — surfaced so a silent no-op is never mistaken for a save. */
+  skipped: string[];
+}
+
+export async function saveFloorplanMarkers(floorId: string, units: Unit[]): Promise<MarkerSaveResult> {
+  const result: MarkerSaveResult = { plansSynced: 0, skipped: [] };
+  if (!isFacilioApiConfigured) return result;
   const pointUnits = units.filter(
     (u): u is Unit & { geom: PointGeom } => u.geom.kind === 'point' && (u.type === 'workstation' || u.type === 'locker' || u.type === 'parking')
   );
@@ -643,21 +669,62 @@ export async function saveFloorplanMarkers(floorId: string, units: Unit[]): Prom
 
   for (const planId of allPlanIds) {
     const summary = byType[String(FLOOR_PLAN_TYPE[planId])];
-    if (!summary?.id) continue;
-    await syncMarkersForIndoorFloorPlan(summary.id, byPlan.get(planId) ?? []).catch((err) => {
+    if (!summary?.id) {
+      result.skipped.push(`${planId}: no plan configured`);
+      continue;
+    }
+    try {
+      const synced = await syncMarkersForIndoorFloorPlan(summary.id, byPlan.get(planId) ?? []);
+      if (synced) result.plansSynced++;
+      else result.skipped.push(`${planId}: plan #${summary.id} has no georeference`);
+    } catch (err) {
+      result.skipped.push(`${planId}: ${(err as Error)?.message ?? err}`);
       // eslint-disable-next-line no-console
       console.warn(`[facilio-api] marker sync failed for plan ${planId}`, err);
-    });
+    }
   }
+  // eslint-disable-next-line no-console
+  console.info(`[facilio-api] saveFloorplanMarkers floor ${floorId}: synced ${result.plansSynced} plan(s)` + (result.skipped.length ? `; skipped ${result.skipped.join('; ')}` : ''));
+  return result;
 }
 
-async function syncMarkersForIndoorFloorPlan(indoorFloorPlanId: number, units: (Unit & { geom: PointGeom })[]): Promise<void> {
-  // See the matching comment in uploadFloorplanFile — `fetchRecord` nests the record under
-  // `res[moduleName]` (`res.indoorfloorplan` here), not `res.data`.
+/**
+ * Give a plan the georeference quad this app's marker model needs, if it has none.
+ *
+ * Plans created in Facilio's own editor arrive with `geometry` empty (7 of this org's 8 do), and
+ * without a quad positions can neither be written nor read back — a placement "saved" into
+ * nothing and vanished on refresh. The upload flow already seeds a synthetic quad sized to the
+ * image; this does the same for plans the app didn't upload, the moment their image renders and
+ * the pixel size is known. Idempotent: an existing valid quad is left untouched, so it never
+ * re-projects markers that already have one.
+ */
+export async function ensurePlanGeoreference(floorId: string, planId: PlanId, imageDimensions: { width: number; height: number }): Promise<void> {
+  if (!isFacilioApiConfigured) return;
+  const byType = await getFloorplanDetailsByType(floorId).catch(() => ({}) as Record<string, any>);
+  const summary = byType[String(FLOOR_PLAN_TYPE[planId])];
+  if (!summary?.id) return;
+  const recordRes = await facilioApi.fetchRecord<any>('indoorfloorplan', { id: summary.id });
+  const record = recordRes?.indoorfloorplan ?? recordRes?.data?.indoorfloorplan;
+  if (recordRes.error || !record) return;
+  if (geometryStringToQuad(record.geometry)) return; // already georeferenced
+  const geometry = quadToGeometryString(computeSyntheticGeometry(imageDimensions.width, imageDimensions.height));
+  const res = await facilioApi.updateRecord('indoorfloorplan', { id: summary.id, data: { geometry } });
+  if (res.error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[facilio-api] could not georeference plan #${summary.id}:`, res.error);
+    return;
+  }
+  // eslint-disable-next-line no-console
+  console.info(`[facilio-api] georeferenced plan #${summary.id} (${planId}) to ${imageDimensions.width}x${imageDimensions.height} — markers can now be saved and read back`);
+}
+
+/** Returns false when the plan has no georeference and nothing could be written. */
+async function syncMarkersForIndoorFloorPlan(indoorFloorPlanId: number, units: (Unit & { geom: PointGeom })[]): Promise<boolean> {
   const recordRes = await facilioApi.fetchRecord<any>('indoorfloorplan', { id: indoorFloorPlanId });
-  if (recordRes.error || !recordRes.indoorfloorplan) return;
-  const quad = geometryStringToQuad(recordRes.indoorfloorplan.geometry);
-  if (!quad) return;
+  const record = recordRes?.indoorfloorplan ?? recordRes?.data?.indoorfloorplan;
+  if (recordRes.error || !record) return false;
+  const quad = geometryStringToQuad(record.geometry);
+  if (!quad) return false;
 
   const existingRes = await facilioApi.fetchAllRelatedList<any>({
     moduleName: 'indoorfloorplan',
@@ -668,7 +735,7 @@ async function syncMarkersForIndoorFloorPlan(indoorFloorPlanId: number, units: (
   if (existingRes.error) {
     // eslint-disable-next-line no-console
     console.warn(`[facilio-api] fetching existing markers failed for plan ${indoorFloorPlanId}`, existingRes.error);
-    return; // bail rather than risk creating duplicates against a list we couldn't actually verify.
+    throw new Error('marker list unavailable'); // bail rather than risk duplicates against a list we couldn't verify
   }
   const existing = existingRes.list ?? [];
   const existingByGeoId = new Map(existing.map((m) => [m.geoId, m]));
@@ -710,6 +777,7 @@ async function syncMarkersForIndoorFloorPlan(indoorFloorPlanId: number, units: (
       }
     }
   }
+  return true;
 }
 
 /**
