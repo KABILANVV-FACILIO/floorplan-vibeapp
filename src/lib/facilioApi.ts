@@ -12,7 +12,24 @@ const token = import.meta.env.VITE_FACILIO_TOKEN;
  * configurable base URL for it. This mode OVERRIDES dev mode and every other data tier: when
  * it's on, the real Facilio API tier is active unconditionally.
  */
-export const isConnectedApp = import.meta.env.VITE_IS_CONNECTED_APP === 'true';
+/**
+ * `?capp_id=` / `#capp_id=` and `?origin=` are set by the Facilio host when it renders the app in
+ * a connected-app iframe (the same params the SDK's own `initConnectedApp` reads).
+ */
+function hostParam(name: string): string | null {
+  if (typeof window === 'undefined') return null;
+  const fromSearch = new URLSearchParams(window.location.search).get(name);
+  if (fromSearch) return fromSearch;
+  return new URLSearchParams(window.location.hash.replace(/^#/, '')).get(name);
+}
+
+/**
+ * Detected at RUNTIME as well as from the build flag: the same bundle is served both standalone
+ * (as a vibe app) and embedded in a Facilio product, so whether it is embedded isn't knowable at
+ * build time. Without this the V3 tier stayed inert when the app was registered as a connected
+ * app, and everything it alone can reach — marker geometry, Moves, org forms — silently vanished.
+ */
+export const isConnectedApp = import.meta.env.VITE_IS_CONNECTED_APP === 'true' || !!hostParam('capp_id');
 
 /**
  * Where the V3 APIs live for absolute-URL needs: same-origin in connected mode (unless
@@ -20,7 +37,10 @@ export const isConnectedApp = import.meta.env.VITE_IS_CONNECTED_APP === 'true';
  * summary links) and the two dev-mode endpoints below that need an absolute, non-`/api`-prefixed
  * URL — connected mode's real calls go through the SDK, which resolves paths itself.
  */
-const absoluteBaseURL = isConnectedApp ? envBaseURL || `${window.location.origin}/api` : envBaseURL;
+// When embedded, the iframe's OWN origin is the vibe host, not the org — so record-summary links
+// must be built from the parent origin the host handed us, falling back to same-origin for a
+// classic connected app served from inside the org itself.
+const absoluteBaseURL = isConnectedApp ? envBaseURL || `${hostParam('origin') ?? window.location.origin}/api` : envBaseURL;
 
 /** True in connected-app mode (SDK bridge), or in dev mode with base URL + token set. */
 export const isFacilioApiConfigured = isConnectedApp || (devMode && !!envBaseURL && !!token);
@@ -144,17 +164,41 @@ async function devUploadSingleFile(file: File): Promise<{ fileId: number } | { e
 // ---------------------------------------------------------------------------
 const FACILIO_SDK_URL = 'https://static.facilio.com/apps-sdk/beta/facilio_apps_sdk.min.js';
 
+/**
+ * `app.loaded` only ever fires when a Facilio host is actually on the other side of the iframe.
+ * Opening the app's own URL directly satisfies every other condition — the flag is on, the SDK
+ * loads, `init()` succeeds — and then the handshake simply never completes. Without a deadline
+ * that promise neither resolves nor rejects, so CompositeDataSource awaits it forever and the
+ * canvas hangs instead of falling through to the tier below. Time out and reject instead.
+ */
+const SDK_HANDSHAKE_TIMEOUT_MS = 8000;
+
 let sdkReady: Promise<any> | null = null;
 function facilioAppReady(): Promise<any> {
   if (sdkReady) return sdkReady;
   sdkReady = new Promise((resolve, reject) => {
+    let settled = false;
+    const done = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+    const timer = setTimeout(() => {
+      done(() => {
+        // Let a later call retry: the app may genuinely be embedded on the next navigation.
+        sdkReady = null;
+        reject(new Error('facilio-api: connected-app handshake timed out (not embedded in a Facilio host?)'));
+      });
+    }, SDK_HANDSHAKE_TIMEOUT_MS);
+
     const start = () => {
       try {
         const app = (window as any).FacilioAppSDK.init();
         (window as any).facilioApp = app;
-        app.on('app.loaded', () => resolve(app));
+        app.on('app.loaded', () => done(() => resolve(app)));
       } catch (err) {
-        reject(err);
+        done(() => reject(err));
       }
     };
     if ((window as any).FacilioAppSDK) {
@@ -165,7 +209,7 @@ function facilioAppReady(): Promise<any> {
     script.src = FACILIO_SDK_URL;
     script.async = true;
     script.onload = start;
-    script.onerror = () => reject(new Error('facilio-api: failed to load FacilioAppSDK from CDN'));
+    script.onerror = () => done(() => reject(new Error('facilio-api: failed to load FacilioAppSDK from CDN')));
     document.head.appendChild(script);
   });
   return sdkReady;

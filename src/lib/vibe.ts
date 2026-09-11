@@ -15,14 +15,31 @@ import type { Vibe } from '@facilio/vibe-sdk';
 const serverURL = import.meta.env.VITE_VIBE_SERVER_URL;
 
 /**
+ * Vibe hosts are per-region — `vibe.facilio.com` (US), `.co.uk`, `.ae`, `.com.au`, `.us` (Azure),
+ * `.co.ae` (Azure AE), `vibe-sa.facilio.com` (Oracle) — and an app is served at
+ * `<linkName>.<vibeHost>`, optionally `preview-`prefixed. So match the `vibe` LABEL, never a
+ * specific TLD: pinning one region's domain silently disables the vibe tiers in every other
+ * region, which is exactly how this app ended up serving its demo seed in Azure AE.
+ */
+const VIBE_HOST = /(^|\.)vibe(-[a-z0-9]+)?\.facilio\./;
+const LOCAL_HOST = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])$/;
+
+/**
  * True when the app should use the Vibe tiers (connector + vibe-db function).
  *
- * Auto-detected from the host so a deployed app needs no build flag, with an explicit
- * `VITE_IS_VIBE_APP` override for dev against a real vibe server.
+ * Deliberately fails OPEN: anything that isn't plainly local dev assumes the runtime is there and
+ * lets CompositeDataSource fall through if it isn't. A wrong `true` costs one rejected request;
+ * a wrong `false` silently replaces the org's real data with the demo seed, which is far worse
+ * and much harder to notice. `VITE_IS_VIBE_APP` overrides in either direction.
  */
-export const isVibeApp: boolean =
-  import.meta.env.VITE_IS_VIBE_APP === 'true' ||
-  (typeof window !== 'undefined' && /(^|\.)vibe\.facilio\.com$/.test(window.location.hostname));
+export const isVibeApp: boolean = (() => {
+  const flag = import.meta.env.VITE_IS_VIBE_APP;
+  if (flag === 'true') return true;
+  if (flag === 'false') return false;
+  if (typeof window === 'undefined') return false;
+  const host = window.location.hostname;
+  return VIBE_HOST.test(host) || !LOCAL_HOST.test(host);
+})();
 
 export const vibe: Vibe = createVibe(serverURL ? { serverURL } : undefined);
 
