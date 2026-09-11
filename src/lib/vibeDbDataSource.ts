@@ -16,12 +16,39 @@ import type { Assignments, Booking, Employee, Site, Unit } from './types';
  * mirror an assignment or booking into the org (Moves, spacebooking) still go through the
  * connected-app V3 tier, which those methods deliberately do not replace.
  */
+/**
+ * Session circuit breaker for the `floorplanApi` function.
+ *
+ * The function is not deployable in every region — Azure AE has no ai-agents-server, so
+ * `vibe fn create` is rejected and the function simply does not exist there. Without this, every
+ * floor load fired doomed POSTs to /api/runtime/functions/floorplanApi/handlers/... before falling
+ * through, adding a round trip per call for a tier that can never answer.
+ *
+ * One failure marks it unavailable for the rest of the session and every later call short-circuits.
+ * It resets on reload, so deploying the function makes the tier come back with no code change.
+ */
+let floorplanFnUnavailable = false;
+
+function callFloorplanFn<T>(handler: string, args: Record<string, unknown> = {}): Promise<T> {
+  if (!isVibeApp) return Promise.reject(new Error('vibe-db: not running as a vibe app'));
+  if (floorplanFnUnavailable) {
+    return Promise.reject(new Error(`vibe-db: ${FLOORPLAN_FN} is not deployed in this org (skipping)`));
+  }
+  return vibe.executeFunction<T>(FLOORPLAN_FN, handler, args).catch((err) => {
+    // Any failure trips it: the function either exists or it doesn't, and retrying a missing one
+    // on every subsequent call costs a round trip each time for no possible gain.
+    floorplanFnUnavailable = true;
+    // eslint-disable-next-line no-console
+    console.warn(`[vibe-db] ${FLOORPLAN_FN}.${handler} failed; disabling the vibe-db tier for this session:`, (err as Error)?.message ?? err);
+    throw err;
+  });
+}
+
 export class VibeDbDataSource implements FloorplanDataSource {
   readonly name = 'vibe-db';
 
   private call<T>(handler: string, args: Record<string, unknown> = {}): Promise<T> {
-    if (!isVibeApp) throw new Error('vibe-db: not running as a vibe app');
-    return vibe.executeFunction<T>(FLOORPLAN_FN, handler, args);
+    return callFloorplanFn<T>(handler, args);
   }
 
   /**
@@ -91,27 +118,27 @@ export class VibeDbDataSource implements FloorplanDataSource {
 
 /** Settings blob, stored as a single row by the same function. */
 export async function fetchVibeSettings<T>(): Promise<T | null> {
-  if (!isVibeApp) return null;
-  return vibe.executeFunction<T | null>(FLOORPLAN_FN, 'get-settings');
+  if (!isVibeApp || floorplanFnUnavailable) return null;
+  return callFloorplanFn<T | null>('get-settings');
 }
 
 export async function storeVibeSettings(config: unknown): Promise<void> {
-  if (!isVibeApp) return;
-  await vibe.executeFunction(FLOORPLAN_FN, 'save-settings', { configJson: JSON.stringify(config) });
+  if (!isVibeApp || floorplanFnUnavailable) return;
+  await callFloorplanFn('save-settings', { configJson: JSON.stringify(config) });
 }
 
 /** Floorplan-file records (the vibe fileId plus render metadata), keyed by floor + plan type. */
 export async function fetchVibeFloorplanFile<T>(floorId: string, planId: string): Promise<T | null> {
-  if (!isVibeApp) return null;
-  return vibe.executeFunction<T | null>(FLOORPLAN_FN, 'get-floorplan-file', { floorId, planId });
+  if (!isVibeApp || floorplanFnUnavailable) return null;
+  return callFloorplanFn<T | null>('get-floorplan-file', { floorId, planId });
 }
 
 export async function storeVibeFloorplanFile(floorId: string, planId: string, file: unknown): Promise<void> {
-  if (!isVibeApp) return;
-  await vibe.executeFunction(FLOORPLAN_FN, 'save-floorplan-file', { floorId, planId, fileJson: JSON.stringify(file) });
+  if (!isVibeApp || floorplanFnUnavailable) return;
+  await callFloorplanFn('save-floorplan-file', { floorId, planId, fileJson: JSON.stringify(file) });
 }
 
 export async function listVibeFloorplanFloors(): Promise<string[]> {
-  if (!isVibeApp) return [];
-  return (await vibe.executeFunction<string[]>(FLOORPLAN_FN, 'list-floorplan-floors')) ?? [];
+  if (!isVibeApp || floorplanFnUnavailable) return [];
+  return (await callFloorplanFn<string[]>('list-floorplan-floors')) ?? [];
 }

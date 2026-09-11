@@ -1,6 +1,5 @@
 import { FacilioApiDataSource } from './facilioApiDataSource';
 import { ConnectorDataSource } from './connectorDataSource';
-import { VibeDbDataSource } from './vibeDbDataSource';
 import type { Asset } from './assets';
 import type { Assignments, Booking, Employee, Site, Unit } from './types';
 
@@ -17,17 +16,19 @@ import bookingsJson from '../data/bookings.json';
 /**
  * Data access contract for the Floorplan Manager (vibe-app build).
  *
- * Four tiers, tried in order per call (see CompositeDataSource / defaultTiers):
+ * Three live tiers, tried in order per call (see CompositeDataSource / defaultTiers):
  *
- * 1. FacilioApiDataSource — V3/V5 module CRUD through the connected-app host bridge. Leads because
- *    it answers a module in ONE call, and it is the only route to on-plan marker geometry
- *    (`floorplanmarker`), Moves, org forms and file previews.
- * 2. VibeDbDataSource — this app's own records in its per-app Postgres schema, reached through the
- *    `floorplanApi` Studio Function (the browser has no direct DB access).
- * 3. ConnectorDataSource — the `facilio-cmms` connection. Covers what V3 doesn't and is the whole
+ * 1. FacilioApiDataSource — V3/V5 through the connected-app host bridge: module CRUD via the SDK's
+ *    `api.*` wrappers, custom endpoints via `request.invokeFacilioAPI`. Leads because it answers a
+ *    module in ONE call, and it is the only route to on-plan marker geometry (`floorplanmarker`),
+ *    Moves, org forms and file previews.
+ * 2. ConnectorDataSource — the `facilio-cmms` connection. Covers what V3 doesn't and is the whole
  *    data layer when the app runs outside a Facilio host; its list actions page at 200 rows.
- * 4. LocalJsonDataSource — the editable src/data/*.json seed plus localStorage, so `npm run dev`
+ * 3. LocalJsonDataSource — the editable src/data/*.json seed plus localStorage, so `npm run dev`
  *    works with no backend at all.
+ *
+ * VibeDbDataSource (this app's own records via the `floorplanApi` function) exists but is out of
+ * the live list until the function is deployable in this region — see defaultTiers.
  */
 export interface FloorplanDataSource {
   readonly name: string;
@@ -223,7 +224,12 @@ export function clearLocalData(): void {
  * The vibe DB sits above it because it alone holds on-plan geometry — org records have no position.
  */
 function defaultTiers(): FloorplanDataSource[] {
-  return [new FacilioApiDataSource(), new VibeDbDataSource(), new ConnectorDataSource(), new LocalJsonDataSource()];
+  // VibeDbDataSource is deliberately NOT in the live list. Its backing function cannot be deployed
+  // in this region (Azure AE has no ai-agents-server), so every handler answered 404 —
+  // "function 'floorplanApi' not found" — and each floor load paid six doomed round trips before
+  // falling through. The class and functions/floorplanApi/code.ts stay in the repo: once the
+  // function is deployable, add `new VibeDbDataSource()` back between the V3 and connector tiers.
+  return [new FacilioApiDataSource(), new ConnectorDataSource(), new LocalJsonDataSource()];
 }
 
 /** Tries each tier in order for every call; first to resolve wins, logging which did. */

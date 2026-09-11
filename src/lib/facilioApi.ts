@@ -340,12 +340,27 @@ export const facilioApi = {
  * GET query params are read from `data` isn't documented, so they're encoded into the URL's
  * query string directly instead, sidestepping the question.
  */
+/**
+ * Arbitrary (non-module) endpoints over the host bridge. In the SDK the org actually loads,
+ * `invokeFacilioAPI` lives on the `request` namespace — `app.request.invokeFacilioAPI(url, options)`
+ * — NOT on `app.api`, which holds only the module CRUD (`fetchAll`, `fetchRecord`, …). Calling it
+ * on `api` threw "invokeFacilioAPI is not a function" and silently disabled every custom endpoint:
+ * getFloorplanDetailsByType, viewerData, servicePortalHome, v2/forms. Read off the minified SDK
+ * source, not the docs. Its own internal helper calls it as
+ * `invokeFacilioAPI("/v2/workflow/runWorkflow", { method: "POST", data })`, so paths are
+ * root-relative and options carry `method` + `data`.
+ */
+async function bridgeInvoke(path: string, options: { method: 'GET' | 'POST'; data?: Record<string, unknown> }): Promise<any> {
+  const app = await facilioAppReady();
+  const url = path.startsWith('/') ? path : `/${path}`;
+  const raw = await app.request.invokeFacilioAPI(url, options);
+  return typeof raw === 'string' ? JSON.parse(raw) : raw;
+}
+
 export async function customGet(path: string, params?: Record<string, unknown>, opts?: { devAbsoluteUrl?: string }): Promise<any> {
   if (isConnectedApp) {
-    const app = await facilioAppReady();
     const query = params && Object.keys(params).length ? `?${new URLSearchParams(params as Record<string, string>).toString()}` : '';
-    const raw = await app.api.invokeFacilioAPI(`${path}${query}`, { method: 'GET' });
-    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return bridgeInvoke(`${path}${query}`, { method: 'GET' });
   }
   const res = await devInstance!.get(opts?.devAbsoluteUrl ?? path, { params });
   return res.data;
@@ -353,11 +368,7 @@ export async function customGet(path: string, params?: Record<string, unknown>, 
 
 /** POST version of `customGet` — same verbatim-body contract and the same caveats. */
 export async function customPost(path: string, data?: Record<string, unknown>, opts?: { devAbsoluteUrl?: string }): Promise<any> {
-  if (isConnectedApp) {
-    const app = await facilioAppReady();
-    const raw = await app.api.invokeFacilioAPI(path, { method: 'POST', data });
-    return typeof raw === 'string' ? JSON.parse(raw) : raw;
-  }
+  if (isConnectedApp) return bridgeInvoke(path, { method: 'POST', data });
   const res = await devInstance!.post(opts?.devAbsoluteUrl ?? path, data);
   return res.data;
 }
