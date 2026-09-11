@@ -19,13 +19,13 @@ import bookingsJson from '../data/bookings.json';
  *
  * Four tiers, tried in order per call (see CompositeDataSource / defaultTiers):
  *
- * 1. ConnectorDataSource — the org's real records through the `facilio-cmms` connection. Preferred
- *    wherever an action exists, because the platform brokers it: the browser holds no token and the
- *    action contract outlives module-schema churn.
+ * 1. FacilioApiDataSource — V3/V5 module CRUD through the connected-app host bridge. Leads because
+ *    it answers a module in ONE call, and it is the only route to on-plan marker geometry
+ *    (`floorplanmarker`), Moves, org forms and file previews.
  * 2. VibeDbDataSource — this app's own records in its per-app Postgres schema, reached through the
  *    `floorplanApi` Studio Function (the browser has no direct DB access).
- * 3. FacilioApiDataSource — direct V3 module CRUD, still the ONLY route to the things no connector
- *    action reaches: on-plan marker geometry, desk Moves, org forms and file previews.
+ * 3. ConnectorDataSource — the `facilio-cmms` connection. Covers what V3 doesn't and is the whole
+ *    data layer when the app runs outside a Facilio host; its list actions page at 200 rows.
  * 4. LocalJsonDataSource — the editable src/data/*.json seed plus localStorage, so `npm run dev`
  *    works with no backend at all.
  */
@@ -253,11 +253,16 @@ export class CompositeDataSource implements FloorplanDataSource {
         if ((method === 'getPortfolio' || method === 'getEmployees') && Array.isArray(result) && result.length === 0) {
           throw new Error(`${tier.name}: ${String(method)} returned no records`);
         }
+        // Visible by default, not console.debug: which tier answered is the single most useful
+        // fact when the app is embedded in a host and the network tab shows nothing (connected-app
+        // calls ride a postMessage bridge, so they never appear as requests).
+        // eslint-disable-next-line no-console
+        console.info(`[dataSource] ${String(method)} <- ${tier.name}`);
         return result;
       } catch (err) {
         lastErr = err;
         // eslint-disable-next-line no-console
-        console.debug(`[dataSource] ${String(method)} unavailable on "${tier.name}", falling back`, err);
+        console.warn(`[dataSource] ${String(method)} unavailable on "${tier.name}", falling back:`, (err as Error)?.message ?? err);
       }
     }
     throw lastErr;

@@ -1,7 +1,7 @@
 import { apiOrigin, customGet, customPost, facilioApi, fetchFilePreview, isFacilioApiConfigured } from './facilioApi';
 import { renderCadToDataUrl } from './cadPreview';
 import { renderPdfToDataUrl } from './pdfPreview';
-import { computeSyntheticGeometry, geometryStringToQuad, quadToGeometryString, quadToLngLat } from './geoReference';
+import { computeSyntheticGeometry, geometryStringToQuad, lngLatToQuadFraction, quadToGeometryString, quadToLngLat } from './geoReference';
 import type { FloorplanDataSource } from './dataSource';
 import type { Asset } from './assets';
 import type { Assignments, Booking, Employee, PlanId, PointGeom, Site, Unit, UnitType } from './types';
@@ -46,16 +46,15 @@ const PLAN_NAME_BY_TYPE: Record<number, string> = { 1: 'Workstations', 2: 'Locke
  * Real Facilio backend tier (generic V3 module CRUD: `v3/modules/{moduleName}`) — see
  * `facilioApi.ts` for the connected-app-SDK vs. dev-mode-axios transport split.
  *
- * Scope, deliberately: portfolio (site/building/floor) and the employee directory map cleanly
- * onto plain module records, so those are wired for real. Units/assignments/bookings are NOT
- * wired here — a desk/room/locker/parkingstall record has no on-plan position of its own; that
- * lives in separate `floorplanmarker` (Point) / `floorplanmarkedzone` (Polygon) records, joined
- * by `markerModuleId`/`recordId`, with `geometry` as a stringified GeoJSON blob whose exact shape
- * (and whether it's plan-pixel or georeferenced lng/lat) needs verifying against a live org before
- * it's safe to render. Guessing that mapping wrong would silently misplace markers rather than
- * fail loudly, which is worse than falling through to the next tier — so those methods throw,
- * exactly like the stubs in ConnectorDataSource, and CompositeDataSource falls through to the
- * app db / mock tier for them.
+ * Scope: the portfolio, the employee directory and the asset catalog map cleanly onto plain module
+ * records. On-plan POSITION lives in separate `floorplanmarker` (Point) records georeferenced by
+ * `indoorfloorplan.geometry`; those are now read by `getUnits` and written by `saveUnits` (via
+ * `saveFloorplanMarkers`), which is what puts real placed units on the canvas.
+ *
+ * Still not wired here: room/zone polygons (`floorplanmarkedzone`), assignments (Moves-derived —
+ * the WRITE path exists as `assignUnitReal`/`vacateUnitReal`, called separately by the context, but
+ * reading current holders back is not) and bookings. Those throw, so CompositeDataSource falls
+ * through to the tier below rather than this one guessing.
  */
 export class FacilioApiDataSource implements FloorplanDataSource {
   readonly name = 'facilio-api';
@@ -132,11 +131,66 @@ export class FacilioApiDataSource implements FloorplanDataSource {
     }));
   }
 
-  async getUnits(_floorId: string): Promise<Unit[]> {
-    throw new Error('facilio-api: unit placement (floorplanmarker/floorplanmarkedzone geometry) not wired — needs schema verification against a live org');
+  /**
+   * The floor's PLACED units, read back from the real `floorplanmarker` records.
+   *
+   * This is the counterpart of `saveFloorplanMarkers`, which has always written them. Markers store
+   * an absolute lng/lat, georeferenced by the plan's `indoorfloorplan.geometry` quad, so each point
+   * is converted back to the 0-1 image fraction the canvas draws in (see geoReference).
+   *
+   * A marker the app itself wrote carries `geoId` (its unit id) and a `properties` blob naming the
+   * unit type; one placed by the org's own editor may carry neither, so the id falls back to the
+   * marker's own record id and the type to the plan it sits on. A plan whose `geometry` was never
+   * calibrated is skipped rather than guessed at — without the quad there is no sane fraction, and
+   * inventing one would silently scatter markers across the plan.
+   */
+  async getUnits(floorId: string): Promise<Unit[]> {
+    this.assertConfigured();
+    const byType = await getFloorplanDetailsByType(floorId);
+    const units: Unit[] = [];
+
+    for (const [typeNum, summary] of Object.entries(byType)) {
+      const planId = PLAN_ID_BY_TYPE[Number(typeNum)];
+      const planRecordId = (summary as any)?.id;
+      if (!planId || !planRecordId) continue;
+
+      const recordRes = await facilioApi.fetchRecord<any>('indoorfloorplan', { id: planRecordId });
+      const quad = geometryStringToQuad(recordRes?.indoorfloorplan?.geometry);
+      if (!quad) continue;
+
+      const markersRes = await facilioApi.fetchAllRelatedList<any>({
+        moduleName: 'indoorfloorplan',
+        id: planRecordId,
+        relatedModuleName: 'floorplanmarker',
+        relatedFieldName: 'indoorfloorplan',
+      });
+      if (markersRes.error) continue;
+
+      for (const marker of markersRes.list ?? []) {
+        const point = parsePointGeometry(marker.geometry);
+        if (!point) continue; // polygons/zones live in floorplanmarkedzone, not here
+        const [x, y] = lngLatToQuadFraction(quad, point[0], point[1]);
+        const props = safeJson<{ unitType?: string; secondary?: string | null }>(marker.properties) ?? {};
+        const type = (props.unitType as Unit['type']) ?? PLAN_UNIT_TYPE[planId] ?? 'workstation';
+        units.push({
+          id: String(marker.geoId || marker.id),
+          type,
+          label: marker.label ?? String(marker.id),
+          ...(props.secondary ? { secondary: props.secondary } : {}),
+          room: null,
+          geom: { kind: 'point', x, y },
+          floor: floorId,
+          plan: planId,
+        });
+      }
+    }
+    return units;
   }
-  async saveUnits(): Promise<void> {
-    throw new Error('facilio-api: unit placement not wired');
+
+  /** Positions are persisted as real floorplanmarker records — the same path the save bar uses. */
+  async saveUnits(floorId: string, units: Unit[]): Promise<void> {
+    this.assertConfigured();
+    await saveFloorplanMarkers(floorId, units);
   }
   // Space creation is wired on the CMMS connector tier (create-space), not this raw module-CRUD
   // layer — throw so the composite falls through to it.
@@ -160,6 +214,35 @@ export class FacilioApiDataSource implements FloorplanDataSource {
   }
   async cancelBooking(): Promise<void> {
     throw new Error('facilio-api: spacebooking not wired');
+  }
+}
+
+/** Which unit type a plan type implies, for markers that carry no `properties.unitType`. */
+const PLAN_UNIT_TYPE: Partial<Record<PlanId, Unit['type']>> = {
+  workstation: 'workstation',
+  locker: 'locker',
+  parking: 'parking',
+};
+
+/** A marker's stored GeoJSON -> [lng, lat]. Null for anything that isn't a Point. */
+function parsePointGeometry(geometry: string | null | undefined): [number, number] | null {
+  if (!geometry) return null;
+  try {
+    const parsed = JSON.parse(geometry);
+    if (parsed?.type !== 'Point') return null;
+    const c = parsed.coordinates;
+    return Array.isArray(c) && c.length >= 2 && Number.isFinite(c[0]) && Number.isFinite(c[1]) ? [c[0], c[1]] : null;
+  } catch {
+    return null;
+  }
+}
+
+function safeJson<T>(raw: unknown): T | null {
+  if (typeof raw !== 'string') return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
   }
 }
 

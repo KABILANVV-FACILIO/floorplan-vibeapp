@@ -42,6 +42,36 @@ export function quadToLngLat(quad: GeoQuad, xFrac: number, yFrac: number): [numb
   return [top[0] + (bottom[0] - top[0]) * yFrac, top[1] + (bottom[1] - top[1]) * yFrac];
 }
 
+/**
+ * Inverse of `quadToLngLat`: [lng, lat] -> fraction (0-1 of image width/height).
+ *
+ * Solved with Newton iteration rather than algebraically. The forward map is bilinear, so for the
+ * axis-aligned quads this app generates the inverse is plain linear interpolation — but a quad
+ * calibrated by a human in the Facilio editor can be rotated or trapezoidal, where bilinear
+ * inversion needs a quadratic. Newton handles both, converging in a handful of steps, and the
+ * fallback on a degenerate (zero-area) quad is the centre rather than a NaN that would place a
+ * marker nowhere.
+ */
+export function lngLatToQuadFraction(quad: GeoQuad, lng: number, lat: number): [number, number] {
+  let x = 0.5;
+  let y = 0.5;
+  for (let i = 0; i < 12; i++) {
+    const [px, py] = quadToLngLat(quad, x, y);
+    const ex = px - lng;
+    const ey = py - lat;
+    if (Math.abs(ex) < 1e-12 && Math.abs(ey) < 1e-12) break;
+    const dXdx = (quad.tr[0] - quad.tl[0]) * (1 - y) + (quad.br[0] - quad.bl[0]) * y;
+    const dXdy = quad.bl[0] - quad.tl[0] + (quad.br[0] - quad.bl[0] - (quad.tr[0] - quad.tl[0])) * x;
+    const dYdx = (quad.tr[1] - quad.tl[1]) * (1 - y) + (quad.br[1] - quad.bl[1]) * y;
+    const dYdy = quad.bl[1] - quad.tl[1] + (quad.br[1] - quad.bl[1] - (quad.tr[1] - quad.tl[1])) * x;
+    const det = dXdx * dYdy - dXdy * dYdx;
+    if (!det) break;
+    x -= (ex * dYdy - ey * dXdy) / det;
+    y -= (-ex * dYdx + ey * dXdx) / det;
+  }
+  return [x, y];
+}
+
 export function quadToGeometryString(quad: GeoQuad): string {
   return JSON.stringify({ type: 'Polygon', coordinates: [[quad.tl, quad.tr, quad.br, quad.bl, quad.tl]] });
 }
