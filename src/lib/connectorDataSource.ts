@@ -61,17 +61,15 @@ export class ConnectorDataSource implements FloorplanDataSource {
     ]);
     // Lookup fields come back as raw ids unless named in `expand`, which is exactly what the
     // grouping below wants — no `expand` is requested for that reason.
-    return sites.map((s: any) => ({
+    // Sorted by name at every level to match the V3 tier exactly — the two APIs return rows in
+    // different natural orders, and the tree's auto-selected first floor follows whichever came first.
+    return byName(sites).map((s: any) => ({
       id: String(s.id),
       name: s.name,
-      buildings: buildings
-        .filter((b: any) => String(lookupId(b.site)) === String(s.id))
-        .map((b: any) => ({
+      buildings: byName(buildings.filter((b: any) => String(lookupId(b.site)) === String(s.id))).map((b: any) => ({
           id: String(b.id),
           name: b.name,
-          floors: floors
-            .filter((f: any) => String(lookupId(f.building)) === String(b.id))
-            .map((f: any) => ({
+          floors: byName(floors.filter((f: any) => String(lookupId(f.building)) === String(b.id))).map((f: any) => ({
               id: String(f.id),
               name: f.name,
               // Unknown until the floor is actually opened; true keeps the canvas available
@@ -221,6 +219,10 @@ function toUnit(record: any, type: PointModule, floorId: string): Unit {
     unplaced: true,
     ...(deskType ? { deskType } : {}),
   };
+}
+
+function byName(rows: any[]): any[] {
+  return [...rows].sort((a, b) => String(a?.name ?? '').localeCompare(String(b?.name ?? ''), undefined, { numeric: true }));
 }
 
 /** A lookup field is a raw id when unexpanded and `{id, name}` when expanded — accept both. */

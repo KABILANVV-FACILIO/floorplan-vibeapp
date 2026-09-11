@@ -63,42 +63,51 @@ export class FacilioApiDataSource implements FloorplanDataSource {
     if (!isFacilioApiConfigured) throw new Error('facilio-api: not configured (VITE_DEV_MODE / base URL / token)');
   }
 
+  /**
+   * The whole portfolio, PAGED. A bare `fetchAll` returns only the server's default first page,
+   * and this org has 431 buildings and 587 floors — so embedded (this tier) a site whose buildings
+   * fell outside page one rendered as expanded-but-empty, while standalone (the connector, which
+   * pages) showed the full tree. Same org, two different answers, purely from page size.
+   *
+   * Sorted by name at every level so the tree — and therefore the auto-selected first floor — is
+   * identical whichever tier answers; the two APIs return rows in different natural orders.
+   */
   async getPortfolio(): Promise<Site[]> {
     this.assertConfigured();
-    const [sitesRes, buildingsRes, floorsRes] = await Promise.all([
-      facilioApi.fetchAll('site'),
-      facilioApi.fetchAll('building'),
-      facilioApi.fetchAll('floor'),
-    ]);
-    const err = sitesRes.error || buildingsRes.error || floorsRes.error;
-    if (err) {
-      throw new Error(`facilio-api: portfolio fetch failed (${err.code ?? '?'} ${err.message ?? ''})`.trim());
+    const [sites, buildings, floors] = await Promise.all([fetchAllPaged('site'), fetchAllPaged('building'), fetchAllPaged('floor')]);
+
+    const bySite = new Map<string, any[]>();
+    for (const b of buildings) {
+      const key = String(lookupId(b, 'site'));
+      bySite.set(key, [...(bySite.get(key) ?? []), b]);
     }
-    const sites = sitesRes.list ?? [];
-    const buildings = buildingsRes.list ?? [];
-    const floors = floorsRes.list ?? [];
+    const byBuilding = new Map<string, any[]>();
+    for (const f of floors) {
+      const key = String(lookupId(f, 'building'));
+      byBuilding.set(key, [...(byBuilding.get(key) ?? []), f]);
+    }
+    const orphanBuildings = buildings.filter((b) => !sites.some((s) => String(s.id) === String(lookupId(b, 'site')))).length;
+    const orphanFloors = floors.filter((f) => !buildings.some((b) => String(b.id) === String(lookupId(f, 'building')))).length;
+    // eslint-disable-next-line no-console
+    console.info(`[facilio-api] getPortfolio: ${sites.length} sites, ${buildings.length} buildings, ${floors.length} floors` + (orphanBuildings || orphanFloors ? ` (unmatched: ${orphanBuildings} buildings, ${orphanFloors} floors — lookup shape?)` : ''));
 
     // Deliberately NOT calling getFloorplanDetailsByType here for every floor — that's an
     // N-request fan-out across the whole portfolio for data only the *currently selected*
     // floor needs. See `getFloorPlanSummary` below, called lazily on floor selection instead.
-    return sites.map((s: any) => ({
+    return sortByName(sites).map((s: any) => ({
       id: String(s.id),
       name: s.name,
-      buildings: buildings
-        .filter((b: any) => String(lookupId(b, 'site')) === String(s.id))
-        .map((b: any) => ({
-          id: String(b.id),
-          name: b.name,
-          floors: floors
-            .filter((f: any) => String(lookupId(f, 'building')) === String(b.id))
-            .map((f: any) => ({
-              id: String(f.id),
-              name: f.name,
-              // Unknown until getFloorPlanSummary runs for this floor; true is the safer
-              // default so the canvas isn't hidden behind "No floorplan yet" pre-emptively.
-              hasPlan: true,
-            })),
+      buildings: sortByName(bySite.get(String(s.id)) ?? []).map((b: any) => ({
+        id: String(b.id),
+        name: b.name,
+        floors: sortByName(byBuilding.get(String(b.id)) ?? []).map((f: any) => ({
+          id: String(f.id),
+          name: f.name,
+          // Unknown until getFloorPlanSummary runs for this floor; true is the safer
+          // default so the canvas isn't hidden behind "No floorplan yet" pre-emptively.
+          hasPlan: true,
         })),
+      })),
     }));
   }
 
@@ -258,6 +267,30 @@ function safeJson<T>(raw: unknown): T | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Every record of a module via `fetchAll`, paged. Guards against a server that ignores `page`
+ * (a repeated first id means the same page came back — stop, don't spin) and against one that
+ * ignores `perPage` (the short-page check still terminates; it just costs more round trips).
+ */
+async function fetchAllPaged(moduleName: string, perPage = 200): Promise<any[]> {
+  const out: any[] = [];
+  let lastFirstId: unknown;
+  for (let page = 1; page <= 50; page++) {
+    const res = await facilioApi.fetchAll(moduleName, { page, perPage });
+    if (res.error) throw new Error(`facilio-api: ${moduleName} fetch failed (${res.error.code ?? '?'} ${res.error.message ?? ''})`.trim());
+    const rows = res.list ?? [];
+    if (!rows.length || rows[0]?.id === lastFirstId) break;
+    lastFirstId = rows[0]?.id;
+    out.push(...rows);
+    if (rows.length < perPage) break;
+  }
+  return out;
+}
+
+function sortByName<T extends { name?: string }>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => String(a.name ?? '').localeCompare(String(b.name ?? ''), undefined, { numeric: true }));
 }
 
 /** Best-effort lookup-field id extraction: tries `{key}.id`, `{key}Id`, then the raw field. */
