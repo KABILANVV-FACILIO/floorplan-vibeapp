@@ -86,8 +86,8 @@ export function myAssignedUnit(state: AppState): Unit | null {
 
 export function floorMeta(state: AppState, floorId: string) {
   for (const site of state.portfolio) {
-    for (const building of site.buildings) {
-      const floor = building.floors.find((f) => f.id === floorId);
+    for (const building of site.buildings ?? []) {
+      const floor = (building.floors ?? []).find((f) => f.id === floorId);
       if (floor) return { site, building, floor };
     }
   }

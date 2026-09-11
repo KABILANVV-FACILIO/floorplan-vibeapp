@@ -5,6 +5,7 @@ import type {
   Employee,
   EditTool,
   EnabledModules,
+  FloorSearchHit,
   MarkerDef,
   PanelsState,
   Perms,
@@ -32,6 +33,12 @@ export interface AppState {
   expanded: Record<string, boolean>;
   navOpen: boolean;
   navView: 'tree' | 'spaces';
+  /** Tree nodes (site/building ids) whose children are being fetched right now. */
+  treeLoading: Record<string, true>;
+  /** Portfolio switcher search box; non-empty swaps the tree for a flat result list. */
+  portfolioSearch: string;
+  portfolioSearchResults: FloorSearchHit[];
+  portfolioSearching: boolean;
   panels: PanelsState;
   stage: { w: number; h: number };
   view: ViewTransform;

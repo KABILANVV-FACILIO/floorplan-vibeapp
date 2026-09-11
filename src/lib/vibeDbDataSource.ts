@@ -1,7 +1,7 @@
 import { FLOORPLAN_FN, isVibeApp, vibe } from './vibe';
 import type { FloorBundle, FloorplanDataSource } from './dataSource';
 import type { Asset } from './assets';
-import type { Assignments, Booking, Employee, Site, Unit } from './types';
+import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, Site, Unit } from './types';
 
 /**
  * Vibe DB tier — this app's own records, held in its per-app Postgres schema.
@@ -104,6 +104,15 @@ export class VibeDbDataSource implements FloorplanDataSource {
   // ---- Org records, not app records: the connector tier answers these. ----
   async getPortfolio(): Promise<Site[]> {
     throw new Error('vibe-db: portfolio comes from the CMMS connector');
+  }
+  async getBuildings(): Promise<Building[]> {
+    throw new Error('vibe-db: buildings come from the org tiers');
+  }
+  async getFloors(): Promise<Floor[]> {
+    throw new Error('vibe-db: floors come from the org tiers');
+  }
+  async searchFloors(): Promise<FloorSearchHit[]> {
+    throw new Error('vibe-db: floor search runs on the org tiers');
   }
   async getEmployees(): Promise<Employee[]> {
     throw new Error('vibe-db: the people directory comes from the CMMS connector');

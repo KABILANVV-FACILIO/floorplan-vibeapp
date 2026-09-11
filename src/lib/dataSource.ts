@@ -1,7 +1,7 @@
 import { FacilioApiDataSource } from './facilioApiDataSource';
 import { ConnectorDataSource } from './connectorDataSource';
 import type { Asset } from './assets';
-import type { Assignments, Booking, Employee, Site, Unit } from './types';
+import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, Site, Unit } from './types';
 
 // Local dev data lives as editable JSON in src/data/*.json — change a file and the app uses it
 // (Vite picks the JSON up on save). This is the seed the LocalJsonDataSource serves; session edits
@@ -32,7 +32,12 @@ import bookingsJson from '../data/bookings.json';
  */
 export interface FloorplanDataSource {
   readonly name: string;
+  /** Sites only — children arrive via getBuildings / getFloors as the tree is expanded. */
   getPortfolio(): Promise<Site[]>;
+  getBuildings(siteId: string): Promise<Building[]>;
+  getFloors(buildingId: string): Promise<Floor[]>;
+  /** Floors whose name contains `query`, with the site/building path to open each one. */
+  searchFloors(query: string): Promise<FloorSearchHit[]>;
   getEmployees(): Promise<Employee[]>;
   /** Catalog of assets that can be dropped onto a plan (Edit mode asset picker). */
   getAssets(): Promise<Asset[]>;
@@ -119,8 +124,32 @@ function savePersisted(next: Partial<PersistedShape>) {
 export class LocalJsonDataSource implements FloorplanDataSource {
   readonly name = 'local-json';
 
+  // The seed is small and already a full tree, so the local tier answers every level from memory.
   async getPortfolio(): Promise<Site[]> {
     return SEED_PORTFOLIO;
+  }
+
+  async getBuildings(siteId: string): Promise<Building[]> {
+    return SEED_PORTFOLIO.find((s) => s.id === siteId)?.buildings ?? [];
+  }
+
+  async getFloors(buildingId: string): Promise<Floor[]> {
+    for (const s of SEED_PORTFOLIO) {
+      const b = s.buildings?.find((x) => x.id === buildingId);
+      if (b) return b.floors ?? [];
+    }
+    return [];
+  }
+
+  async searchFloors(query: string): Promise<FloorSearchHit[]> {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    const hits: FloorSearchHit[] = [];
+    for (const s of SEED_PORTFOLIO)
+      for (const b of s.buildings ?? [])
+        for (const f of b.floors ?? [])
+          if (f.name.toLowerCase().includes(q)) hits.push({ floorId: f.id, floorName: f.name, buildingId: b.id, buildingName: b.name, siteId: s.id, siteName: s.name });
+    return hits;
   }
 
   async getEmployees(): Promise<Employee[]> {
@@ -289,6 +318,15 @@ export class CompositeDataSource implements FloorplanDataSource {
    */
   getPortfolio(): Promise<Site[]> {
     return this.run('getPortfolio');
+  }
+  getBuildings(siteId: string): Promise<Building[]> {
+    return this.run('getBuildings', siteId);
+  }
+  getFloors(buildingId: string): Promise<Floor[]> {
+    return this.run('getFloors', buildingId);
+  }
+  searchFloors(query: string): Promise<FloorSearchHit[]> {
+    return this.run('searchFloors', query);
   }
   getEmployees() {
     return this.run('getEmployees');

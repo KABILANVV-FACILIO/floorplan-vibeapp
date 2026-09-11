@@ -228,16 +228,32 @@ export interface Floor {
   plans?: { id: PlanId; name: string }[];
 }
 
+/**
+ * `floors` / `buildings` are OPTIONAL: `undefined` means "not fetched yet", `[]` means "fetched and
+ * empty". The org has hundreds of buildings and floors, so the tree loads a level on demand — a
+ * site's buildings when it is expanded, a building's floors when it is. Every walker must treat a
+ * missing array as "unknown", not "none".
+ */
 export interface Building {
   id: string;
   name: string;
-  floors: Floor[];
+  floors?: Floor[];
 }
 
 export interface Site {
   id: string;
   name: string;
-  buildings: Building[];
+  buildings?: Building[];
+}
+
+/** One hit from the portfolio search: a floor plus the path needed to open it in the tree. */
+export interface FloorSearchHit {
+  floorId: string;
+  floorName: string;
+  buildingId: string;
+  buildingName: string;
+  siteId: string;
+  siteName: string;
 }
 
 export interface PanelLayoutState {

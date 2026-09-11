@@ -1,5 +1,5 @@
 import { DEFAULT_ENABLED_MODULES, DEFAULT_PERMS, floorImageKey, isRoomLike } from '../lib/types';
-import type { Booking, MarkerDef, ModuleKey, PlanId, Site, Unit } from '../lib/types';
+import type { Booking, Building, Floor, FloorSearchHit, MarkerDef, ModuleKey, PlanId, Site, Unit } from '../lib/types';
 import { clamp, fitView } from '../lib/geometry';
 import { seedBookings } from '../lib/mockData';
 import { viewFromLocation } from '../lib/routes';
@@ -52,6 +52,10 @@ export function buildInitialState(): AppState {
     expanded: { sBer: true, bA: true },
     navOpen: false,
     navView: 'spaces',
+    treeLoading: {},
+    portfolioSearch: '',
+    portfolioSearchResults: [],
+    portfolioSearching: false,
     panels: {
       context: { open: true, x: null, y: null },
       portfolio: { open: true, x: null, y: null },
@@ -160,6 +164,11 @@ export type Action =
   | { type: 'SET_SPACE_FILTER'; filter: AppState['spaceFilter'] }
   | { type: 'SET_SPACE_SEARCH'; value: string }
   | { type: 'PORTFOLIO_LOADED'; portfolio: Site[]; employees: AppState['employees'] }
+  | { type: 'TREE_LOADING'; id: string; loading: boolean }
+  | { type: 'BUILDINGS_LOADED'; siteId: string; buildings: Building[] }
+  | { type: 'FLOORS_LOADED'; buildingId: string; floors: Floor[] }
+  | { type: 'SET_PORTFOLIO_SEARCH'; query: string }
+  | { type: 'PORTFOLIO_SEARCH_RESULTS'; query: string; results: FloorSearchHit[] }
   | { type: 'ASSETS_LOADED'; assets: AppState['assets'] }
   | { type: 'SELECT_UNIT'; id: string | null }
   | { type: 'HIGHLIGHT_UNIT'; id: string | null }
@@ -309,6 +318,31 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, spaceSearch: action.value };
     case 'PORTFOLIO_LOADED':
       return { ...state, portfolio: action.portfolio, employees: action.employees };
+    case 'TREE_LOADING': {
+      const treeLoading = { ...state.treeLoading };
+      if (action.loading) treeLoading[action.id] = true;
+      else delete treeLoading[action.id];
+      return { ...state, treeLoading };
+    }
+    case 'BUILDINGS_LOADED':
+      return {
+        ...state,
+        portfolio: state.portfolio.map((s) => (s.id === action.siteId ? { ...s, buildings: action.buildings } : s)),
+      };
+    case 'FLOORS_LOADED':
+      return {
+        ...state,
+        portfolio: state.portfolio.map((s) => ({
+          ...s,
+          buildings: s.buildings?.map((b) => (b.id === action.buildingId ? { ...b, floors: action.floors } : b)),
+        })),
+      };
+    case 'SET_PORTFOLIO_SEARCH':
+      return { ...state, portfolioSearch: action.query, portfolioSearching: action.query.trim().length > 0, ...(action.query.trim() ? {} : { portfolioSearchResults: [] }) };
+    case 'PORTFOLIO_SEARCH_RESULTS':
+      // Ignore results for a query the user has already typed past.
+      if (action.query !== state.portfolioSearch) return state;
+      return { ...state, portfolioSearchResults: action.results, portfolioSearching: false };
     case 'ASSETS_LOADED':
       return { ...state, assets: action.assets };
 

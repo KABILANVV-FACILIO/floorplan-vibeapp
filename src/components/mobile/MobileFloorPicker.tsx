@@ -35,7 +35,7 @@ export function MobileFloorPicker() {
   if (!state.mobFloorOpen) return null;
 
   const site = state.portfolio.find((s) => s.id === state.mobPickSite);
-  const building = site?.buildings.find((b) => b.id === state.mobPickBuilding);
+  const building = site?.buildings?.find((b) => b.id === state.mobPickBuilding);
 
   let title = 'Choose a site';
   let rows: { id: string; name: string; sub: string; kind: LevelKind; active?: boolean; showChevron?: boolean; onTap: () => void }[] = [];
@@ -45,24 +45,30 @@ export function MobileFloorPicker() {
     rows = state.portfolio.map((s) => ({
       id: s.id,
       name: s.name,
-      sub: `${s.buildings.length} building${s.buildings.length === 1 ? '' : 's'}`,
+      sub: s.buildings ? `${s.buildings.length} building${s.buildings.length === 1 ? '' : 's'}` : 'Tap to load buildings',
       kind: 'site' as const,
       showChevron: true,
-      onTap: () => actions.setMobPick(s.id, null),
+      onTap: () => {
+        actions.setMobPick(s.id, null);
+        if (s.buildings === undefined && !state.expanded[s.id]) void actions.expandNode(s.id);
+      },
     }));
   } else if (!building) {
     title = site.name;
-    rows = site.buildings.map((b) => ({
+    rows = (site.buildings ?? []).map((b) => ({
       id: b.id,
       name: b.name,
-      sub: `${b.floors.length} floor${b.floors.length === 1 ? '' : 's'}`,
+      sub: b.floors ? `${b.floors.length} floor${b.floors.length === 1 ? '' : 's'}` : 'Tap to load floors',
       kind: 'building' as const,
       showChevron: true,
-      onTap: () => actions.setMobPick(site.id, b.id),
+      onTap: () => {
+        actions.setMobPick(site.id, b.id);
+        if (b.floors === undefined && !state.expanded[b.id]) void actions.expandNode(b.id);
+      },
     }));
   } else {
     title = building.name;
-    rows = building.floors.map((f) => ({
+    rows = (building.floors ?? []).map((f) => ({
       id: f.id,
       name: f.name,
       sub: f.hasPlan ? '' : 'No plan',

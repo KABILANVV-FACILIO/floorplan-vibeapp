@@ -4,7 +4,7 @@ import { dataSource, clearLocalData } from '../lib/dataSource';
 import type { CreateSpaceLoc } from '../lib/dataSource';
 import { PORTFOLIO as MOCK_PORTFOLIO, EMPLOYEES as MOCK_EMPLOYEES, seedBookings, seedUnits, seedAssignments } from '../lib/mockData';
 import { floorImageKey, isRoomLike, resolveMarkerDef, TYPE_META } from '../lib/types';
-import type { AmenityIcon, Booking, MarkerDef, ModuleKey, PlanId, Role, Site, Unit, UnitType } from '../lib/types';
+import type { AmenityIcon, Booking, FloorSearchHit, MarkerDef, ModuleKey, PlanId, Role, Site, Unit, UnitType } from '../lib/types';
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
@@ -68,8 +68,8 @@ async function persistUnits(floorId: string, units: Unit[]): Promise<void> {
  *  in the org tree; the connector tier then rejects the create and the local tier owns the record. */
 function resolveSpaceLoc(portfolio: Site[], floorId: string): CreateSpaceLoc {
   for (const site of portfolio) {
-    for (const building of site.buildings) {
-      if (building.floors.some((f) => f.id === floorId)) {
+    for (const building of site.buildings ?? []) {
+      if ((building.floors ?? []).some((f) => f.id === floorId)) {
         return { siteId: site.id, buildingId: building.id, floorId };
       }
     }
@@ -77,14 +77,43 @@ function resolveSpaceLoc(portfolio: Site[], floorId: string): CreateSpaceLoc {
   return { siteId: null, buildingId: null, floorId };
 }
 
-/** First floor found anywhere in the tree — sites/buildings can be empty shells, so this can't assume `portfolio[0].buildings[0].floors[0]`. */
-function firstFloorId(portfolio: Site[]): string | undefined {
+/** First floor already present in the tree, if any (the local seed arrives fully populated). */
+function firstLoadedFloorId(portfolio: Site[]): string | undefined {
   for (const site of portfolio) {
-    for (const building of site.buildings) {
-      if (building.floors[0]) return building.floors[0].id;
+    for (const building of site.buildings ?? []) {
+      if (building.floors?.[0]) return building.floors[0].id;
     }
   }
   return undefined;
+}
+
+/**
+ * The default floor for a LAZY tree: nothing below the sites is loaded at boot, so walk down the
+ * first site → its first building → its first floor, dispatching each level as it arrives so the
+ * tree shows the path it just opened. Two extra sequential requests, versus paging ~1000 records
+ * for a tree the user mostly never expands. Any failure yields undefined and the caller keeps the
+ * current floor.
+ */
+async function resolveDefaultFloor(dispatch: Dispatch<Action>, portfolio: Site[]): Promise<string | undefined> {
+  const loaded = firstLoadedFloorId(portfolio);
+  if (loaded) return loaded;
+  const site = portfolio[0];
+  if (!site) return undefined;
+  try {
+    const buildings = site.buildings ?? (await dataSource.getBuildings(site.id));
+    dispatch({ type: 'BUILDINGS_LOADED', siteId: site.id, buildings });
+    const building = buildings[0];
+    if (!building) return undefined;
+    const floors = building.floors ?? (await dataSource.getFloors(building.id));
+    dispatch({ type: 'FLOORS_LOADED', buildingId: building.id, floors });
+    dispatch({ type: 'TOGGLE_NODE', id: site.id });
+    dispatch({ type: 'TOGGLE_NODE', id: building.id });
+    return floors[0]?.id;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[portfolio] could not resolve a default floor', err);
+    return undefined;
+  }
 }
 
 /**
@@ -312,6 +341,66 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     toggleNav: () => dispatch({ type: 'TOGGLE_NAV' }),
     setNavView: (view: AppState['navView']) => dispatch({ type: 'SET_NAV_VIEW', view }),
     toggleNode: (id: string) => dispatch({ type: 'TOGGLE_NODE', id }),
+    /**
+     * Expand a site (fetching its buildings on first open) or a building (fetching its floors).
+     * Collapsing never refetches; an already-loaded level opens instantly.
+     */
+    expandNode: async (id: string) => {
+      const wasExpanded = !!state.expanded[id];
+      dispatch({ type: 'TOGGLE_NODE', id });
+      if (wasExpanded || state.treeLoading[id]) return;
+      const site = state.portfolio.find((s) => s.id === id);
+      const building = site ? undefined : state.portfolio.flatMap((s) => s.buildings ?? []).find((b) => b.id === id);
+      if (site && site.buildings === undefined) {
+        dispatch({ type: 'TREE_LOADING', id, loading: true });
+        try {
+          dispatch({ type: 'BUILDINGS_LOADED', siteId: id, buildings: await dataSource.getBuildings(id) });
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(`[portfolio] buildings for site ${id} failed`, err);
+          dispatch({ type: 'BUILDINGS_LOADED', siteId: id, buildings: [] });
+        } finally {
+          dispatch({ type: 'TREE_LOADING', id, loading: false });
+        }
+      } else if (building && building.floors === undefined) {
+        dispatch({ type: 'TREE_LOADING', id, loading: true });
+        try {
+          dispatch({ type: 'FLOORS_LOADED', buildingId: id, floors: await dataSource.getFloors(id) });
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(`[portfolio] floors for building ${id} failed`, err);
+          dispatch({ type: 'FLOORS_LOADED', buildingId: id, floors: [] });
+        } finally {
+          dispatch({ type: 'TREE_LOADING', id, loading: false });
+        }
+      }
+    },
+    setPortfolioSearch: async (query: string) => {
+      dispatch({ type: 'SET_PORTFOLIO_SEARCH', query });
+      if (!query.trim()) return;
+      const results = await dataSource.searchFloors(query).catch(() => [] as FloorSearchHit[]);
+      dispatch({ type: 'PORTFOLIO_SEARCH_RESULTS', query, results });
+    },
+    /**
+     * Make a search hit's site/building loaded and expanded so the tree can show the selection.
+     * Selecting the floor itself is the caller's next call (`selectFloor` + `setNavView`) — this
+     * action can't invoke its siblings while the actions object is still being built.
+     */
+    revealSearchHit: async (hit: FloorSearchHit) => {
+      const site = state.portfolio.find((s) => s.id === hit.siteId);
+      if (site && site.buildings === undefined) {
+        const buildings = await dataSource.getBuildings(hit.siteId).catch(() => [{ id: hit.buildingId, name: hit.buildingName }]);
+        dispatch({ type: 'BUILDINGS_LOADED', siteId: hit.siteId, buildings });
+      }
+      const building = state.portfolio.find((s) => s.id === hit.siteId)?.buildings?.find((b) => b.id === hit.buildingId);
+      if (!building || building.floors === undefined) {
+        const floors = await dataSource.getFloors(hit.buildingId).catch(() => [{ id: hit.floorId, name: hit.floorName, hasPlan: true }]);
+        dispatch({ type: 'FLOORS_LOADED', buildingId: hit.buildingId, floors });
+      }
+      if (!state.expanded[hit.siteId]) dispatch({ type: 'TOGGLE_NODE', id: hit.siteId });
+      if (!state.expanded[hit.buildingId]) dispatch({ type: 'TOGGLE_NODE', id: hit.buildingId });
+      dispatch({ type: 'SET_PORTFOLIO_SEARCH', query: '' });
+    },
 
     selectFloor: (floorId: string) => {
       if (floorId === state.floorId) return;
@@ -1106,7 +1195,7 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
       // portfolio can come from the connector with no V3 host at all (a standalone tab), and
       // gating on the API would strand that session on the mock floor, showing demo units beside
       // a real org tree.
-      const firstRealFloor = portfolio === MOCK_PORTFOLIO ? undefined : firstFloorId(portfolio);
+      const firstRealFloor = portfolio === MOCK_PORTFOLIO ? undefined : await resolveDefaultFloor(dispatch, portfolio);
       const floorId = firstRealFloor ?? state.floorId;
       if (floorId !== state.floorId) dispatch({ type: 'SELECT_FLOOR_START', floorId });
 

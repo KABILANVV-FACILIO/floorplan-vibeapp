@@ -4,7 +4,7 @@ import { renderPdfToDataUrl } from './pdfPreview';
 import { computeSyntheticGeometry, geometryStringToQuad, lngLatToQuadFraction, quadToGeometryString, quadToLngLat } from './geoReference';
 import type { FloorplanDataSource } from './dataSource';
 import type { Asset } from './assets';
-import type { Assignments, Booking, Employee, PlanId, PointGeom, Site, Unit, UnitType } from './types';
+import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, PlanId, PointGeom, Site, Unit, UnitType } from './types';
 
 /**
  * `fetchOriginal=true` on `v2/files/preview` returns the ORIGINAL uploaded bytes — for a plain
@@ -72,43 +72,69 @@ export class FacilioApiDataSource implements FloorplanDataSource {
    * Sorted by name at every level so the tree — and therefore the auto-selected first floor — is
    * identical whichever tier answers; the two APIs return rows in different natural orders.
    */
+  /**
+   * SITES ONLY. The org has 431 buildings and 587 floors; fetching the whole tree up front was
+   * either truncated (a bare fetchAll stops at the server's first page) or, once paged, ~9
+   * requests at boot for data the user mostly never opens. Children load per level on expand —
+   * see getBuildings / getFloors — through the REAL `relatedList` endpoint, the same verified
+   * pattern the marker read uses, so no guessed filter-operator ids are involved.
+   */
   async getPortfolio(): Promise<Site[]> {
     this.assertConfigured();
-    const [sites, buildings, floors] = await Promise.all([fetchAllPaged('site'), fetchAllPaged('building'), fetchAllPaged('floor')]);
-
-    const bySite = new Map<string, any[]>();
-    for (const b of buildings) {
-      const key = String(lookupId(b, 'site'));
-      bySite.set(key, [...(bySite.get(key) ?? []), b]);
-    }
-    const byBuilding = new Map<string, any[]>();
-    for (const f of floors) {
-      const key = String(lookupId(f, 'building'));
-      byBuilding.set(key, [...(byBuilding.get(key) ?? []), f]);
-    }
-    const orphanBuildings = buildings.filter((b) => !sites.some((s) => String(s.id) === String(lookupId(b, 'site')))).length;
-    const orphanFloors = floors.filter((f) => !buildings.some((b) => String(b.id) === String(lookupId(f, 'building')))).length;
+    const sites = await fetchAllPaged('site');
     // eslint-disable-next-line no-console
-    console.info(`[facilio-api] getPortfolio: ${sites.length} sites, ${buildings.length} buildings, ${floors.length} floors` + (orphanBuildings || orphanFloors ? ` (unmatched: ${orphanBuildings} buildings, ${orphanFloors} floors — lookup shape?)` : ''));
+    console.info(`[facilio-api] getPortfolio: ${sites.length} sites (buildings/floors load on expand)`);
+    return sortByName(sites).map((s: any) => ({ id: String(s.id), name: s.name }));
+  }
 
-    // Deliberately NOT calling getFloorplanDetailsByType here for every floor — that's an
-    // N-request fan-out across the whole portfolio for data only the *currently selected*
-    // floor needs. See `getFloorPlanSummary` below, called lazily on floor selection instead.
-    return sortByName(sites).map((s: any) => ({
-      id: String(s.id),
-      name: s.name,
-      buildings: sortByName(bySite.get(String(s.id)) ?? []).map((b: any) => ({
-        id: String(b.id),
-        name: b.name,
-        floors: sortByName(byBuilding.get(String(b.id)) ?? []).map((f: any) => ({
-          id: String(f.id),
-          name: f.name,
-          // Unknown until getFloorPlanSummary runs for this floor; true is the safer
-          // default so the canvas isn't hidden behind "No floorplan yet" pre-emptively.
-          hasPlan: true,
-        })),
-      })),
-    }));
+  async getBuildings(siteId: string): Promise<Building[]> {
+    this.assertConfigured();
+    const res = await facilioApi.fetchAllRelatedList<any>({ moduleName: 'site', id: siteId, relatedModuleName: 'building', relatedFieldName: 'site' });
+    if (res.error) throw new Error(`facilio-api: buildings for site ${siteId} failed (${res.error.code ?? '?'} ${res.error.message ?? ''})`.trim());
+    return sortByName(res.list ?? []).map((b: any) => ({ id: String(b.id), name: b.name }));
+  }
+
+  async getFloors(buildingId: string): Promise<Floor[]> {
+    this.assertConfigured();
+    const res = await facilioApi.fetchAllRelatedList<any>({ moduleName: 'building', id: buildingId, relatedModuleName: 'floor', relatedFieldName: 'building' });
+    if (res.error) throw new Error(`facilio-api: floors for building ${buildingId} failed (${res.error.code ?? '?'} ${res.error.message ?? ''})`.trim());
+    // hasPlan unknown until getFloorPlanSummary runs; true keeps the canvas reachable rather than
+    // hiding it behind "No floorplan yet" pre-emptively.
+    return sortByName(res.list ?? []).map((f: any) => ({ id: String(f.id), name: f.name, hasPlan: true }));
+  }
+
+  /**
+   * Search fetches a flat floor index ONCE (3 paged calls for 587 floors), on the first keystroke,
+   * then filters in memory for the rest of the session. That avoids depending on a server-side
+   * text operator whose id could not be confirmed, and costs nothing until someone searches.
+   */
+  async searchFloors(query: string): Promise<FloorSearchHit[]> {
+    this.assertConfigured();
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    if (!floorIndex) {
+      floorIndex = Promise.all([fetchAllPaged('floor'), fetchAllPaged('building'), fetchAllPaged('site')]).then(([floors, buildings, sites]) => {
+        const bName = new Map(buildings.map((b: any) => [String(b.id), String(b.name ?? '')]));
+        const sName = new Map(sites.map((s: any) => [String(s.id), String(s.name ?? '')]));
+        return floors.map((f: any) => {
+          const buildingId = String(lookupId(f, 'building'));
+          const siteId = String(lookupId(f, 'site'));
+          return {
+            floorId: String(f.id),
+            floorName: String(f.name ?? ''),
+            buildingId,
+            buildingName: f.building?.name ?? bName.get(buildingId) ?? '',
+            siteId,
+            siteName: f.site?.name ?? sName.get(siteId) ?? '',
+          } as FloorSearchHit;
+        });
+      });
+      floorIndex.catch(() => {
+        floorIndex = null; // transient failure — allow a retry on the next keystroke
+      });
+    }
+    const all = await floorIndex;
+    return all.filter((h) => h.floorName.toLowerCase().includes(q) || h.buildingName.toLowerCase().includes(q)).slice(0, 50);
   }
 
   async getEmployees(): Promise<Employee[]> {
@@ -268,6 +294,9 @@ function safeJson<T>(raw: unknown): T | null {
     return null;
   }
 }
+
+/** Session cache for searchFloors — the flat floor index, built on first search. */
+let floorIndex: Promise<FloorSearchHit[]> | null = null;
 
 /**
  * Every record of a module via `fetchAll`, paged. Guards against a server that ignores `page`

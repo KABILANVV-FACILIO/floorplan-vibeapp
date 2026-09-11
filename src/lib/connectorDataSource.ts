@@ -1,7 +1,7 @@
 import { CMMS_CONNECTION, isVibeApp, vibe } from './vibe';
 import type { CreateSpaceLoc, FloorplanDataSource } from './dataSource';
 import type { Asset } from './assets';
-import type { Assignments, Booking, Employee, Site, Unit } from './types';
+import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, Site, Unit } from './types';
 
 /**
  * Facilio CMMS connector tier — the org's REAL records, read through the `facilio-cmms`
@@ -53,31 +53,48 @@ export class ConnectorDataSource implements FloorplanDataSource {
     return out;
   }
 
+  /** Sites only; buildings/floors load per level on expand. Sorted by name to match the V3 tier. */
   async getPortfolio(): Promise<Site[]> {
-    const [sites, buildings, floors] = await Promise.all([
-      this.listAll('list-sites'),
-      this.listAll('list-buildings'),
-      this.listAll('list-floors'),
-    ]);
-    // Lookup fields come back as raw ids unless named in `expand`, which is exactly what the
-    // grouping below wants — no `expand` is requested for that reason.
-    // Sorted by name at every level to match the V3 tier exactly — the two APIs return rows in
-    // different natural orders, and the tree's auto-selected first floor follows whichever came first.
-    return byName(sites).map((s: any) => ({
-      id: String(s.id),
-      name: s.name,
-      buildings: byName(buildings.filter((b: any) => String(lookupId(b.site)) === String(s.id))).map((b: any) => ({
-          id: String(b.id),
-          name: b.name,
-          floors: byName(floors.filter((f: any) => String(lookupId(f.building)) === String(b.id))).map((f: any) => ({
-              id: String(f.id),
-              name: f.name,
-              // Unknown until the floor is actually opened; true keeps the canvas available
-              // rather than pre-emptively showing "No floorplan yet".
-              hasPlan: true,
-            })),
-        })),
-    }));
+    const sites = await this.listAll('list-sites');
+    return byName(sites).map((s: any) => ({ id: String(s.id), name: s.name }));
+  }
+
+  /** `filters=site=<id>` — the same `field=value` filter syntax verified on desks (`floor=<id>`). */
+  async getBuildings(siteId: string): Promise<Building[]> {
+    const rows = await this.listAll('list-buildings', { filters: `site=${siteId}` });
+    return byName(rows).map((b: any) => ({ id: String(b.id), name: b.name }));
+  }
+
+  async getFloors(buildingId: string): Promise<Floor[]> {
+    const rows = await this.listAll('list-floors', { filters: `building=${buildingId}` });
+    return byName(rows).map((f: any) => ({ id: String(f.id), name: f.name, hasPlan: true }));
+  }
+
+  /** Flat floor index, fetched once on first search (3 paged calls), then filtered in memory. */
+  async searchFloors(query: string): Promise<FloorSearchHit[]> {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    if (!connectorFloorIndex) {
+      connectorFloorIndex = Promise.all([this.listAll('list-floors', { expand: 'site,building' }), this.listAll('list-sites')]).then(([floors, sites]) => {
+        const sName = new Map(sites.map((s: any) => [String(s.id), String(s.name ?? '')]));
+        return floors.map((f: any) => {
+          const siteId = String(lookupId(f.site));
+          return {
+            floorId: String(f.id),
+            floorName: String(f.name ?? ''),
+            buildingId: String(lookupId(f.building)),
+            buildingName: nameOf(f.building),
+            siteId,
+            siteName: nameOf(f.site) || sName.get(siteId) || '',
+          } as FloorSearchHit;
+        });
+      });
+      connectorFloorIndex.catch(() => {
+        connectorFloorIndex = null;
+      });
+    }
+    const all = await connectorFloorIndex;
+    return all.filter((h) => h.floorName.toLowerCase().includes(q) || h.buildingName.toLowerCase().includes(q)).slice(0, 50);
   }
 
   async getEmployees(): Promise<Employee[]> {
@@ -220,6 +237,8 @@ function toUnit(record: any, type: PointModule, floorId: string): Unit {
     ...(deskType ? { deskType } : {}),
   };
 }
+
+let connectorFloorIndex: Promise<FloorSearchHit[]> | null = null;
 
 function byName(rows: any[]): any[] {
   return [...rows].sort((a, b) => String(a?.name ?? '').localeCompare(String(b?.name ?? ''), undefined, { numeric: true }));
