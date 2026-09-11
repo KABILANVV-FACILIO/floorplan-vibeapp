@@ -56,10 +56,19 @@ function viewInsets(state: AppState) {
 async function persistUnits(floorId: string, units: Unit[]): Promise<void> {
   const local = dataSource.saveUnits(floorId, units);
   if (isFacilioApiConfigured) {
-    saveFloorplanMarkers(floorId, units).catch((err) => {
-      // eslint-disable-next-line no-console
-      console.warn('[facilio-api] marker sync failed', err);
-    });
+    saveFloorplanMarkers(floorId, units)
+      .then((result) => {
+        // A save that reached the org for nothing is the failure mode that lost placements on
+        // refresh — say so, rather than letting "Save changes" look like it worked.
+        if (result.plansSynced === 0 && result.skipped.length) {
+          // eslint-disable-next-line no-console
+          console.warn(`[facilio-api] Save changes wrote NO markers to the org — ${result.skipped.join('; ')}. Positions are kept in this browser only until the plan is georeferenced.`);
+        }
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn('[facilio-api] marker sync failed', err);
+      });
   }
   await local;
 }

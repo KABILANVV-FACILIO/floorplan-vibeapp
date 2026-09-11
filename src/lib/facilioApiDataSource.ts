@@ -48,8 +48,9 @@ const PLAN_NAME_BY_TYPE: Record<number, string> = { 1: 'Workstations', 2: 'Locke
  *
  * Scope: the portfolio, the employee directory and the asset catalog map cleanly onto plain module
  * records. On-plan POSITION lives in separate `floorplanmarker` (Point) records georeferenced by
- * `indoorfloorplan.geometry`; those are now read by `getUnits` and written by `saveUnits` (via
- * `saveFloorplanMarkers`), which is what puts real placed units on the canvas.
+ * `indoorfloorplan.geometry`; `getUnits` reads them back, and the explicit-save chokepoint
+ * (`persistUnits` -> `saveFloorplanMarkers`) writes them. `ensurePlanGeoreference` seeds the quad
+ * for plans created in Facilio's editor, which arrive without one.
  *
  * Still not wired here: room/zone polygons (`floorplanmarkedzone`), assignments (Moves-derived —
  * the WRITE path exists as `assignUnitReal`/`vacateUnitReal`, called separately by the context, but
@@ -294,13 +295,19 @@ export class FacilioApiDataSource implements FloorplanDataSource {
    * CompositeDataSource falls through to browser storage instead of treating a silent no-op as a
    * successful save and losing the placement on refresh.
    */
-  async saveUnits(floorId: string, units: Unit[]): Promise<void> {
-    this.assertConfigured();
-    const result = await saveFloorplanMarkers(floorId, units);
-    const hasPointUnits = units.some((u) => u.geom.kind === 'point' && u.type !== 'amenity');
-    if (hasPointUnits && result.plansSynced === 0) {
-      throw new Error(`facilio-api: no georeferenced plan on floor ${floorId} — positions not persisted to the org (${result.skipped.join(', ') || 'no plans'})`);
-    }
+  /**
+   * Deliberately NOT implemented here — throws so the composite falls through to browser storage.
+   *
+   * `saveUnits` runs on every micro-edit (each drag, each click-place). Syncing real markers that
+   * often was measured overhead — re-fetching the plan geometry and the full marker list per
+   * configured plan type on every edit — so the design keeps per-edit persistence local and pushes
+   * real `floorplanmarker` records only at the explicit "Save changes" chokepoint
+   * (`persistUnits` -> `saveFloorplanMarkers`). Doing it here too reintroduced that cost and raced
+   * the chokepoint's own sync on the same geoIds. `getUnits` reads back whatever the last explicit
+   * save wrote; unsaved edits are exactly what the "unsaved changes" bar guards.
+   */
+  async saveUnits(): Promise<void> {
+    throw new Error('facilio-api: per-edit persistence is local; real markers sync at explicit save (persistUnits)');
   }
   // Space creation is wired on the CMMS connector tier (create-space), not this raw module-CRUD
   // layer — throw so the composite falls through to it.
