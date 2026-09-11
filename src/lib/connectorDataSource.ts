@@ -12,12 +12,17 @@ import type { Assignments, Booking, Employee, Site, Unit } from './types';
  * signed-in user and proxies the call), so the browser never holds a bearer token and the action's
  * input/output shape survives module-schema churn. Where an action exists, it wins.
  *
- * Scope is exactly the set of actions that exist. Portfolio, the people directory, the asset
- * catalog and space creation are covered. Everything else this app needs — on-plan marker geometry
- * (`floorplanmarker`), desk Moves, booking records, file upload/preview and org forms — has no
- * connector action (`moves` and `floorplanmarker` aren't even reachable through the generic
- * custom-module actions), so those methods throw and CompositeDataSource falls through to the
- * connected-app V3 tier that does implement them.
+ * Scope is the set of actions that exist. Dedicated actions cover the portfolio, the people
+ * directory, the asset catalog and space creation; the generic custom-module actions additionally
+ * reach `desks`, `lockers`, `parkingstall`, `spacebooking` and `indoorfloorplan` (verified against
+ * ENEC CAFM), which is how getUnits reads the floor's real spaces.
+ *
+ * Hard-blocked, even generically: `floorplanmarker` (on-plan geometry) and `moves` (desk
+ * assignment) both answer MODULE_NOT_FOUND. Also absent: file upload/preview and org forms. Those
+ * methods throw so CompositeDataSource falls through to the connected-app V3 tier.
+ *
+ * `spacebooking` is readable but NOT wired yet — mapping a booking back to a unit needs the
+ * resource lookup field confirmed against a real desk booking, and this org has only one sample.
  */
 export class ConnectorDataSource implements FloorplanDataSource {
   readonly name = 'facilio-cmms-connector';
@@ -119,11 +124,37 @@ export class ConnectorDataSource implements FloorplanDataSource {
     return id ? { ...unit, id: String(id) } : unit;
   }
 
-  // ---- No connector action exists for anything below: fall through to the V3 tier. ----
-  async getUnits(): Promise<Unit[]> {
-    throw new Error('cmms-connector: on-plan geometry has no connector action');
+  /**
+   * The floor's REAL desk/locker/parking-stall records, via the connector's generic
+   * custom-module read (`desks`, `lockers`, `parkingstall` all resolve; `floorplanmarker` and
+   * `moves` do not).
+   *
+   * Every unit comes back `unplaced` with a 0,0 placeholder geometry, because the thing that
+   * holds an on-plan POSITION is `floorplanmarker`, which the connector cannot reach. So these
+   * list in the sidebar as the org's real spaces and stay off the canvas rather than being drawn
+   * at a fabricated coordinate — the distinction `Unit.unplaced` already exists for.
+   */
+  async getUnits(floorId: string): Promise<Unit[]> {
+    const filters = `floor=${floorId}`;
+    const [desks, lockers, stalls] = await Promise.all([
+      this.listAll('list-custom-module-records', { custom_module: 'desks', filters }),
+      this.listAll('list-custom-module-records', { custom_module: 'lockers', filters }),
+      this.listAll('list-custom-module-records', { custom_module: 'parkingstall', filters }),
+    ]);
+
+    const units: Unit[] = [
+      ...desks.map((r: any) => toUnit(r, 'workstation', floorId)),
+      ...lockers.map((r: any) => toUnit(r, 'locker', floorId)),
+      ...stalls.map((r: any) => toUnit(r, 'parking', floorId)),
+    ];
+    // An empty floor is a legitimate answer, but so is "this tier can't help" — and the composite
+    // can only tell them apart by a throw. A real floor with no spaces should NOT fall through to
+    // the demo seed, so return the empty list rather than throwing.
+    return units;
   }
+
   async saveUnits(): Promise<void> {
+    // Positions live in floorplanmarker, which the connector can't reach.
     throw new Error('cmms-connector: on-plan geometry has no connector action');
   }
   async getAssignments(): Promise<Assignments> {
@@ -154,6 +185,37 @@ const SPACE_CATEGORY: Partial<Record<Unit['type'], string>> = {
   // A delivery area has no category of its own in the org — it is a room by another name.
   delivery: 'Room',
 };
+
+/**
+ * Real Facilio desk typing, `V3DeskContext.DeskType`: 1=ASSIGNED, 2=HOTEL, 3=HOT. Records carry
+ * `-1` (and sometimes 0) when it was never set, which the app treats as ASSIGNED by leaving
+ * `deskType` undefined.
+ */
+const DESK_TYPE_BY_INT: Record<number, Unit['deskType']> = { 1: 'ASSIGNED', 2: 'HOTEL', 3: 'HOT' };
+
+/**
+ * One org space record → this app's Unit, listed but not drawn (see getUnits).
+ *
+ * Narrowed to the three point modules on purpose: each is also a valid PlanId, which is what lets
+ * `plan` be set from `type`. Zones (rooms, delivery areas) are polygons and don't come from here.
+ */
+type PointModule = Extract<Unit['type'], 'workstation' | 'locker' | 'parking'>;
+
+function toUnit(record: any, type: PointModule, floorId: string): Unit {
+  const deskType = type === 'workstation' ? DESK_TYPE_BY_INT[Number(record.deskType)] : undefined;
+  return {
+    id: String(record.id),
+    type,
+    label: record.name ?? record.deskCode ?? String(record.id),
+    room: null,
+    // Placeholder: the real position lives in floorplanmarker, which is unreachable here.
+    geom: { kind: 'point', x: 0, y: 0 },
+    floor: floorId,
+    plan: type,
+    unplaced: true,
+    ...(deskType ? { deskType } : {}),
+  };
+}
 
 /** A lookup field is a raw id when unexpanded and `{id, name}` when expanded — accept both. */
 function lookupId(value: unknown): unknown {
