@@ -51,26 +51,24 @@ function viewInsets(state: AppState) {
  * click was real, measured overhead (re-fetching indoorfloorplan geometry + the full marker list
  * per configured plan type, on every single edit) with no benefit — the real backend only needs
  * to reflect the floor once the user is done editing, same mental model as the "unsaved changes"
- * bar itself. Best-effort: never blocks or throws into the local save it runs alongside.
+ * bar itself.
+ *
+ * The org write is AWAITED, and a write that persisted nothing throws. "Save changes" is the one
+ * moment the user is explicitly waiting on the backend — the button shows a loader for exactly
+ * that — so it must not report "Changes saved" while the write is still in flight, or after it
+ * silently skipped every plan for lack of a georeference. The local (browser) copy is written
+ * first regardless, so a failed org write never loses the edit; it just isn't called a save.
  */
 async function persistUnits(floorId: string, units: Unit[]): Promise<void> {
-  const local = dataSource.saveUnits(floorId, units);
-  if (isFacilioApiConfigured) {
-    saveFloorplanMarkers(floorId, units)
-      .then((result) => {
-        // A save that reached the org for nothing is the failure mode that lost placements on
-        // refresh — say so, rather than letting "Save changes" look like it worked.
-        if (result.plansSynced === 0 && result.skipped.length) {
-          // eslint-disable-next-line no-console
-          console.warn(`[facilio-api] Save changes wrote NO markers to the org — ${result.skipped.join('; ')}. Positions are kept in this browser only until the plan is georeferenced.`);
-        }
-      })
-      .catch((err) => {
-        // eslint-disable-next-line no-console
-        console.warn('[facilio-api] marker sync failed', err);
-      });
+  await dataSource.saveUnits(floorId, units);
+  if (!isFacilioApiConfigured) return;
+  const result = await saveFloorplanMarkers(floorId, units);
+  const hasPointUnits = units.some((u) => u.geom.kind === 'point' && u.type !== 'amenity');
+  if (hasPointUnits && result.plansSynced === 0 && result.skipped.length) {
+    // eslint-disable-next-line no-console
+    console.warn(`[facilio-api] Save changes wrote NO markers to the org — ${result.skipped.join('; ')}. Positions are kept in this browser only.`);
+    throw new Error(`markers not written to the org: ${result.skipped.join('; ')}`);
   }
-  await local;
 }
 
 /** Walk the portfolio tree to find which site/building a floor belongs to — create-space needs the
@@ -1111,7 +1109,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       const assignments = seedAssignments();
       const bookings = seedBookings(state.date);
       dispatch({ type: 'RESET_DEMO', units, assignments, bookings });
-      persistUnits(state.floorId, units);
+      void persistUnits(state.floorId, units).catch(() => {}); // demo seed on a real floor may have no quad; housekeeping only
       showToast('Demo data reset');
     },
 
