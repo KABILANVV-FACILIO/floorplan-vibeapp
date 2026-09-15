@@ -131,17 +131,22 @@ export async function fetchAvailableStates(moduleName: string, recordId: number)
 export async function executeStateTransition(moduleName: string, recordId: number, transitionId: number, data?: Record<string, unknown>): Promise<void> {
   assertConfigured();
   const payload = { id: recordId, stateTransitionId: transitionId, data: data ?? {} };
+  let body: any;
   try {
-    const body = await customPatch(`v3/action/${moduleName}/${recordId}/transition`, payload);
-    unwrap(body);
-    return;
+    body = await customPatch(`v3/action/${moduleName}/${recordId}/transition`, payload);
   } catch (err) {
+    // ONLY a transport failure falls back. `unwrap` is deliberately outside this try: it throws
+    // when the server answered properly and REFUSED the transition, and retrying that through
+    // updateRecord would re-send a move the org just rejected — and, if the second path happened
+    // to succeed, report a refusal as a success. Caught by the "non-zero v3 code" test.
     if (!isConnectedApp) throw err;
     // eslint-disable-next-line no-console
     console.warn(`[stateflow] PATCH transition failed in connected mode — falling back to updateRecord`, err);
+    const res = await facilioApi.updateRecord(moduleName, { id: recordId, data: data ?? {}, stateTransitionId: transitionId } as any);
+    if (res.error) throw new Error(res.error.message || `transition failed (code ${res.error.code ?? '?'})`);
+    return;
   }
-  const res = await facilioApi.updateRecord(moduleName, { id: recordId, data: data ?? {}, stateTransitionId: transitionId } as any);
-  if (res.error) throw new Error(res.error.message || `transition failed (code ${res.error.code ?? '?'})`);
+  unwrap(body);
 }
 
 /** Available approval actions (Approve/Reject/Cancel/...) — empty when the record isn't under an approval flow. */

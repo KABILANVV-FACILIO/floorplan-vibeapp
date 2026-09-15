@@ -7,6 +7,7 @@ import { StatusPill } from '../primitives/StatusPill';
 import { Button } from '../primitives/Button';
 import { DESK_TYPES, isRoomLike, resolveMarkerDef, TYPE_META } from '../../lib/types';
 import { fetchUnitRecordInfo } from '../../lib/facilioApiDataSource';
+import { StateflowActions } from '../details/StateflowActions';
 import type { UnitRecordInfo } from '../../lib/facilioApiDataSource';
 import styles from './Tooltip.module.css';
 
@@ -21,6 +22,7 @@ export function Tooltip() {
   // The selected unit's ORG RECORD — its own state and the fields the org filled in. The popover
   // could otherwise only show what a Unit carries locally, which says nothing about the record.
   const [record, setRecord] = useState<UnitRecordInfo | null>(null);
+  const [recordNonce, setRecordNonce] = useState(0);
 
   const unit = unitById(state, state.selected);
   // A unit whose module was switched off in Settings must leave no trace — including a card left
@@ -59,7 +61,7 @@ export function Tooltip() {
     return () => {
       live = false;
     };
-  }, [unitId, unitType, placeable]);
+  }, [unitId, unitType, placeable, recordNonce]);
 
   if (!unit || !visible) return null;
 
@@ -153,6 +155,8 @@ export function Tooltip() {
       <div className={styles.statusRow}>
         <StatusPill label={status.text} bg={status.bg} fg={status.fg} />
       </div>
+
+      <StateflowActions unit={unit} onChanged={() => setRecordNonce((n) => n + 1)} />
 
       {state.mode === 'book' && bookable && !booked && (
         <Button variant="primary" fullWidth style={{ marginTop: 10 }} onClick={() => actions.openBookingForm({ unitId: unit.id, date: state.date, start: state.start, end: state.end })}>

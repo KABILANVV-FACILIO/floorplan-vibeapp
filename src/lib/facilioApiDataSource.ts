@@ -1171,15 +1171,33 @@ export interface UnitRecordInfo {
 const unitRecordCache = new Map<string, Promise<UnitRecordInfo | null>>();
 
 /**
+ * The org record a unit stands for — module name plus numeric id — or null when there isn't one
+ * (an amenity, or a unit whose id is still app-local because nothing created it in the org yet).
+ * Stateflow, approvals and the record read all need exactly this pair.
+ */
+export function resolveUnitRecord(unit: Pick<Unit, 'id' | 'type'>): { moduleName: string; recordId: number } | null {
+  const moduleName = RECORD_MODULE[unit.type];
+  const recordId = Number(unit.id);
+  if (!moduleName || !Number.isInteger(recordId) || recordId <= 0) return null;
+  return { moduleName, recordId };
+}
+
+/** Forget a cached record — after a transition, its state is exactly what changed. */
+export function invalidateUnitRecordInfo(unit: Pick<Unit, 'id' | 'type'>): void {
+  const ref = resolveUnitRecord(unit);
+  if (ref) unitRecordCache.delete(`${ref.moduleName}:${ref.recordId}`);
+}
+
+/**
  * The org record behind a placed unit — its state and the fields the org actually filled in.
  *
  * The popover could only ever show what this app carries on a Unit (label, type, deskType), which
  * is a fraction of the record and says nothing about its STATE. This reads the record itself.
  */
 export function fetchUnitRecordInfo(unit: Pick<Unit, 'id' | 'type'>): Promise<UnitRecordInfo | null> {
-  const moduleName = RECORD_MODULE[unit.type];
-  const id = Number(unit.id);
-  if (!isFacilioApiConfigured || !moduleName || !Number.isInteger(id) || id <= 0) return Promise.resolve(null);
+  const ref = resolveUnitRecord(unit);
+  if (!isFacilioApiConfigured || !ref) return Promise.resolve(null);
+  const { moduleName, recordId: id } = ref;
 
   const key = `${moduleName}:${id}`;
   let pending = unitRecordCache.get(key);
