@@ -90,7 +90,11 @@ export function markerStyle(state: AppState, unit: Unit, markerScale = 1): Marke
 
   if (state.mode === 'edit') {
     if (selected) {
-      return { bg: 'var(--blue-500)', bd: 'var(--blue-500)', fg: '#fff', opacity: 1, shadow, size, radius, zIndex, occText: null, icon: null };
+      // Keep the type glyph (white on the blue fill). Dropping it left a freshly placed record as
+      // a blank blue chip — and placing one selects it, so the desk you just put down was the one
+      // marker on the plan with no desk icon until you clicked away or saved. Selection is already
+      // carried by the fill and the ring; it doesn't need to cost the marker its identity.
+      return { bg: 'var(--blue-500)', bd: 'var(--blue-500)', fg: '#fff', opacity: 1, shadow, size, radius, zIndex, occText: null, icon: markerIcon(unit.type) };
     }
     if (unit.type === 'locker') {
       return { bg: '#fff', bd: 'var(--brand-indigo-400)', fg: 'var(--brand-indigo)', opacity: 1, shadow, size, radius, zIndex, occText: null, icon: 'locker' };
