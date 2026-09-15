@@ -149,6 +149,7 @@ export function fmtTime(minutes: number): string {
 }
 
 export interface TooltipPlacement {
+  /** Card CENTRE on x, card TOP on y — both already inside the stage. */
   sx: number;
   sy: number;
   below: boolean;
@@ -195,6 +196,17 @@ export function tooltipPlacement(
   const roomBelow = stageH ? stageH - (sy + TOOLTIP_GAP + cardH) : Number.POSITIVE_INFINITY;
   const below = roomAbove < TOOLTIP_MARGIN && roomBelow > roomAbove;
 
+  // The card's own top edge, CLAMPED into the stage — the y offset is no longer left to a CSS
+  // transform. Positioning by the marker and shifting -100% in CSS meant a marker near the top
+  // put the whole card above the stage, where `overflow: hidden` simply erased it: the tooltip
+  // "didn't open" when in fact it had, out of sight. Same for a marker below the fold.
+  let top = below ? sy + TOOLTIP_GAP : sy - TOOLTIP_GAP - cardH;
+  if (stageH > 0) {
+    const minTop = TOOLTIP_MARGIN;
+    const maxTop = stageH - cardH - TOOLTIP_MARGIN;
+    top = maxTop < minTop ? minTop : clamp(top, minTop, maxTop);
+  }
+
   // Horizontal: centred on the marker, then pushed back inside the stage. A stage narrower than
   // the card can't satisfy both edges — pin to the left one rather than producing a max < min.
   const half = cardW / 2;
@@ -210,9 +222,10 @@ export function tooltipPlacement(
 
   return {
     sx: left,
-    sy,
+    sy: top,
     below,
-    transform: below ? `translate(-50%, ${TOOLTIP_GAP}px)` : `translate(-50%, calc(-100% - ${TOOLTIP_GAP}px))`,
+    // x only: the y is already resolved and clamped above.
+    transform: 'translate(-50%, 0)',
     caretLeft: `${caretPct.toFixed(2)}%`,
   };
 }

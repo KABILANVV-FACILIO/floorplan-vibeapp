@@ -19,7 +19,13 @@ export function Tooltip() {
   const unit = unitById(state, state.selected);
   // A unit whose module was switched off in Settings must leave no trace — including a card left
   // open over a marker the canvas has already stopped drawing.
-  const visible = !!unit && moduleEnabled(state, unit.type);
+  //
+  // An `unplaced` record has no position on the plan (its geometry is a 0,0 placeholder), so a
+  // card for one pins to the plan's top-left corner and points at nothing. A zone with no points
+  // is worse: `unitCenter` reduces an empty list to Infinity and the card's coordinates come out
+  // NaN, which React drops — leaving it stuck at the stage origin, pushed out of view.
+  const placeable = !!unit && !unit.unplaced && (unit.geom.kind === 'point' || unit.geom.pts.length > 0);
+  const visible = !!unit && placeable && moduleEnabled(state, unit.type);
 
   useLayoutEffect(() => {
     const el = cardRef.current;
