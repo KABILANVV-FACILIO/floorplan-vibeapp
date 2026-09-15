@@ -4,6 +4,7 @@ import { renderPdfToDataUrl } from './pdfPreview';
 import { computeSyntheticGeometry, geometryStringToQuad, lngLatToQuadFraction, quadToGeometryString, quadToLngLat } from './geoReference';
 import type { FloorplanDataSource } from './dataSource';
 import type { Asset } from './assets';
+import { TYPE_META } from './types';
 import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, PlanId, PointGeom, Site, Unit, UnitType } from './types';
 
 /**
@@ -138,11 +139,18 @@ export class FacilioApiDataSource implements FloorplanDataSource {
     return all.filter((h) => h.floorName.toLowerCase().includes(q) || h.buildingName.toLowerCase().includes(q)).slice(0, 50);
   }
 
+  /**
+   * The people directory, PAGED — same reason the portfolio is (see getPortfolio). A bare
+   * `fetchAll` returns only the server's default first page, so in an org this size the assign /
+   * book-for pickers silently offered whichever employees happened to land on page one and had no
+   * way to reach the rest.
+   */
   async getEmployees(): Promise<Employee[]> {
     this.assertConfigured();
-    const res = await facilioApi.fetchAll('employee');
-    if (res.error) throw new Error(`facilio-api: employee fetch failed (${res.error.code ?? '?'} ${res.error.message ?? ''})`.trim());
-    return (res.list ?? []).map((e: any) => ({
+    const rows = await fetchAllPaged('employee');
+    // eslint-disable-next-line no-console
+    console.info(`[facilio-api] getEmployees: ${rows.length} employees`);
+    return sortByName(rows).map((e: any) => ({
       id: String(e.id),
       name: e.name,
     }));
@@ -201,7 +209,7 @@ export class FacilioApiDataSource implements FloorplanDataSource {
       if (!planId || !planRecordId) continue;
 
       const recordRes = await facilioApi.fetchRecord<any>('indoorfloorplan', { id: planRecordId });
-      const planRecord = recordRes?.indoorfloorplan ?? recordRes?.data?.indoorfloorplan;
+      const planRecord = recordOf<any>(recordRes, 'indoorfloorplan');
       const quad = geometryStringToQuad(planRecord?.geometry);
       if (!quad) {
         // eslint-disable-next-line no-console
@@ -236,7 +244,11 @@ export class FacilioApiDataSource implements FloorplanDataSource {
           continue;
         }
         const props = safeJson<{ unitType?: string; secondary?: string | null }>(marker.properties) ?? {};
-        const type = (props.unitType as Unit['type']) ?? PLAN_UNIT_TYPE[planId] ?? 'workstation';
+        // `properties` is free-form JSON on the org's record — another app, an older build of this
+        // one, or a hand-edited row can put anything in `unitType`. An unrecognised value used to
+        // flow straight into a Unit, where every `TYPE_META[unit.type].name` lookup (the marker's
+        // own status pill included) threw on undefined and took the whole canvas down with it.
+        const type = asUnitType(props.unitType) ?? PLAN_UNIT_TYPE[planId] ?? 'workstation';
         units.push({
           id: String(marker.geoId || marker.id),
           type,
@@ -351,11 +363,25 @@ function toUnplacedUnit(record: any, type: Unit['type'], floorId: string): Unit 
     room: null,
     geom: isZone ? { kind: 'poly', pts: [] } : { kind: 'point', x: 0, y: 0 },
     floor: floorId,
-    plan: isZone ? 'custom' : (type as PlanId),
+    plan: isZone ? 'custom' : POOL_PLAN[type] ?? 'custom',
     unplaced: true,
     ...(deskType ? { deskType } : {}),
   };
 }
+
+/**
+ * A value off an org record narrowed to a real `UnitType`, or null. `TYPE_META` is the contract
+ * every surface indexes by type, so anything outside it must not become a Unit.
+ */
+function asUnitType(value: unknown): UnitType | null {
+  return typeof value === 'string' && value in TYPE_META ? (value as UnitType) : null;
+}
+
+/**
+ * Placeholder plan for a pool record, which never draws — the real one is decided when the user
+ * places it, by whichever plan is on screen (`planForPlacement`).
+ */
+const POOL_PLAN: Partial<Record<UnitType, PlanId>> = { workstation: 'workstation', locker: 'locker', parking: 'parking' };
 
 /** Which unit type a plan type implies, for markers that carry no `properties.unitType`. */
 const PLAN_UNIT_TYPE: Partial<Record<PlanId, Unit['type']>> = {
@@ -419,6 +445,18 @@ function lookupId(record: any, key: string): unknown {
 }
 
 /**
+ * The single record out of a `fetchRecord`/`createRecord` result, whichever envelope answered.
+ *
+ * The SDK's `api.*` wrappers pre-unwrap to `res[moduleName]`; dev mode's axios path spreads the
+ * raw REST body, which nests it at `res.data[moduleName]`. Reading only one of the two is what
+ * made a successful request look like "record not found" — the same mistake that hid every
+ * building. Both shapes, one place, so no call site has to remember which mode it is in.
+ */
+function recordOf<T = any>(res: any, moduleName: string): T | null {
+  return (res?.[moduleName] ?? res?.data?.[moduleName] ?? null) as T | null;
+}
+
+/**
  * `GET v3/floorplan/getFloorplanDetailsByType` — the real FloorplanAction endpoint, confirmed
  * against a live org. Takes only `floorId` (no `floorPlanType` filter — passing one doesn't
  * narrow the result) and returns EVERY plan type configured for that floor in one call, keyed
@@ -430,7 +468,7 @@ function lookupId(record: any, key: string): unknown {
  * projection is geared at plan customization, not the file) — use `id` from here with
  * `fetchRecord('indoorfloorplan', {id})` if the fileId is needed.
  */
-async function getFloorplanDetailsByType(floorId: string): Promise<Record<string, any>> {
+async function fetchFloorplanDetailsByType(floorId: string): Promise<Record<string, any>> {
   const body = await customGet('v3/floorplan/getFloorplanDetailsByType', { floorId });
   if (body?.code !== 0) throw new Error(body?.message || `code ${body?.code ?? '?'}`);
   const plans = body?.data?.indoorFloorPlans ?? {};
@@ -440,6 +478,36 @@ async function getFloorplanDetailsByType(floorId: string): Promise<Record<string
   // eslint-disable-next-line no-console
   console.info(`[facilio-api] getFloorplanDetailsByType(${floorId}) -> plan types: ${Object.keys(plans).join(',') || '(none configured)'}`, body?.data ? '' : `(unexpected body keys: ${Object.keys(body ?? {}).join(',')})`);
   return plans;
+}
+
+/**
+ * Per-floor memo for the call above — it is the entry point of nearly every real-data path here
+ * (getUnits, getFloorPlanSummary, fetchFloorplanImage, ensurePlanGeoreference,
+ * saveFloorplanMarkers, ensureRealSpaceRecord), so one floor selection fired it four to six times
+ * for an answer that is the same every time: which plan types this floor has, and their record
+ * ids. That is the same redundant-fan-out shape as the asset list being fetched twenty times.
+ *
+ * Only the id set is cached, and only `uploadFloorplanFile` can change it (by creating an
+ * `indoorfloorplan` record) — which invalidates explicitly. `ensurePlanGeoreference` mutates the
+ * record's geometry, not the set, and every reader fetches the record itself for geometry anyway.
+ */
+const floorPlanTypeCache = new Map<string, Promise<Record<string, any>>>();
+
+function getFloorplanDetailsByType(floorId: string): Promise<Record<string, any>> {
+  let pending = floorPlanTypeCache.get(floorId);
+  if (!pending) {
+    pending = fetchFloorplanDetailsByType(floorId);
+    // A failure must not be cached — the next caller should retry rather than inherit a rejection
+    // for the rest of the session.
+    pending.catch(() => floorPlanTypeCache.delete(floorId));
+    floorPlanTypeCache.set(floorId, pending);
+  }
+  return pending;
+}
+
+/** Drop the memo for a floor whose plan records were just created or changed. */
+function invalidateFloorplanDetails(floorId: string): void {
+  floorPlanTypeCache.delete(floorId);
 }
 
 export interface FloorPlanTypeSummary {
@@ -603,8 +671,8 @@ export async function uploadFloorplanFile(
     // NOT `res.data` — confirmed live: `res.data` is always undefined, which silently failed
     // every attach as "floor not found" regardless of whether the floor actually existed.
     const floorRes = await facilioApi.fetchRecord<any>('floor', { id: floorId });
-    if (floorRes.error || !floorRes.floor) throw new Error(floorRes.error?.message || `floor ${floorId} not found`);
-    const floorRec = floorRes.floor;
+    const floorRec = recordOf<any>(floorRes, 'floor');
+    if (floorRes.error || !floorRec) throw new Error(floorRes.error?.message || `floor ${floorId} not found`);
     const siteId = lookupId(floorRec, 'site');
     const buildingId = lookupId(floorRec, 'building');
     if (!siteId || !buildingId) throw new Error('floor record has no site/building lookup');
@@ -627,6 +695,9 @@ export async function uploadFloorplanFile(
           },
         });
     if (attachRes.error) throw new Error(attachRes.error.message || `code ${attachRes.error.code}`);
+    // A create adds a plan type to this floor; a geometry update changes what the readers below
+    // will find. Either way the memo is now stale.
+    invalidateFloorplanDetails(floorId);
     attachedToFloorPlan = true;
   } catch (err) {
     attachError = (err as Error).message || 'attach failed';
@@ -711,7 +782,7 @@ export async function ensurePlanGeoreference(floorId: string, planId: PlanId, im
   const summary = byType[String(FLOOR_PLAN_TYPE[planId])];
   if (!summary?.id) return;
   const recordRes = await facilioApi.fetchRecord<any>('indoorfloorplan', { id: summary.id });
-  const record = recordRes?.indoorfloorplan ?? recordRes?.data?.indoorfloorplan;
+  const record = recordOf<any>(recordRes, 'indoorfloorplan');
   if (recordRes.error || !record) return;
   if (geometryStringToQuad(record.geometry)) return; // already georeferenced
   const geometry = quadToGeometryString(computeSyntheticGeometry(imageDimensions.width, imageDimensions.height));
@@ -728,7 +799,7 @@ export async function ensurePlanGeoreference(floorId: string, planId: PlanId, im
 /** Returns false when the plan has no georeference and nothing could be written. */
 async function syncMarkersForIndoorFloorPlan(indoorFloorPlanId: number, units: (Unit & { geom: PointGeom })[]): Promise<boolean> {
   const recordRes = await facilioApi.fetchRecord<any>('indoorfloorplan', { id: indoorFloorPlanId });
-  const record = recordRes?.indoorfloorplan ?? recordRes?.data?.indoorfloorplan;
+  const record = recordOf<any>(recordRes, 'indoorfloorplan');
   if (recordRes.error || !record) return false;
   const quad = geometryStringToQuad(record.geometry);
   if (!quad) return false;
@@ -848,7 +919,7 @@ async function ensureRealSpaceRecord(unit: Unit): Promise<RealSpaceRef | null> {
   if (!marker) {
     if (unit.geom.kind !== 'point') return null;
     const recordRes = await facilioApi.fetchRecord<any>('indoorfloorplan', { id: summary.id });
-    const quad = geometryStringToQuad(recordRes.indoorfloorplan?.geometry);
+    const quad = geometryStringToQuad(recordOf<any>(recordRes, 'indoorfloorplan')?.geometry);
     if (!quad) {
       // eslint-disable-next-line no-console
       console.warn(`[facilio-api] floor plan ${summary.id} has no geo-reference — assignment for unit ${unit.id} not persisted to backend`);
@@ -865,14 +936,16 @@ async function ensureRealSpaceRecord(unit: Unit): Promise<RealSpaceRef | null> {
         indoorfloorplan: { id: summary.id },
       },
     });
-    if (createMarkerRes.error || !createMarkerRes.floorplanmarker?.id) return null;
-    marker = createMarkerRes.floorplanmarker;
+    const createdMarker = recordOf<any>(createMarkerRes, 'floorplanmarker');
+    if (createMarkerRes.error || !createdMarker?.id) return null;
+    marker = createdMarker;
   }
 
   const floorRes = await facilioApi.fetchRecord<any>('floor', { id: unit.floor });
-  if (floorRes.error || !floorRes.floor) return null;
-  const siteId = Number(lookupId(floorRes.floor, 'site')) || undefined;
-  const buildingId = lookupId(floorRes.floor, 'building');
+  const floorRec = recordOf<any>(floorRes, 'floor');
+  if (floorRes.error || !floorRec) return null;
+  const siteId = Number(lookupId(floorRec, 'site')) || undefined;
+  const buildingId = lookupId(floorRec, 'building');
 
   if (marker.recordId) {
     const ref = { recordId: marker.recordId, siteId };
@@ -883,8 +956,9 @@ async function ensureRealSpaceRecord(unit: Unit): Promise<RealSpaceRef | null> {
   const createRes = await facilioApi.createRecord<any>(moduleName, {
     data: { name: unit.label, site: { id: siteId }, building: { id: buildingId }, floor: { id: unit.floor } },
   });
-  if (createRes.error || !createRes[moduleName]?.id) return null;
-  const recordId = createRes[moduleName].id;
+  const createdSpace = recordOf<any>(createRes, moduleName);
+  if (createRes.error || !createdSpace?.id) return null;
+  const recordId = createdSpace.id;
   await facilioApi.updateRecord('floorplanmarker', { id: marker.id, data: { recordId } }).catch(() => {});
   const ref = { recordId, siteId };
   realSpaceRecordCache.set(unit.id, ref);
@@ -1033,7 +1107,7 @@ async function moduleIdFor(moduleName: string, sampleRecordId: number): Promise<
   const cached = moduleIdCache.get(moduleName);
   if (cached) return cached;
   const res = await facilioApi.fetchRecord<any>(moduleName, { id: sampleRecordId });
-  const id = res?.[moduleName]?.moduleId;
+  const id = recordOf<any>(res, moduleName)?.moduleId;
   if (typeof id === 'number') moduleIdCache.set(moduleName, id);
   return typeof id === 'number' ? id : null;
 }
@@ -1285,5 +1359,5 @@ export async function createRealBooking(unit: Unit, dateISO: string, start: numb
     },
   });
   if (res.error) return { ok: false, reason: res.error.message || `code ${res.error.code}` };
-  return { ok: true, id: res.spacebooking?.id };
+  return { ok: true, id: recordOf<any>(res, 'spacebooking')?.id };
 }
