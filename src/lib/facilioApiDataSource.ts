@@ -1306,14 +1306,12 @@ export async function findUnitIdForDeskRecord(floorId: string, deskRecordId: num
 }
 
 /**
- * Assigns an employee to a placed workstation/locker/parking-stall for real, confirmed
- * against a live org: for desks, creates a `moves` record (`to` + `employee`, `timeOfMove`
- * at-or-before now so the reassignment executes immediately — the backend auto-unassigns
- * whatever desk that employee previously held, per the org's documented Moves flow); for
- * lockers/parking stalls, a plain `employee` field update (no Moves involvement there).
+ * Assigns an employee to a placed workstation/locker/parking-stall for real — a plain `employee`
+ * field write on the record, for every type.
  *
- * The moves payload mirrors the real web app's, captured from a live session:
- * `{to, timeOfMove, employee, scheduledTime: null, moveType: 1, siteId}`.
+ * Desks used to go through a `moves` record instead. That is the org's reassignment mechanism and
+ * it auto-unassigns whatever desk the employee already held, so handing someone a second desk
+ * quietly took away their first. One person may hold any number of desks, which rules Moves out.
  */
 export async function assignUnitReal(unit: Unit, contactId: string): Promise<void> {
   if (!isFacilioApiConfigured) return;
@@ -1325,22 +1323,11 @@ export async function assignUnitReal(unit: Unit, contactId: string): Promise<voi
   const ref = await ensureRealSpaceRecord(unit);
   if (!ref) return;
 
-  if (unit.type === 'workstation') {
-    const res = await facilioApi.createRecord('moves', {
-      data: {
-        to: { id: ref.recordId },
-        timeOfMove: Date.now(),
-        employee: { id },
-        scheduledTime: null,
-        moveType: 1,
-        ...(ref.siteId ? { siteId: ref.siteId } : {}),
-      },
-    });
-    if (res.error) {
-      // eslint-disable-next-line no-console
-      console.warn(`[facilio-api] assign move failed for unit ${unit.id}`, res.error);
-    }
-  } else {
+  {
+    // A plain `employee` write for EVERY type, desks included. Desks used to go through a `moves`
+    // record, and the backend's Moves flow auto-unassigns whatever desk that employee already
+    // held — so giving someone a second desk silently took away their first. One person may hold
+    // any number of desks here, which rules Moves out as the assignment mechanism.
     const res = await facilioApi.updateRecord(moduleName, { id: ref.recordId, data: { employee: { id } } });
     if (res.error) {
       // eslint-disable-next-line no-console
@@ -1350,9 +1337,9 @@ export async function assignUnitReal(unit: Unit, contactId: string): Promise<voi
 }
 
 /**
- * Vacates a placed workstation/locker/parking-stall for real — for desks, a `moves` record with
- * only `from` set (confirmed live: clears the desk's `employee` field); for lockers/parking
- * stalls, clears the `employee` field directly.
+ * Vacates a placed workstation/locker/parking-stall for real — clears `employee` on that record,
+ * for every type. It releases THIS unit and nothing else, which is what vacate means when one
+ * person can hold several. The mirror of `assignUnitReal`.
  */
 export async function vacateUnitReal(unit: Unit, contactId: string): Promise<void> {
   if (!isFacilioApiConfigured) return;
@@ -1364,22 +1351,10 @@ export async function vacateUnitReal(unit: Unit, contactId: string): Promise<voi
   const ref = await ensureRealSpaceRecord(unit);
   if (!ref) return;
 
-  if (unit.type === 'workstation') {
-    const res = await facilioApi.createRecord('moves', {
-      data: {
-        from: { id: ref.recordId },
-        timeOfMove: Date.now(),
-        employee: { id },
-        scheduledTime: null,
-        moveType: 1,
-        ...(ref.siteId ? { siteId: ref.siteId } : {}),
-      },
-    });
-    if (res.error) {
-      // eslint-disable-next-line no-console
-      console.warn(`[facilio-api] vacate move failed for unit ${unit.id}`, res.error);
-    }
-  } else {
+  {
+    // Clears the field on THIS record, for every type — the mirror of the assign write above.
+    // A Moves-based vacate would also be reading a move that no longer exists, now that desks are
+    // assigned by writing `employee` rather than by moving anyone.
     const res = await facilioApi.updateRecord(moduleName, { id: ref.recordId, data: { employee: null } });
     if (res.error) {
       // eslint-disable-next-line no-console

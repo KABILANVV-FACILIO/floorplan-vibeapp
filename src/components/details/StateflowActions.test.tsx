@@ -132,15 +132,15 @@ describe('what a button does depends on the transition', () => {
     await waitFor(() => expect(screen.queryByLabelText('Search people')).toBeNull());
   });
 
-  it('keeps the picker open and names the reason when the org refuses the assignment', async () => {
+  it('reports a refused assignment as a toast and closes the picker', async () => {
     fetchAvailableStates.mockResolvedValue(flow(['Assign']));
     assignEmployeeToRecord.mockRejectedValueOnce(new Error('employee already holds a desk'));
     render(<StateflowActions unit={unit} />);
     (await screen.findByRole('button', { name: 'Assign' })).click();
     (await screen.findByRole('button', { name: /Niviya/ })).click();
 
-    await waitFor(() => expect(screen.getByText(/already holds a desk/)).toBeDefined());
-    expect(screen.getByLabelText('Search people')).toBeDefined();
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.stringContaining('already holds a desk')));
+    await waitFor(() => expect(screen.queryByLabelText('Search people')).toBeNull());
   });
 
   it('re-reads the record after a transition, so the details around it update', async () => {

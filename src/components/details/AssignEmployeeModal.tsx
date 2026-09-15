@@ -25,7 +25,6 @@ export function AssignEmployeeModal({ unit, onClose, onAssigned }: { unit: Unit;
   const { state, actions } = useFloorplan();
   const [query, setQuery] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const people = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -35,18 +34,17 @@ export function AssignEmployeeModal({ unit, onClose, onAssigned }: { unit: Unit;
 
   async function pick(employeeId: string, name: string) {
     setBusyId(employeeId);
-    setError(null);
     try {
       await assignEmployeeToRecord(unit, employeeId);
       actions.showToast(`${unit.label} assigned to ${name}`);
       onAssigned?.();
-      onClose();
     } catch (err) {
-      // Stays open with the reason — the directory is right here, and a failed write is worth
-      // seeing next to the person you picked.
-      setError((err as Error)?.message ?? 'The org refused the assignment');
+      // Reported the way every other failure in this app is — a toast — rather than a banner
+      // inside a dialog the user then has to dismiss themselves.
+      actions.showToast(`Could not assign ${unit.label} — ${(err as Error)?.message ?? 'the org refused it'}`);
     } finally {
       setBusyId(null);
+      onClose();
     }
   }
 
@@ -66,7 +64,6 @@ export function AssignEmployeeModal({ unit, onClose, onAssigned }: { unit: Unit;
           onChange={(e) => setQuery(e.target.value)}
           aria-label="Search people"
         />
-        {error && <p className={styles.error}>{error}</p>}
         <div className={styles.list}>
           {people.map((p) => (
             <button key={p.id} className={styles.row} disabled={busyId !== null} onClick={() => void pick(p.id, p.name)}>

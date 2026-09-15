@@ -20,14 +20,6 @@
   border-color: var(--blue-500);
   box-shadow: var(--shadow-focus);
 }
-.error {
-  margin: 10px 0 0;
-  padding: 8px 10px;
-  border-radius: var(--radius-md);
-  background: var(--danger-050);
-  color: var(--danger-700);
-  font: 500 12px/1.4 var(--font-sans);
-}
 /* A fixed, generous height so the dialog doesn't jump as the search narrows the list. */
 .list {
   margin-top: 10px;
