@@ -94,7 +94,7 @@ export function MobileFloorPicker() {
         <div className={styles.handle} />
         <div className={styles.headRow}>
           {canBack && (
-            <button className={styles.back} onClick={onBack} title="Back">
+            <button className={styles.back} onClick={onBack} data-tip="Back">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M15 18l-6-6 6-6" />
               </svg>

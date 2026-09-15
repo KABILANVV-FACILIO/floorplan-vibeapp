@@ -395,7 +395,7 @@ function BookingFormInner() {
               {formMeta ? formMeta.displayName : fallbackFormName}
             </span>
             {formMeta && (
-              <span title={`Org form ${formMeta.name}`} style={{ fontSize: 11, color: 'var(--ink-400)' }}>
+              <span data-tip={`Org form ${formMeta.name}`} style={{ fontSize: 11, color: 'var(--ink-400)' }}>
                 form #{formMeta.id}
               </span>
             )}
@@ -416,7 +416,7 @@ function BookingFormInner() {
                     type="button"
                     role="tab"
                     aria-selected={active}
-                    title={f.name}
+                    data-tip={f.name}
                     onClick={() => setFormId(f.id)}
                     style={{
                       padding: '6px 12px',

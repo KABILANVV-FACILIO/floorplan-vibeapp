@@ -93,7 +93,7 @@ export function Marker({ unit, invZ, onDragStart }: { unit: Unit; invZ: number; 
         </div>
       )}
       <div
-        title={title}
+        data-tip={title}
         onClick={onClick}
         onMouseDown={onMouseDown}
         onDragOver={onDragOver}

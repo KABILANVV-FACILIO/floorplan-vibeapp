@@ -181,7 +181,7 @@ function ToolsTab() {
           {workTools.map((t) => (
             <button
               key={t.id}
-              title={t.title}
+              data-tip={t.title}
               className={[styles.workBtn, state.tool === t.id && !state.placingUnitId ? styles.workBtnActive : ''].join(' ')}
               onClick={() => actions.setTool(t.id)}
             >
@@ -198,7 +198,7 @@ function ToolsTab() {
             return (
               <button
                 key={t.id}
-                title="Drag onto the plan, or click to arm the tool"
+                data-tip="Drag onto the plan, or click to arm the tool"
                 className={[styles.addBtn, on ? styles.addBtnActive : ''].join(' ')}
                 draggable
                 onDragStart={(e) => {
@@ -227,7 +227,7 @@ function ToolsTab() {
             );
           })}
           <button
-            title="Pick an asset from the list, then drag it onto the plan"
+            data-tip="Pick an asset from the list, then drag it onto the plan"
             className={[styles.addBtn, state.tool === 'asset' ? styles.addBtnActive : ''].join(' ')}
             onClick={() => actions.setTool('asset')}
           >
@@ -301,7 +301,7 @@ function MarkersTab() {
             return (
               <button
                 key={def.id}
-                title="Drag onto the plan, or click to arm"
+                data-tip="Drag onto the plan, or click to arm"
                 className={[styles.markerBtn, on ? styles.markerBtnActive : ''].join(' ')}
                 draggable
                 onDragStart={(e) => {
@@ -336,7 +336,7 @@ function MarkersTab() {
               {NM_SWATCHES.map((hex) => (
                 <button
                   key={hex}
-                  title={hex}
+                  data-tip={hex}
                   className={styles.swatch}
                   style={{ background: hex, boxShadow: nmColor === hex ? `0 0 0 2px #fff, 0 0 0 4px ${hex}` : 'none' }}
                   onClick={() => setNmColor(hex)}
@@ -376,7 +376,7 @@ function Inspector() {
         <div className={card.cardBody}>
           <div className={styles.inspectorHead}>
             <span className={styles.inspectorCount}>{multi.length} selected</span>
-            <button className={styles.inspectorClose} title="Deselect" onClick={() => actions.setMultiSelected([])}>
+            <button className={styles.inspectorClose} data-tip="Deselect" onClick={() => actions.setMultiSelected([])}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <path d="M18 6L6 18M6 6l12 12" />
               </svg>
@@ -397,7 +397,7 @@ function Inspector() {
       <div className={card.cardBody}>
         <div className={styles.inspectorHead}>
           <span className={styles.inspectorCount}>{sel.label}</span>
-          <button className={styles.inspectorClose} title="Deselect" onClick={() => actions.selectUnit(null)}>
+          <button className={styles.inspectorClose} data-tip="Deselect" onClick={() => actions.selectUnit(null)}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d="M18 6L6 18M6 6l12 12" />
             </svg>
@@ -608,7 +608,7 @@ function AssetListCard() {
                   e.dataTransfer.effectAllowed = 'copy';
                   e.dataTransfer.setDragImage(makeAssetDragImage(), 16, 16);
                 }}
-                title="Drag onto the floorplan to place"
+                data-tip="Drag onto the floorplan to place"
               >
                 <span className={styles.assetIcon}>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -623,7 +623,7 @@ function AssetListCard() {
                   </span>
                 </span>
                 {placed && (
-                  <span className={styles.assetPlaced} title="Already on this plan (drag to move)">
+                  <span className={styles.assetPlaced} data-tip="Already on this plan (drag to move)">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M20 6L9 17l-5-5" />
                     </svg>

@@ -1,5 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { installTooltipLayer } from './lib/tooltipLayer';
 import App from './App';
 import { isVibeApp } from './lib/vibe';
 import { isConnectedApp, isFacilioApiConfigured } from './lib/facilioApi';
@@ -19,6 +20,10 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
 console.info(
   `[floorplan] build ${__BUILD_STAMP__} | vibe=${isVibeApp} connectedApp=${isConnectedApp} apiConfigured=${isFacilioApiConfigured} embedded=${window.self !== window.top}`
 );
+
+// One tooltip node for the app, outside every panel and scroll box — a bubble rendered inside
+// its anchor gets clipped by any scrolling ancestor.
+installTooltipLayer();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

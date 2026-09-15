@@ -125,7 +125,7 @@ export function Tooltip() {
           <div className={styles.eyebrow}>{primaryLabel}</div>
           <div className={styles.name}>{primary}</div>
         </div>
-        <button className={styles.close} title="Close" onClick={() => actions.selectUnit(null)}>
+        <button className={styles.close} data-tip="Close" onClick={() => actions.selectUnit(null)}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M18 6L6 18M6 6l12 12" />
           </svg>

@@ -28,7 +28,7 @@ export function Toolbar({ leftPad, rightPad }: { leftPad: number; rightPad: numb
 
         <button
           className={[styles.editBtn, state.mode === 'edit' ? styles.editBtnActive : ''].join(' ')}
-          title={state.mode === 'edit' ? 'Exit edit mode' : 'Edit floorplan (admin)'}
+          data-tip={state.mode === 'edit' ? 'Exit edit mode' : 'Edit floorplan (admin)'}
           onClick={actions.toggleEdit}
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -40,7 +40,7 @@ export function Toolbar({ leftPad, rightPad }: { leftPad: number; rightPad: numb
 
         {/* Personal wayfinding has no place while editing the plan itself. */}
         {hasMyDesk && state.mode !== 'edit' && (
-          <button className={styles.myDesk} title="Locate my desk" onClick={onMyDesk}>
+          <button className={styles.myDesk} data-tip="Locate my desk" onClick={onMyDesk}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
               <circle cx="12" cy="12" r="4" />
@@ -51,7 +51,7 @@ export function Toolbar({ leftPad, rightPad }: { leftPad: number; rightPad: numb
 
         <button
           className={[styles.iconToggle, state.panels.details.open ? styles.iconToggleActive : ''].join(' ')}
-          title="Toggle details panel"
+          data-tip="Toggle details panel"
           onClick={() => actions.togglePanelOpen('details')}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">

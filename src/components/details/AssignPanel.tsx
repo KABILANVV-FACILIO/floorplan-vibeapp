@@ -120,7 +120,7 @@ export function AssignPanel() {
                 onDragEnd={onDragEnd}
                 onClick={() => recordUrl && window.open(recordUrl, '_blank', 'noopener,noreferrer')}
                 style={{ opacity: dragId === contact.id ? 0.45 : 1, cursor: recordUrl ? 'pointer' : 'grab' }}
-                title={recordUrl ? 'Open employee record' : undefined}
+                data-tip={recordUrl ? 'Open employee record' : undefined}
               >
                 <span className={styles.avatar}>{initials(contact.name)}</span>
                 <div className={styles.personText}>

@@ -591,7 +591,7 @@ export function Canvas() {
               <div
                 key={i}
                 onMouseDown={(e) => startVertexDrag(state.units.find((u) => u.id === selectedRoom.id)!, i, e)}
-                title="Drag to reshape"
+                data-tip="Drag to reshape"
                 style={{
                   position: 'absolute',
                   left: `${x * 100}%`,

@@ -279,7 +279,7 @@ function ModuleSwitch({ module, disabled }: { module: ModuleKey; disabled: boole
       className={[styles.switch, on ? styles.switchOn : ''].join(' ')}
       // Refusing the last one keeps the app from becoming a blank plan with no way back.
       disabled={disabled}
-      title={disabled ? 'At least one module must stay on' : on ? `Turn off ${TYPE_META[module].name}` : `Turn on ${TYPE_META[module].name}`}
+      data-tip={disabled ? 'At least one module must stay on' : on ? `Turn off ${TYPE_META[module].name}` : `Turn on ${TYPE_META[module].name}`}
       style={disabled ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
       onClick={() => actions.setModuleEnabled(module, !on)}
       aria-pressed={on}
@@ -314,7 +314,7 @@ function ModuleTab({ type }: { type: UnitType }) {
               {STATE_SWATCHES.map((hex) => (
                 <button
                   key={hex}
-                  title={hex}
+                  data-tip={hex}
                   className={styles.swatchBtn}
                   style={{
                     background: hex,

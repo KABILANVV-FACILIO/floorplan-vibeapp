@@ -86,7 +86,7 @@ export function SpacesList() {
             placeholder={isEdit ? 'Search available spaces' : 'Search this floor'}
           />
           {state.spaceSearch && (
-            <button className={styles.clearBtn} title="Clear" onClick={() => actions.setSpaceSearch('')}>
+            <button className={styles.clearBtn} data-tip="Clear" onClick={() => actions.setSpaceSearch('')}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
                 <path d="M18 6L6 18M6 6l12 12" />
               </svg>
@@ -170,7 +170,7 @@ function SpaceRow({ unit }: { unit: Unit }) {
           // clicking the marker land in the same place.
           : () => actions.focusUnit(unit.id, state.stage.w, state.stage.h)
       }
-      title={draggable ? 'Drag onto the floorplan, or click and then click the map' : undefined}
+      data-tip={draggable ? 'Drag onto the floorplan, or click and then click the map' : undefined}
     >
       <span className={styles.dot} style={{ background: status.dot }} />
       <div className={styles.rowText}>

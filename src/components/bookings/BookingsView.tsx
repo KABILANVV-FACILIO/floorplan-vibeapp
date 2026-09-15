@@ -295,7 +295,7 @@ export function BookingsView() {
               size="md"
               aria-label="Resource"
             />
-            <button className={styles.searchBtn} title="Filter resources" onClick={() => setSearch((s) => (s === '' ? ' ' : ''))}>
+            <button className={styles.searchBtn} data-tip="Filter resources" onClick={() => setSearch((s) => (s === '' ? ' ' : ''))}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" />
               </svg>
@@ -333,11 +333,11 @@ export function BookingsView() {
                 ))}
               </div>
               <div className={styles.navGroup}>
-                <button className={styles.navBtn} onClick={() => stepFocus(-1)} title="Previous">
+                <button className={styles.navBtn} onClick={() => stepFocus(-1)} data-tip="Previous">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg>
                 </button>
                 <button className={styles.todayBtn} onClick={() => setFocusDate(toISO(new Date()))}>Today</button>
-                <button className={styles.navBtn} onClick={() => stepFocus(1)} title="Next">
+                <button className={styles.navBtn} onClick={() => stepFocus(1)} data-tip="Next">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
                 </button>
               </div>
@@ -536,14 +536,14 @@ function CalendarGrid({ dates, bookingsFor, myId, snap, onCreate, onCancel, cont
                       className={[styles.block, mine ? styles.blockMine : styles.blockOther].join(' ')}
                       style={{ top, height }}
                       onMouseDown={(e) => e.stopPropagation()}
-                      title={mine ? 'Your booking' : `Booked by ${contactNameOf(b.by) || 'someone'}`}
+                      data-tip={mine ? 'Your booking' : `Booked by ${contactNameOf(b.by) || 'someone'}`}
                     >
                       {/* Cancelling is an explicit button, never a bare click on the block —
                           clicking a booking to inspect it used to silently cancel it. */}
                       {mine && (
                         <button
                           className={styles.blockCancel}
-                          title="Cancel this booking"
+                          data-tip="Cancel this booking"
                           aria-label="Cancel booking"
                           onClick={(e) => {
                             e.stopPropagation();

@@ -52,7 +52,7 @@ export function PeopleView() {
                   </div>
                   {desk && <span className={styles.deskPill}>{desk}</span>}
                   {real && (
-                    <a className={styles.openLink} href={real} target="_blank" rel="noreferrer" title="Open record in Facilio">
+                    <a className={styles.openLink} href={real} target="_blank" rel="noreferrer" data-tip="Open record in Facilio">
                       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
                         <path d="M15 3h6v6M10 14L21 3" />

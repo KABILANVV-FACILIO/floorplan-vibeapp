@@ -40,7 +40,7 @@ export function BottomNav() {
 
 function NavBtn({ active, label, icon, badge, onClick }: { active: boolean; label: string; icon: ReactNode; badge?: number; onClick: () => void }) {
   return (
-    <button className={[styles.btn, active ? styles.btnActive : ''].join(' ')} onClick={onClick} title={label} aria-current={active ? 'page' : undefined}>
+    <button className={[styles.btn, active ? styles.btnActive : ''].join(' ')} onClick={onClick} data-tip={label} aria-current={active ? 'page' : undefined}>
       <span className={styles.iconWrap}>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
           {icon}

@@ -10,7 +10,8 @@
     "typecheck": "tsc -b",
     "fn:create": "facilio vibe fn create floorplanApi --code functions/floorplanApi/code.ts --description \"Floorplan Manager app data (units, assignments, bookings, settings, files)\" && facilio vibe fn build floorplanApi",
     "fn:push": "facilio vibe fn update floorplanApi --code functions/floorplanApi/code.ts && facilio vibe fn build floorplanApi",
-    "deploy": "npm run build && facilio vibe deploy"
+    "deploy": "npm run build && facilio vibe deploy",
+    "test": "vitest run"
   },
   "dependencies": {
     "@facilio/vibe-sdk": "^0.3.3",
@@ -23,11 +24,14 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^26.5.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^25.0.1",
     "typescript": "^5.6.3",
-    "vite": "^5.4.11"
+    "vite": "^5.4.11",
+    "vitest": "^3.2.7"
   }
 }

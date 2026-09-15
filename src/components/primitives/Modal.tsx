@@ -24,7 +24,7 @@ export function ModalHeader({ title, subtitle, onClose }: { title: ReactNode; su
         <h3 className={styles.title}>{title}</h3>
         {subtitle && <div className={styles.subtitle}>{subtitle}</div>}
       </div>
-      <button className={styles.close} title="Close" onClick={onClose}>
+      <button className={styles.close} data-tip="Close" onClick={onClose}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
           <path d="M18 6L6 18M6 6l12 12" />
         </svg>

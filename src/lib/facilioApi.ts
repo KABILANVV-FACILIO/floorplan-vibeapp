@@ -355,7 +355,7 @@ export const facilioApi = {
  * `invokeFacilioAPI("/v2/workflow/runWorkflow", { method: "POST", data })`, so paths are
  * root-relative and options carry `method` + `data`.
  */
-async function bridgeInvoke(path: string, options: { method: 'GET' | 'POST'; data?: Record<string, unknown> }): Promise<any> {
+async function bridgeInvoke(path: string, options: { method: 'GET' | 'POST' | 'PATCH'; data?: Record<string, unknown> }): Promise<any> {
   const app = await facilioAppReady();
   const url = path.startsWith('/') ? path : `/${path}`;
   const raw = await app.request.invokeFacilioAPI(url, options);
@@ -368,6 +368,20 @@ export async function customGet(path: string, params?: Record<string, unknown>, 
     return bridgeInvoke(`${path}${query}`, { method: 'GET' });
   }
   const res = await devInstance!.get(opts?.devAbsoluteUrl ?? path, { params });
+  return res.data;
+}
+
+/**
+ * PATCH version of `customGet`. Facilio's stateflow and approval transitions are PATCHes
+ * (`v3/action/{module}/{id}/transition`), which neither the module-CRUD wrappers nor customPost
+ * can express. The host bridge may reject the verb — callers carry their own fallback.
+ */
+export async function customPatch(path: string, data?: unknown, params?: Record<string, unknown>, opts?: { devAbsoluteUrl?: string }): Promise<any> {
+  if (isConnectedApp) {
+    const query = params && Object.keys(params).length ? `?${new URLSearchParams(params as Record<string, string>).toString()}` : '';
+    return bridgeInvoke(`${path}${query}`, { method: 'PATCH', data: data as Record<string, unknown> });
+  }
+  const res = await devInstance!.patch(opts?.devAbsoluteUrl ?? path, data, { params });
   return res.data;
 }
 

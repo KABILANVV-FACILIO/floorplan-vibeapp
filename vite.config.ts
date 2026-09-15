@@ -1,4 +1,5 @@
 import { execSync } from 'node:child_process';
+/// <reference types="vitest" />
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import type { ProxyOptions } from 'vite';
@@ -26,6 +27,11 @@ export default defineConfig(({ mode }) => {
   return {
     define: { __BUILD_STAMP__: JSON.stringify(buildStamp()) },
     plugins: [react()],
+    // `npm test` — jsdom so DOM behaviour (the tooltip layer, components, hooks) can be asserted.
+    test: {
+      environment: 'jsdom',
+      include: ['src/**/*.test.{ts,tsx}'],
+    },
     server: {
       port: 9090,
       strictPort: true,

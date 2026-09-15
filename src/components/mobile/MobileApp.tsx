@@ -65,7 +65,7 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
             </svg>
             Mobile preview
           </span>
-          <button className={styles.chromeClose} onClick={onClose} title="Close mobile preview">
+          <button className={styles.chromeClose} onClick={onClose} data-tip="Close mobile preview">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d="M18 6L6 18M6 6l12 12" />
             </svg>
@@ -105,7 +105,7 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
               ) : (
                 <span className={styles.dateStatic}>{new Date(state.date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span>
               )}
-              <button className={styles.qrBtn} onClick={() => setMyBookingsOpen(true)} title="My bookings" aria-label="My bookings">
+              <button className={styles.qrBtn} onClick={() => setMyBookingsOpen(true)} data-tip="My bookings" aria-label="My bookings">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="3" y="4" width="18" height="17" rx="2" />
                   <path d="M16 2v4M8 2v4M3 10h18" />
@@ -113,7 +113,7 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
                 </svg>
                 {myBookingsCount > 0 && <span className={styles.iconBadge}>{myBookingsCount}</span>}
               </button>
-              <button className={styles.qrBtn} onClick={() => setQrOpen(true)} title="Scan a space QR" aria-label="Scan a space QR">
+              <button className={styles.qrBtn} onClick={() => setQrOpen(true)} data-tip="Scan a space QR" aria-label="Scan a space QR">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="3" y="3" width="7" height="7" rx="1" />
                   <rect x="14" y="3" width="7" height="7" rx="1" />
@@ -445,8 +445,8 @@ function MobileMap({
         ))}
       </div>
       <div className={styles.zoomBtns}>
-        <button className={styles.zoomBtn} onClick={() => zoomBtn(1.4)} title="Zoom in">+</button>
-        <button className={styles.zoomBtn} onClick={() => zoomBtn(1 / 1.4)} title="Zoom out">−</button>
+        <button className={styles.zoomBtn} onClick={() => zoomBtn(1.4)} data-tip="Zoom in">+</button>
+        <button className={styles.zoomBtn} onClick={() => zoomBtn(1 / 1.4)} data-tip="Zoom out">−</button>
       </div>
     </div>
   );
