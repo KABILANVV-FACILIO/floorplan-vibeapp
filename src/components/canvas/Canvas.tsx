@@ -11,7 +11,7 @@ import { Legend } from './Legend';
 import { ZoomControls } from './ZoomControls';
 import { Tooltip } from './Tooltip';
 import { visibleUnits } from '../../state/selectors';
-import { floorImageKey, isRoomLike, isZoneTool } from '../../lib/types';
+import { floorImageKey, isRoomLike, isZoneTool, unitOnPlan } from '../../lib/types';
 import type { PolyGeom, Unit, UnitGeom } from '../../lib/types';
 import styles from './Canvas.module.css';
 
@@ -228,7 +228,7 @@ export function Canvas() {
       const a = toNorm(Math.min(m.x1, m.x2) + r.left, Math.min(m.y1, m.y2) + r.top, r, state.view);
       const b = toNorm(Math.max(m.x1, m.x2) + r.left, Math.max(m.y1, m.y2) + r.top, r, state.view);
       const hits = visibleUnits(state)
-        .filter((u) => (isRoomLike(u.type) && u.geom.kind === 'poly') || (!isRoomLike(u.type) && u.plan === state.planId))
+        .filter((u) => unitOnPlan(u, state.planId) && (isRoomLike(u.type) ? u.geom.kind === 'poly' : true))
         .filter((u) => {
           const { cx, cy } = unitCenter(u);
           return cx >= a.x && cx <= b.x && cy >= a.y && cy <= b.y;
@@ -485,13 +485,16 @@ export function Canvas() {
   // `visibleUnits` drops anything whose module is switched off, so a disabled module leaves
   // nothing on the plan — not an empty outline, not a hit target.
   const drawable = visibleUnits(state);
+  // Zones are scoped to the plan they were traced over, exactly like markers — their polygon is in
+  // that image's coordinates, so drawing them on every plan put a room on floorplans it was never
+  // on.
   const rooms = drawable
-    .filter((u) => isRoomLike(u.type) && u.geom.kind === 'poly')
+    .filter((u) => isRoomLike(u.type) && u.geom.kind === 'poly' && unitOnPlan(u, state.planId))
     .map((u) => ({ ...u, geom: previewedGeom(u) }));
   const markers = drawable
     // amenities show on every plan type; desks/lockers/parking only on theirs. `unplaced` units
     // (org records with no plan position, e.g. connector spaces) are sidebar-only, never drawn.
-    .filter((u) => !isRoomLike(u.type) && !u.unplaced && (u.type === 'amenity' || u.plan === state.planId))
+    .filter((u) => !isRoomLike(u.type) && !u.unplaced && (u.type === 'amenity' || unitOnPlan(u, state.planId)))
     .map((u) => ({ ...u, geom: previewedGeom(u) }));
 
   const selectedRoom = isEditSelect && multiSel.size === 0 ? rooms.find((r) => r.id === state.selected) : undefined;

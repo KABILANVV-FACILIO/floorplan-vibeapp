@@ -3,7 +3,7 @@ import type { Dispatch, MutableRefObject, ReactNode } from 'react';
 import { dataSource, clearLocalData } from '../lib/dataSource';
 import type { CreateSpaceLoc } from '../lib/dataSource';
 import { PORTFOLIO as MOCK_PORTFOLIO, EMPLOYEES as MOCK_EMPLOYEES, seedBookings, seedUnits, seedAssignments } from '../lib/mockData';
-import { floorImageKey, isRoomLike, planForPlacement, resolveMarkerDef, TYPE_META } from '../lib/types';
+import { floorImageKey, isRoomLike, planForPlacement, resolveMarkerDef, TYPE_META, unitOnPlan } from '../lib/types';
 import type { AmenityIcon, Booking, FloorSearchHit, MarkerDef, ModuleKey, PlanId, Role, Site, Unit, UnitType } from '../lib/types';
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
@@ -275,7 +275,12 @@ async function ensureFloorplanImage(dispatch: Dispatch<Action>, floorId: string,
 let assetsRequested = false;
 
 function roomLabelAt(state: AppState, x: number, y: number): string | null {
-  const room = state.units.find((u) => u.type === 'room' && u.geom.kind === 'poly' && pointInPoly({ x, y }, u.geom.pts));
+  // Only rooms on the plan being shown: now that zones are scoped to the image they were traced
+  // over, a room on the workstation plan says nothing about a point picked on the locker plan —
+  // the two are different images and the 0-1 coordinates are not comparable.
+  const room = state.units.find(
+    (u) => u.type === 'room' && u.geom.kind === 'poly' && unitOnPlan(u, state.planId) && pointInPoly({ x, y }, u.geom.pts)
+  );
   return room ? room.label : null;
 }
 
@@ -705,7 +710,8 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
         room: null,
         geom: { kind: 'poly', pts: state.draft },
         floor: state.floorId,
-        plan: 'custom',
+        // The plan it was traced over — its points are in that image's coordinates.
+        plan: planForPlacement(state.planId, zoneType),
       };
       // A drawn zone is a real space too — create it on the connector (category "Room"), then
       // persist its polygon locally. Falls back to the local record if the connector isn't there.
@@ -758,13 +764,13 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
               room: null,
               geom: { kind: 'poly', pts: item.poly },
               floor: state.floorId,
-              plan: 'custom',
+              plan: planForPlacement(state.planId, 'room'),
             });
           } else {
             if (!item.point) continue;
             const [x, y] = item.point;
             counters[type] += 1;
-            const rooms = [...state.units, ...created].filter((u) => u.type === 'room');
+            const rooms = [...state.units, ...created].filter((u) => u.type === 'room' && unitOnPlan(u, state.planId));
             const room = rooms.find((r) => r.geom.kind === 'poly' && pointInPoly({ x, y }, r.geom.pts));
             created.push({
               id: 'u' + idSeq++,

@@ -43,18 +43,31 @@ export function isZoneTool(tool: EditTool): boolean {
 }
 
 /**
- * Which plan a unit being PLACED belongs to.
+ * Which plan a unit being PLACED or DRAWN belongs to: the one on screen.
  *
- * `Unit.plan` is the floorplan IMAGE a marker is drawn on — the canvas filters by it, and the org
- * sync converts the marker's 0-1 position through that plan's georeference quad. So it is decided
- * by the plan on screen when the point was picked, never by the unit's type: placing a desk while
- * the Lockers plan is open used to tag it `workstation`, which made it vanish from the plan the
- * user was looking at and wrote its locker-plan coordinates into the workstation plan's record.
+ * `Unit.plan` is the floorplan IMAGE a shape sits on — the canvas filters by it, and the org sync
+ * converts a marker's 0-1 position through that plan's georeference quad. So it is decided by the
+ * plan being shown when the shape was drawn, never by the unit's type. Placing a desk while the
+ * Lockers plan was open used to tag it `workstation`, which made it vanish from the plan the user
+ * was looking at and wrote its locker-plan coordinates into the workstation plan's record.
  *
- * Room-like zones are plan-agnostic (they draw on every plan), so they keep `custom`.
+ * Zones used to be exempt — tagged `custom` and drawn on EVERY plan — so a room added to one
+ * floorplan appeared on all three. A zone's polygon is in the coordinates of the image it was
+ * traced over, so it belongs to that image exactly as much as a marker does.
  */
-export function planForPlacement(currentPlan: PlanId, type: UnitType): PlanId {
-  return isRoomLike(type) ? 'custom' : currentPlan;
+export function planForPlacement(currentPlan: PlanId, _type: UnitType): PlanId {
+  return currentPlan;
+}
+
+/**
+ * Whether a unit belongs to the plan currently on screen.
+ *
+ * `custom` is the legacy tag for zones drawn before they were plan-scoped (and for the demo seed).
+ * It resolves to the default plan so those older shapes land in ONE place instead of all of them.
+ */
+export function unitOnPlan(unit: Pick<Unit, 'plan'>, planId: PlanId): boolean {
+  const resolve = (p: PlanId): PlanId => (p === 'custom' ? 'workstation' : p);
+  return resolve(unit.plan) === resolve(planId);
 }
 
 /** Informational point markers (not assignable/bookable), shown on every plan type. */
