@@ -640,7 +640,6 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
         id: 'u' + Date.now(),
         type,
         label,
-        secondary: type === 'workstation' ? 'Standard · single monitor' : undefined,
         room: roomLabelAt(state, x, y),
         geom: { kind: 'point', x, y },
         floor: state.floorId,

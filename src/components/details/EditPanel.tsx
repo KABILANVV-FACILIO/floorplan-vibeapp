@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { DragEvent as ReactDragEvent, ReactNode } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
-import { moduleEnabled, unitById } from '../../state/selectors';
-import { polyAreaM2 } from '../../lib/geometry';
+import { contactName, moduleEnabled, unitById } from '../../state/selectors';
+import { polyAreaM2, unitSortCompare } from '../../lib/geometry';
 import { BUILTIN_MARKERS, DESK_TYPES, floorImageKey, isRoomLike, isZoneTool, TYPE_META } from '../../lib/types';
-import type { EditTool, MarkerDef } from '../../lib/types';
+import type { EditTool, MarkerDef, Unit } from '../../lib/types';
+import { unitStatus } from '../../lib/unitStatus';
 import { MARKER_ICONS } from '../canvas/markerIcons';
 import { Button } from '../primitives/Button';
+import { Select } from '../primitives/Select';
+import { StatusPill } from '../primitives/StatusPill';
 import { Picklist } from '../fds/Picklist';
 import card from './Card.module.css';
 import styles from './EditPanel.module.css';
@@ -402,30 +405,25 @@ function Inspector() {
         </div>
         <label className={card.label}>Label</label>
         <input className={card.input} value={sel.label} onChange={(e) => actions.updateUnit(sel.id, { label: e.target.value })} />
+        <RecordSwap sel={sel} />
         {sel.type === 'workstation' && (
-          <>
-            <label className={card.label} style={{ marginTop: 10 }}>
-              Seat type
-            </label>
-            <input className={card.input} value={sel.secondary ?? ''} onChange={(e) => actions.updateUnit(sel.id, { secondary: e.target.value })} />
-            {/* Real deskType semantics (Context/Workplace_spaceModules.md): ASSIGNED desks are
-                assignment-only; HOT/HOTEL desks are booking-only. Changing this immediately
-                regates the assign/book flows for this marker. FDS Picklist (Canvas-2.dc.html
-                design) replaces the former raw <select>. */}
-            <div style={{ marginTop: 10 }}>
-              <Picklist
-                label="Desk type"
-                value={sel.deskType ?? 'ASSIGNED'}
-                onChange={(v) => actions.updateUnit(sel.id, { deskType: v })}
-                options={DESK_TYPES.map((t) => ({
-                  value: t.id,
-                  label: t.name,
-                  description: t.id === 'ASSIGNED' ? 'Assignable, not bookable' : 'Bookable, not assignable',
-                }))}
-                aria-label="Desk type"
-              />
-            </div>
-          </>
+          /* Real deskType semantics (Context/Workplace_spaceModules.md): ASSIGNED desks are
+             assignment-only; HOT/HOTEL desks are booking-only. Changing this immediately
+             regates the assign/book flows for this marker. FDS Picklist (Canvas-2.dc.html
+             design) replaces the former raw <select>. */
+          <div style={{ marginTop: 10 }}>
+            <Picklist
+              label="Desk type"
+              value={sel.deskType ?? 'ASSIGNED'}
+              onChange={(v) => actions.updateUnit(sel.id, { deskType: v })}
+              options={DESK_TYPES.map((t) => ({
+                value: t.id,
+                label: t.name,
+                description: t.id === 'ASSIGNED' ? 'Assignable, not bookable' : 'Bookable, not assignable',
+              }))}
+              aria-label="Desk type"
+            />
+          </div>
         )}
         <div className={card.statRow}>
           <span className={card.statLabel}>Type</span>
@@ -454,6 +452,11 @@ function Inspector() {
             </span>
           </div>
         )}
+        {sel.type !== 'amenity' && (
+          <div style={{ marginTop: 10 }}>
+            <InspectorStatus sel={sel} />
+          </div>
+        )}
         <Button variant="danger" fullWidth style={{ marginTop: 10 }} onClick={() => actions.deleteUnit(sel.id)}>
           Delete
         </Button>
@@ -463,6 +466,50 @@ function Inspector() {
       </div>
     </div>
   );
+}
+
+/**
+ * Which real record sits at this spot. Picking another swaps them: the picked record takes the
+ * position and the one that was here returns to "Available to place" — the same exchange the
+ * drag-onto-a-marker gesture performs (`placeUnitOnUnit`), reachable without dragging.
+ *
+ * This replaced a free-text "Seat type" box, which wrote `unit.secondary` — a label this app
+ * invented and the org has no field for, so nothing it captured ever reached a record.
+ *
+ * Only same-type unplaced records are offered, because that is the swap the action accepts; zones
+ * and amenities aren't record-backed at all and get no picker.
+ */
+function RecordSwap({ sel }: { sel: Unit }) {
+  const { state, actions } = useFloorplan();
+  if (isRoomLike(sel.type) || sel.type === 'amenity') return null;
+
+  const candidates = state.unplacedUnits.filter((u) => u.type === sel.type).sort(unitSortCompare);
+  const options = [{ value: sel.id, label: sel.label }, ...candidates.map((u) => ({ value: u.id, label: u.label }))];
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <label className={card.label}>{TYPE_META[sel.type].name}</label>
+      <Select
+        fullWidth
+        value={sel.id}
+        options={options}
+        onChange={(id) => id !== sel.id && actions.placeUnitOnUnit(id, sel.id)}
+        aria-label={`${TYPE_META[sel.type].name} record at this spot`}
+      />
+      {candidates.length > 0 ? (
+        <p className={styles.inspectorNote}>The picked record takes this spot; “{sel.label}” moves to Available to place.</p>
+      ) : (
+        <p className={styles.inspectorNote}>No other unplaced {TYPE_META[sel.type].name.toLowerCase()} records on this floor to swap with.</p>
+      )}
+    </div>
+  );
+}
+
+/** The marker's current state — the same pill the canvas and the spaces list show. */
+function InspectorStatus({ sel }: { sel: Unit }) {
+  const { state } = useFloorplan();
+  const status = unitStatus(state, sel, (id) => contactName(state, id));
+  return <StatusPill label={status.text} bg={status.bg} fg={status.fg} />;
 }
 
 function CalibrationCard() {

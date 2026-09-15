@@ -56,10 +56,13 @@ export function Tooltip() {
         ? 'Desk'
         : TYPE_META[unit.type].name;
   const primary = unit.label;
-  const secondaryLabel = isAmenity ? 'Details' : unit.secondary ? 'Seat type' : 'Type';
+  // Only amenities carry a meaningful `secondary` (an asset's "category · detail"). For records it
+  // used to hold a free-text "Seat type" the org has no field for; that input is gone, so the line
+  // says what the unit IS rather than labelling a value nothing can set any more.
+  const secondaryLabel = isAmenity ? 'Details' : 'Type';
   const secondary = isAmenity
     ? unit.secondary || (unit.markerKind || unit.icon ? markerName : 'Marker')
-    : unit.secondary || [TYPE_META[unit.type].name, unit.room].filter(Boolean).join(' · ');
+    : [TYPE_META[unit.type].name, unit.room].filter(Boolean).join(' · ');
 
   const bookable = isBookable(unit);
   const assignable = isAssignable(unit);
