@@ -165,7 +165,7 @@ export function Tooltip() {
         </Button>
       )}
       {state.mode === 'assign' && assignable && !contactId && (
-        <Button variant="primary" fullWidth style={{ marginTop: 10 }} onClick={() => actions.togglePanelOpen('details')}>
+        <Button variant="primary" fullWidth style={{ marginTop: 10 }} onClick={() => actions.openPanel('details')}>
           Assign
         </Button>
       )}

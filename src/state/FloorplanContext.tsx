@@ -1130,6 +1130,12 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     showToast,
 
     togglePanelOpen: (id: 'context' | 'portfolio' | 'details') => dispatch({ type: 'TOGGLE_PANEL_OPEN', id }),
+    /**
+     * Force a panel open — for actions that have to REVEAL something (the people list, the
+     * reassign form). Toggling is wrong there: the details panel is open by default, so a toggle
+     * hides the very list the button exists to show.
+     */
+    openPanel: (id: 'context' | 'portfolio' | 'details') => dispatch({ type: 'SET_PANEL_OPEN', id, open: true }),
     setPanelPos: (id: 'context' | 'portfolio' | 'details', x: number, y: number, width: number) => {
       const clamped = clampPanelPos(x, y, width, state.stage.w, state.stage.h);
       dispatch({ type: 'SET_PANEL_POS', id, x: clamped.x, y: clamped.y });
