@@ -1,5 +1,6 @@
+import { useLayoutEffect, useRef, useState } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
-import { contactName, isAssignable, isBookable, unitById } from '../../state/selectors';
+import { contactName, isAssignable, isBookable, moduleEnabled, unitById } from '../../state/selectors';
 import { tooltipPlacement, unitCenter } from '../../lib/geometry';
 import { unitStatus } from '../../lib/unitStatus';
 import { StatusPill } from '../primitives/StatusPill';
@@ -9,11 +10,35 @@ import styles from './Tooltip.module.css';
 
 export function Tooltip() {
   const { state, actions } = useFloorplan();
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  // The card's own box, measured after it renders — its height depends on which sections and
+  // buttons this unit and mode produce, and placement can't clear the stage edges without it.
+  // Measured in a layout effect so the corrected position is painted in the same frame.
+  const [size, setSize] = useState<{ w: number; h: number } | undefined>(undefined);
+
   const unit = unitById(state, state.selected);
-  if (!unit) return null;
+  // A unit whose module was switched off in Settings must leave no trace — including a card left
+  // open over a marker the canvas has already stopped drawing.
+  const visible = !!unit && moduleEnabled(state, unit.type);
+
+  useLayoutEffect(() => {
+    const el = cardRef.current;
+    if (!el) return;
+    const measure = () => {
+      const { offsetWidth: w, offsetHeight: h } = el;
+      setSize((prev) => (prev && prev.w === w && prev.h === h ? prev : { w, h }));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [unit?.id, state.mode, visible]);
+
+  if (!unit || !visible) return null;
 
   const { cx, cy } = unitCenter(unit);
-  const place = tooltipPlacement(cx, cy, state.view);
+  const place = tooltipPlacement(cx, cy, state.view, state.stage, size);
   const status = unitStatus(state, unit, (id) => contactName(state, id));
   const contactId = state.assignments[unit.id];
 
@@ -42,6 +67,7 @@ export function Tooltip() {
 
   return (
     <div
+      ref={cardRef}
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
       className={styles.card}
@@ -113,7 +139,7 @@ export function Tooltip() {
       </>
       )}
 
-      <div className={[styles.caret, place.below ? styles.caretBelow : styles.caretAbove].join(' ')} />
+      <div className={[styles.caret, place.below ? styles.caretBelow : styles.caretAbove].join(' ')} style={{ left: place.caretLeft }} />
     </div>
   );
 }

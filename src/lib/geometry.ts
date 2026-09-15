@@ -153,17 +153,67 @@ export interface TooltipPlacement {
   sy: number;
   below: boolean;
   transform: string;
+  /** Where the caret sits along the card's own width, as a CSS percentage — it must keep pointing at the marker even after the card is nudged off the edge. */
+  caretLeft: string;
 }
 
-export function tooltipPlacement(cx: number, cy: number, view: ViewTransform): TooltipPlacement {
+/** Gap between the marker and the card, and the minimum breathing room against a stage edge. */
+const TOOLTIP_GAP = 20;
+const TOOLTIP_MARGIN = 6;
+
+/**
+ * Where the selected unit's card goes, in stage coordinates.
+ *
+ * The stage clips (`.wrap` is `overflow: hidden`), so a card centred on a marker near an edge was
+ * simply cut in half — the closer the marker to a corner, the less of its card survived, which
+ * reads as the tooltip being broken rather than positioned. So the card is kept inside the stage
+ * on both axes and the caret slides along it to keep pointing at the actual marker.
+ *
+ * `size` is the card's MEASURED box (the caller measures the rendered node): its height swings
+ * from ~110px for an amenity to ~230px in assign mode with two action buttons, and the previous
+ * fixed 180px flip threshold guessed wrong for the tall variants — they opened upward with their
+ * heads off the top of the stage.
+ */
+export function tooltipPlacement(
+  cx: number,
+  cy: number,
+  view: ViewTransform,
+  stage?: { w: number; h: number },
+  size?: { w: number; h: number }
+): TooltipPlacement {
   const sx = view.tx + cx * IMG_W * view.z;
   const sy = view.ty + cy * IMG_H * view.z;
-  const below = sy < 180;
+
+  const stageW = stage?.w ?? 0;
+  const stageH = stage?.h ?? 0;
+  const cardW = size?.w ?? 214;
+  const cardH = size?.h ?? 150;
+
+  // Prefer above (the established look); flip below only when the card wouldn't clear the top —
+  // and stay above anyway if below has even less room, so the overflow goes to the roomier side.
+  const roomAbove = sy - TOOLTIP_GAP - cardH;
+  const roomBelow = stageH ? stageH - (sy + TOOLTIP_GAP + cardH) : Number.POSITIVE_INFINITY;
+  const below = roomAbove < TOOLTIP_MARGIN && roomBelow > roomAbove;
+
+  // Horizontal: centred on the marker, then pushed back inside the stage. A stage narrower than
+  // the card can't satisfy both edges — pin to the left one rather than producing a max < min.
+  const half = cardW / 2;
+  let left = sx;
+  if (stageW > 0) {
+    const min = half + TOOLTIP_MARGIN;
+    const max = stageW - half - TOOLTIP_MARGIN;
+    left = max < min ? min : clamp(sx, min, max);
+  }
+
+  // The caret tracks the marker across the card, stopping short of the rounded corners.
+  const caretPct = cardW > 0 ? clamp(((sx - left) / cardW + 0.5) * 100, 8, 92) : 50;
+
   return {
-    sx,
+    sx: left,
     sy,
     below,
-    transform: below ? 'translate(-50%, 20px)' : 'translate(-50%, calc(-100% - 20px))',
+    transform: below ? `translate(-50%, ${TOOLTIP_GAP}px)` : `translate(-50%, calc(-100% - ${TOOLTIP_GAP}px))`,
+    caretLeft: `${caretPct.toFixed(2)}%`,
   };
 }
 
