@@ -264,12 +264,13 @@ export function reducer(state: AppState, action: Action): AppState {
       const tool: AppState['tool'] = pooled && isRoomLike(pooled.type) ? (pooled.type === 'delivery' ? 'delivery' : 'room') : 'select';
       return { ...state, placingUnitId: action.id, tool, draft: [] };
     }
-    // Drop an "Available to place" record (or an already-placed one) onto an existing same-type
-    // marker: the dragged record takes the target's exact spot, and the target's record moves to
-    // the unplaced pool — re-mapping which record sits at a location without re-aiming the point.
+    // Re-map which RECORD occupies a shape already on the plan: the picked record takes the
+    // target's exact geometry, and the target's record returns to the unplaced pool. Works for a
+    // marker's point and for a zone's traced outline alike — the outline is as much a placement as
+    // a coordinate is, and rebinding it beats re-tracing the same room to correct the record.
     case 'REPLACE_UNIT_AT': {
       const target = state.units.find((u) => u.id === action.targetId);
-      if (!target || target.geom.kind !== 'point' || isRoomLike(target.type)) return state;
+      if (!target) return state;
       const dragged = state.unplacedUnits.find((u) => u.id === action.unitId) ?? state.units.find((u) => u.id === action.unitId);
       if (!dragged || dragged.id === target.id) return state;
       // The dragged record takes the target's exact spot, so it takes the target's PLAN as well —

@@ -471,19 +471,22 @@ function Inspector() {
 }
 
 /**
- * Which real record sits at this spot. Picking another swaps them: the picked record takes the
- * position and the one that was here returns to "Available to place" — the same exchange the
- * drag-onto-a-marker gesture performs (`placeUnitOnUnit`), reachable without dragging.
+ * Which real record this shape stands for. Picking another swaps them: the picked record takes the
+ * position — a marker's point or a room's traced outline — and the one that was here returns to
+ * "Available to place". The same exchange the drag-onto-a-marker gesture performs
+ * (`placeUnitOnUnit`), reachable without dragging, and the only way to correct a zone's record
+ * short of re-tracing the room.
  *
  * This replaced a free-text "Seat type" box, which wrote `unit.secondary` — a label this app
  * invented and the org has no field for, so nothing it captured ever reached a record.
  *
- * Only same-type unplaced records are offered, because that is the swap the action accepts; zones
- * and amenities aren't record-backed at all and get no picker.
+ * Only same-type unplaced records are offered, because that is the swap the action accepts.
  */
 function RecordSwap({ sel }: { sel: Unit }) {
   const { state, actions } = useFloorplan();
-  if (isRoomLike(sel.type) || sel.type === 'amenity') return null;
+  // Amenities and library markers aren't records. Everything else is, zones included: a traced
+  // room is bound to a space record exactly as a marker is bound to a desk.
+  if (sel.type === 'amenity') return null;
 
   const candidates = state.unplacedUnits.filter((u) => u.type === sel.type).sort(unitSortCompare);
   const options = [{ value: sel.id, label: sel.label }, ...candidates.map((u) => ({ value: u.id, label: u.label }))];
@@ -499,7 +502,9 @@ function RecordSwap({ sel }: { sel: Unit }) {
         aria-label={`${TYPE_META[sel.type].name} record at this spot`}
       />
       {candidates.length > 0 ? (
-        <p className={styles.inspectorNote}>The picked record takes this spot; “{sel.label}” moves to Available to place.</p>
+        <p className={styles.inspectorNote}>
+          The picked record takes this {isRoomLike(sel.type) ? 'outline' : 'spot'}; “{sel.label}” moves to Available to place.
+        </p>
       ) : (
         <p className={styles.inspectorNote}>No other unplaced {TYPE_META[sel.type].name.toLowerCase()} records on this floor to swap with.</p>
       )}

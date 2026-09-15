@@ -625,7 +625,9 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     placeUnitOnUnit: (unitId: string, targetId: string) => {
       const target = state.units.find((u) => u.id === targetId);
       const dragged = state.unplacedUnits.find((u) => u.id === unitId) ?? state.units.find((u) => u.id === unitId);
-      if (!target || !dragged || target.geom.kind !== 'point' || isRoomLike(target.type) || dragged.id === target.id) return;
+      // Any shape, not just a point: a traced room can have its record swapped from the inspector's
+      // lookup without re-drawing the outline.
+      if (!target || !dragged || dragged.id === target.id) return;
       if (dragged.type !== target.type) return;
       dispatch({ type: 'REPLACE_UNIT_AT', unitId, targetId });
       const placedDragged: Unit = { ...dragged, geom: { ...target.geom }, room: target.room, floor: state.floorId, plan: target.plan, unplaced: undefined };

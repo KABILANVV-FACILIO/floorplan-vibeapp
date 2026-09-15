@@ -73,6 +73,49 @@ describe('arming a record picks the right tool for its shape', () => {
   });
 });
 
+describe('a traced room can change which record it stands for', () => {
+  const pts: [number, number][] = [
+    [0.1, 0.1],
+    [0.4, 0.1],
+    [0.4, 0.5],
+  ];
+  const onPlan = room({ id: '783701', label: 'Internal Audit', geom: { kind: 'poly', pts }, unplaced: undefined });
+  const other = room({ id: '783702', label: 'Executive Meeting Room' });
+
+  function planned() {
+    return { ...withPool([other]), units: [onPlan], savedUnits: [onPlan] };
+  }
+
+  it('hands the outline to the picked record, without re-tracing it', () => {
+    const next = reducer(planned(), { type: 'REPLACE_UNIT_AT', unitId: '783702', targetId: '783701' });
+
+    const placed = next.units.find((u) => u.id === '783702');
+    expect(placed).toBeDefined();
+    expect(placed!.geom).toEqual({ kind: 'poly', pts }); // the same outline, not a fresh one
+    expect(placed!.label).toBe('Executive Meeting Room');
+    expect(next.units.find((u) => u.id === '783701')).toBeUndefined();
+  });
+
+  it('returns the record it displaced to Available to place', () => {
+    const next = reducer(planned(), { type: 'REPLACE_UNIT_AT', unitId: '783702', targetId: '783701' });
+    const pooled = next.unplacedUnits.find((u) => u.id === '783701');
+    expect(pooled).toBeDefined();
+    expect(pooled!.unplaced).toBe(true);
+    expect(next.unplacedUnits.find((u) => u.id === '783702')).toBeUndefined();
+  });
+
+  it('selects the record that now holds the outline', () => {
+    const next = reducer(planned(), { type: 'REPLACE_UNIT_AT', unitId: '783702', targetId: '783701' });
+    expect(next.selected).toBe('783702');
+  });
+
+  it('refuses to swap a record with itself', () => {
+    const before = planned();
+    const next = reducer(before, { type: 'REPLACE_UNIT_AT', unitId: '783701', targetId: '783701' });
+    expect(next).toBe(before);
+  });
+});
+
 describe('the traced outline binds to the armed record', () => {
   it('moves the record out of the pool and onto the plan with its polygon', () => {
     const pts: [number, number][] = [
