@@ -142,9 +142,11 @@ export async function fetchVibeFloorplanFile<T>(floorId: string, planId: string)
   return callFloorplanFn<T | null>('get-floorplan-file', { floorId, planId });
 }
 
-export async function storeVibeFloorplanFile(floorId: string, planId: string, file: unknown): Promise<void> {
-  if (!isVibeApp || floorplanFnUnavailable) return;
+/** True when the row was actually written — false when this tier can't answer, so callers can fall back. */
+export async function storeVibeFloorplanFile(floorId: string, planId: string, file: unknown): Promise<boolean> {
+  if (!isVibeApp || floorplanFnUnavailable) return false;
   await callFloorplanFn('save-floorplan-file', { floorId, planId, fileJson: JSON.stringify(file) });
+  return true;
 }
 
 export async function listVibeFloorplanFloors(): Promise<string[]> {

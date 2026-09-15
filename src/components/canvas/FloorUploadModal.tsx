@@ -59,6 +59,7 @@ export function FloorUploadModal() {
       let uploadedFileId: number | null = null;
       let attachedToFloorPlan = false;
       let serverImageUsed = false;
+      let uploadError: string | null = null;
       if (isFacilioApiConfigured) {
         try {
           // Measured off the rendered preview when we have one (sizes the synthetic
@@ -79,6 +80,10 @@ export function FloorUploadModal() {
             console.warn('[FloorUploadModal] Uploaded to Facilio but could not attach to this floor\'s indoorfloorplan record:', uploaded.attachError);
           }
         } catch (uploadErr) {
+          // The org write failing used to be a console warning only, after which the success path
+          // still toasted "Floorplan updated" — so a plan that never reached Facilio (the SDK
+          // rejects anything over 10 MB outright) looked saved until someone else opened the floor.
+          uploadError = (uploadErr as Error)?.message || 'upload failed';
           // eslint-disable-next-line no-console
           console.warn('[FloorUploadModal] Facilio upload failed', uploadErr);
         }
@@ -91,6 +96,14 @@ export function FloorUploadModal() {
       }
 
       if (previewUrl) actions.setFloorImage(state.floorId, state.planId, previewUrl);
+      // Rendered here but never stored in the org: say so and keep the modal open. The preview is
+      // real, so it isn't thrown away — but it is this browser's copy only, and silently calling
+      // that "uploaded to Facilio" is the one outcome the user can't detect for themselves.
+      if (uploadError) {
+        setStatus('error');
+        setError(`Shown here, but NOT uploaded to Facilio: ${uploadError}. It won't be visible to anyone else, or after this browser's storage is cleared.`);
+        return;
+      }
       actions.showToast(
         uploadedFileId
           ? serverImageUsed

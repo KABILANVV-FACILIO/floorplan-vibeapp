@@ -60,7 +60,16 @@ export async function loadFloorplanFile(floorId: string, planId: string): Promis
 function loadLocalFloorplanFile(floorId: string, planId: string): StoredFloorplanFile | null {
   try {
     const raw = localStorage.getItem(fileKey(floorId, planId));
-    return raw ? (JSON.parse(raw) as StoredFloorplanFile) : null;
+    if (!raw) return null;
+    const stored = JSON.parse(raw) as StoredFloorplanFile;
+    // Entries written before persist resolved object URLs to bytes hold a `blob:` string that died
+    // with the document that made it. Rendering one shows an empty canvas that looks like a load
+    // failure; drop it so the org fetch is the only source and the floor reports honestly.
+    if (!stored?.dataUrl?.startsWith('data:')) {
+      localStorage.removeItem(fileKey(floorId, planId));
+      return null;
+    }
+    return stored;
   } catch {
     return null;
   }
@@ -96,24 +105,41 @@ export async function listFloorplanFloorIds(): Promise<string[]> {
  * is swallowed — the in-memory preview still shows for the session.
  */
 export async function persistFloorplanFile(floorId: string, planId: string, file: StoredFloorplanFile): Promise<void> {
+  // Callers hand over whatever URL they happen to be rendering, and for an upload that is routinely
+  // a `blob:` object URL (the connected-app round-trip and the server-rendered image both build
+  // one). Those die with the document, so resolve to bytes ONCE, up front: the store gets a real
+  // blob and the local fallback gets a real data URL, instead of a string that reloads as nothing.
+  const blob = await urlToBlob(file.dataUrl).catch(() => null);
+  if (!blob) {
+    // eslint-disable-next-line no-console
+    console.warn('[floorplanFile] could not read the image back from its URL; nothing persisted');
+    return;
+  }
+
   if (isVibeApp) {
     try {
-      const blob = await dataUrlToBlob(file.dataUrl);
       const name = file.name ?? `floorplan-${floorId}-${planId}`;
       const uploaded = await vibe.uploadFile(blob, name);
-      await storeVibeFloorplanFile(floorId, planId, {
+      // `storeVibeFloorplanFile` RESOLVES (rather than throwing) once the floorplanApi circuit
+      // breaker has tripped — the function isn't deployed in every region. Without checking, that
+      // silent no-op used to return here having written the metadata nowhere AND skipped the local
+      // fallback, so every upload after the first one persisted nothing at all.
+      const stored = await storeVibeFloorplanFile(floorId, planId, {
         fileId: uploaded.fileId,
         name: uploaded.fileName ?? name,
         mime: uploaded.contentType ?? file.mime ?? blob.type,
       });
-      return;
+      if (stored) return;
+      // eslint-disable-next-line no-console
+      console.info('[floorplanFile] vibe DB unavailable for the metadata row; keeping a local copy instead');
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('[floorplanFile] vibe save failed; falling back to this browser only', err);
     }
   }
   try {
-    localStorage.setItem(fileKey(floorId, planId), JSON.stringify(file));
+    const dataUrl = await blobToDataUrl(blob);
+    localStorage.setItem(fileKey(floorId, planId), JSON.stringify({ ...file, dataUrl }));
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[floorplanFile] local save failed; kept in-memory preview only', err);
@@ -121,10 +147,19 @@ export async function persistFloorplanFile(floorId: string, planId: string, file
 }
 
 /**
- * A `data:` URL back to bytes. `fetch` handles data URLs natively, which beats hand-rolling the
- * base64 decode — and it is the same path an object URL would take.
+ * Any renderable image URL back to bytes. `fetch` handles `data:` and `blob:` URLs natively, which
+ * beats hand-rolling a base64 decode and covers both of the shapes callers pass.
  */
-async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
-  const res = await fetch(dataUrl);
+async function urlToBlob(url: string): Promise<Blob> {
+  const res = await fetch(url);
   return res.blob();
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result as string);
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(blob);
+  });
 }
