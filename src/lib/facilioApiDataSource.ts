@@ -1062,6 +1062,23 @@ async function ensureRealSpaceRecord(unit: Unit): Promise<RealSpaceRef | null> {
   return ref;
 }
 
+/**
+ * Which site and building a floor sits under, straight off the floor record.
+ *
+ * The portfolio tree loads one level at a time, so nothing below the sites exists at boot. To
+ * open on a floor that isn't the first one (the user's own desk, say) the tree has to be told
+ * that floor's path first — and the floor record is the authoritative source for it.
+ */
+export async function fetchFloorPath(floorId: string): Promise<{ siteId: string | null; buildingId: string | null } | null> {
+  if (!isFacilioApiConfigured) return null;
+  const res = await facilioApi.fetchRecord<any>('floor', { id: floorId });
+  const rec = recordOf<any>(res, 'floor');
+  if (res.error || !rec) return null;
+  const siteId = lookupId(rec, 'site');
+  const buildingId = lookupId(rec, 'building');
+  return { siteId: siteId != null ? String(siteId) : null, buildingId: buildingId != null ? String(buildingId) : null };
+}
+
 export interface MyDeskInfo {
   recordId: number;
   name: string;

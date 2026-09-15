@@ -8,7 +8,7 @@ import type { AmenityIcon, Booking, FloorSearchHit, MarkerDef, ModuleKey, PlanId
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
-import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchFloorplanImage, fetchMyDesk, findUnitIdForDeskRecord, getFloorPlanSummary, saveFloorplanMarkers, vacateUnitReal } from '../lib/facilioApiDataSource';
+import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, findUnitIdForDeskRecord, getFloorPlanSummary, saveFloorplanMarkers, vacateUnitReal } from '../lib/facilioApiDataSource';
 import { measureImageDataUrl } from '../lib/geoReference';
 import { listFloorplanFloorIds, loadFloorplanFile, persistFloorplanFile } from '../lib/floorplanFileStore';
 import { loadSettings, saveSettings, settingsFromState } from '../lib/settingsStore';
@@ -102,7 +102,44 @@ function firstLoadedFloorId(portfolio: Site[]): string | undefined {
  * for a tree the user mostly never expands. Any failure yields undefined and the caller keeps the
  * current floor.
  */
-async function resolveDefaultFloor(dispatch: Dispatch<Action>, portfolio: Site[]): Promise<string | undefined> {
+/**
+ * Load and expand the lazy tree down to ONE specific floor. Returns false when the floor can't be
+ * placed in the visible portfolio (no site on the record, a site the user can't see, a floor with
+ * no building), so the caller can fall back rather than open on a floor the tree can't show.
+ */
+async function revealFloorPath(dispatch: Dispatch<Action>, portfolio: Site[], floorId: string): Promise<boolean> {
+  const path = await fetchFloorPath(floorId).catch(() => null);
+  if (!path?.siteId || !path.buildingId) return false;
+  const site = portfolio.find((s) => s.id === path.siteId);
+  if (!site) return false;
+
+  const buildings = site.buildings ?? (await dataSource.getBuildings(path.siteId).catch(() => []));
+  dispatch({ type: 'BUILDINGS_LOADED', siteId: path.siteId, buildings });
+  const building = buildings.find((b) => b.id === path.buildingId);
+  if (!building) return false;
+
+  const floors = building.floors ?? (await dataSource.getFloors(path.buildingId).catch(() => []));
+  dispatch({ type: 'FLOORS_LOADED', buildingId: path.buildingId, floors });
+  if (!floors.some((f) => f.id === floorId)) return false;
+
+  dispatch({ type: 'TOGGLE_NODE', id: path.siteId });
+  dispatch({ type: 'TOGGLE_NODE', id: path.buildingId });
+  return true;
+}
+
+async function resolveDefaultFloor(dispatch: Dispatch<Action>, portfolio: Site[], preferredFloorId?: string): Promise<string | undefined> {
+  // The floor the user actually cares about is the one their own desk is on — open there when we
+  // know it, and only fall back to "first site, first building, first floor" when we don't (no
+  // desk assigned, or its floor isn't reachable in this portfolio).
+  if (preferredFloorId) {
+    if (await revealFloorPath(dispatch, portfolio, preferredFloorId)) {
+      // eslint-disable-next-line no-console
+      console.info(`[portfolio] opening on your desk's floor ${preferredFloorId}`);
+      return preferredFloorId;
+    }
+    // eslint-disable-next-line no-console
+    console.info(`[portfolio] your desk's floor ${preferredFloorId} is not reachable in this portfolio — falling back to the first floor`);
+  }
   const loaded = firstLoadedFloorId(portfolio);
   if (loaded) return loaded;
   const site = portfolio[0];
@@ -1200,11 +1237,17 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
       // The asset catalog is deliberately NOT fetched here. It feeds one thing — the Edit-mode
       // asset picker — so a session that never arms the Asset tool should never pay for it.
       // `loadAssets` fills it the first time that picker mounts.
-      const [portfolio, employees] = await Promise.all([
+      // `myDesk` is fetched HERE rather than after the floor load, because it decides WHICH floor
+      // to open on. Best-effort: the endpoint resolves the employee from the session and may not be
+      // reachable for every token — absence just means the first floor, and the "My desk" button
+      // stays hidden (unless mock assignments provide one).
+      const [portfolio, employees, myDesk] = await Promise.all([
         dataSource.getPortfolio().catch(() => MOCK_PORTFOLIO),
         dataSource.getEmployees().catch(() => MOCK_EMPLOYEES),
+        isFacilioApiConfigured ? fetchMyDesk().catch(() => null) : Promise.resolve(null),
       ]);
       dispatch({ type: 'PORTFOLIO_LOADED', portfolio, employees });
+      if (myDesk) dispatch({ type: 'SET_MY_DESK', myDesk });
 
       // The mock default floorId ('hqA3') isn't a real floor against the live backend —
       // sending it to per-floor endpoints (getFloorplanDetailsByType) just 500s. Start on the
@@ -1214,7 +1257,7 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
       // portfolio can come from the connector with no V3 host at all (a standalone tab), and
       // gating on the API would strand that session on the mock floor, showing demo units beside
       // a real org tree.
-      const firstRealFloor = portfolio === MOCK_PORTFOLIO ? undefined : await resolveDefaultFloor(dispatch, portfolio);
+      const firstRealFloor = portfolio === MOCK_PORTFOLIO ? undefined : await resolveDefaultFloor(dispatch, portfolio, myDesk?.floorId ?? undefined);
       const floorId = firstRealFloor ?? state.floorId;
       if (floorId !== state.floorId) dispatch({ type: 'SELECT_FLOOR_START', floorId });
 
@@ -1226,14 +1269,6 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
       dispatch({ type: 'SELECT_FLOOR_DONE', floorId, units, assignments, bookings });
       loadFloorPlanTypesAndImage(dispatch, floorId, state.planId);
 
-      // The logged-in user's real assigned/booked desk, for the "My desk" button. Best-effort:
-      // the endpoint resolves the employee from the session and may not be reachable for every
-      // token — absence just means the button stays hidden (unless mock assignments provide one).
-      if (isFacilioApiConfigured) {
-        fetchMyDesk()
-          .then((myDesk) => dispatch({ type: 'SET_MY_DESK', myDesk }))
-          .catch(() => {});
-      }
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
