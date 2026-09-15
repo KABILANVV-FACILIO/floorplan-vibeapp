@@ -1,5 +1,6 @@
 import { apiOrigin, customGet, customPost, facilioApi, fetchFilePreview, isFacilioApiConfigured } from './facilioApi';
 import { renderCadToDataUrl } from './cadPreview';
+import { runAssignTransition } from './stateflowApi';
 import { renderPdfToDataUrl } from './pdfPreview';
 import { computeSyntheticGeometry, geometryStringToQuad, lngLatToQuadFraction, quadFittingPoints, quadToGeometryString, quadToLngLat } from './geoReference';
 import type { CreateSpaceLoc, FloorplanDataSource } from './dataSource';
@@ -1119,15 +1120,16 @@ const RECORD_MODULE: Partial<Record<UnitType, string>> = {
  * (`Fields.NAME`, read off this org's metadata) — nothing invented, and anything the record leaves
  * empty is dropped rather than shown blank.
  */
-const RECORD_FIELDS: Record<string, { name: string; label: string }[]> = {
+const RECORD_FIELDS: Record<string, { name: string; label: string; enum?: boolean }[]> = {
   desks: [
     { name: 'deskCode', label: 'Desk code' },
     { name: 'department', label: 'Department' },
   ],
   lockers: [],
   parkingstall: [
-    { name: 'parkingType', label: 'Parking type' },
-    { name: 'parkingMode', label: 'Parking mode' },
+    // Picklists: the API sometimes answers with the raw option id rather than its label.
+    { name: 'parkingType', label: 'Parking type', enum: true },
+    { name: 'parkingMode', label: 'Parking mode', enum: true },
   ],
   space: [
     { name: 'spaceCategory', label: 'Category' },
@@ -1138,17 +1140,19 @@ const RECORD_FIELDS: Record<string, { name: string; label: string }[]> = {
 };
 
 /** On the space base module, so every type above can carry them. */
-const COMMON_RECORD_FIELDS: { name: string; label: string }[] = [{ name: 'approvalStatus', label: 'Approval' }];
+const COMMON_RECORD_FIELDS: { name: string; label: string; enum?: boolean }[] = [{ name: 'approvalStatus', label: 'Approval' }];
 
 /**
  * A V3 field value as a display string, or null when there is nothing to show. Lookups arrive as
  * objects, picklists as either a label or a raw id, booleans as booleans — all of which have to
  * render as text without inventing a value for an empty field.
  */
-function formatFieldValue(raw: unknown): string | null {
+function formatFieldValue(raw: unknown, isEnum = false): string | null {
   if (raw == null || raw === '') return null;
   if (typeof raw === 'boolean') return raw ? 'Yes' : 'No';
-  if (typeof raw === 'number') return String(raw);
+  // A picklist answered with its raw option id tells the reader nothing — "Parking mode  1" is
+  // worse than no row at all. Numbers are still shown for real numeric fields (area, capacity).
+  if (typeof raw === 'number') return isEnum ? null : String(raw);
   if (typeof raw === 'string') return raw;
   if (typeof raw === 'object') {
     const o = raw as Record<string, unknown>;
@@ -1170,9 +1174,6 @@ export interface UnitRecordInfo {
   fields: { label: string; value: string }[];
 }
 
-/** Session cache: a record's details don't change while you look at them, and the popover reopens a lot. */
-const unitRecordCache = new Map<string, Promise<UnitRecordInfo | null>>();
-
 /**
  * The org record a unit stands for — module name plus numeric id — or null when there isn't one
  * (an amenity, or a unit whose id is still app-local because nothing created it in the org yet).
@@ -1185,10 +1186,16 @@ export function resolveUnitRecord(unit: Pick<Unit, 'id' | 'type'>): { moduleName
   return { moduleName, recordId };
 }
 
-/** Forget a cached record — after a transition, its state is exactly what changed. */
+/**
+ * Drop everything held about a record, so the next read goes to the org.
+ *
+ * Called after any action. The record read itself is never cached — its state is precisely what an
+ * action changes — but the plan/type lookups around it are, and a transition can move a record
+ * between them.
+ */
 export function invalidateUnitRecordInfo(unit: Pick<Unit, 'id' | 'type'>): void {
-  const ref = resolveUnitRecord(unit);
-  if (ref) unitRecordCache.delete(`${ref.moduleName}:${ref.recordId}`);
+  realSpaceRecordCache.delete(unit.id);
+  floorPlanTypeCache.clear();
 }
 
 /**
@@ -1202,28 +1209,47 @@ export function fetchUnitRecordInfo(unit: Pick<Unit, 'id' | 'type'>): Promise<Un
   if (!isFacilioApiConfigured || !ref) return Promise.resolve(null);
   const { moduleName, recordId: id } = ref;
 
-  const key = `${moduleName}:${id}`;
-  let pending = unitRecordCache.get(key);
-  if (!pending) {
-    pending = facilioApi
-      .fetchRecord<any>(moduleName, { id })
-      .then((res) => {
-        const rec = recordOf<any>(res, moduleName);
-        if (res.error || !rec) return null;
-        const specs = [...(RECORD_FIELDS[moduleName] ?? []), ...COMMON_RECORD_FIELDS];
-        const fields = specs
-          .map((f) => ({ label: f.label, value: formatFieldValue(rec[f.name]) }))
-          .filter((f): f is { label: string; value: string } => f.value !== null);
-        return { status: formatFieldValue(rec.moduleState), employee: formatFieldValue(rec.employee), fields };
-      })
-      .catch(() => null);
-    // A failed read shouldn't be cached as "this record has nothing".
-    pending.then((v) => {
-      if (!v) unitRecordCache.delete(key);
-    });
-    unitRecordCache.set(key, pending);
-  }
-  return pending;
+  // Deliberately NOT cached. This is the live state of a record the user is acting on — a
+  // transition, an assignment or an edit changes it, and a card showing a remembered answer after
+  // a button click is worse than one extra read.
+  return facilioApi
+    .fetchRecord<any>(moduleName, { id })
+    .then((res) => {
+      const rec = recordOf<any>(res, moduleName);
+      if (res.error || !rec) return null;
+      const specs = [...(RECORD_FIELDS[moduleName] ?? []), ...COMMON_RECORD_FIELDS];
+      const fields = specs
+        .map((f) => ({ label: f.label, value: formatFieldValue(rec[f.name], f.enum) }))
+        .filter((f): f is { label: string; value: string } => f.value !== null);
+      return { status: formatFieldValue(rec.moduleState), employee: formatFieldValue(rec.employee), fields };
+    })
+    .catch(() => null);
+}
+
+/**
+ * Writes an employee onto the record itself — `desks.employee`, `lockers.employee`,
+ * `parkingstall.employee` (all real fields on those modules) — and then lets the record's own
+ * stateflow catch up.
+ *
+ * Writing the field alone does NOT move the state: a desk stays "Yet to Assign" with a holder on
+ * it, so the flow keeps offering Assign and never offers Vacate. `runAssignTransition` fires the
+ * flow's own assign step if the current state still has one, which is why it runs after the write
+ * rather than instead of it.
+ */
+export async function assignEmployeeToRecord(unit: Pick<Unit, 'id' | 'type'>, employeeId: string): Promise<void> {
+  const ref = resolveUnitRecord(unit);
+  if (!ref) throw new Error('facilio-api: this unit has no org record to assign against');
+  const id = Number(employeeId);
+  if (!Number.isFinite(id)) throw new Error(`facilio-api: "${employeeId}" is not a real employee id`);
+
+  const res = await facilioApi.updateRecord(ref.moduleName, { id: ref.recordId, data: { employee: { id } } });
+  if (res.error) throw new Error(res.error.message || `assign failed (code ${res.error.code ?? '?'})`);
+  await runAssignTransition(ref.moduleName, ref.recordId).catch((err) => {
+    // The holder is written either way; the state just didn't move.
+    // eslint-disable-next-line no-console
+    console.warn(`[facilio-api] assigned ${ref.moduleName} #${ref.recordId} but its state did not advance`, err);
+  });
+  invalidateUnitRecordInfo(unit);
 }
 
 export interface MyDeskInfo {

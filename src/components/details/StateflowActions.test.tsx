@@ -15,13 +15,15 @@ const setWebReassign = vi.fn();
 const openPanel = vi.fn();
 const showToast = vi.fn();
 const invalidateUnitRecordInfo = vi.fn();
+const assignEmployeeToRecord = vi.fn(async (_unit: unknown, _employeeId: string) => {});
 
 vi.mock('../../state/FloorplanContext', () => ({
-  useFloorplan: () => ({ state: {}, actions: { setWebReassign, openPanel, showToast } }),
+  useFloorplan: () => ({ state: { employees: [{ id: '7', name: 'Niviya' }] }, actions: { setWebReassign, openPanel, showToast } }),
 }));
 vi.mock('../../lib/facilioApiDataSource', () => ({
   resolveUnitRecord: (u: { id: string }) => (/^\d+$/.test(u.id) ? { moduleName: 'desks', recordId: Number(u.id) } : null),
   invalidateUnitRecordInfo,
+  assignEmployeeToRecord: (unit: unknown, employeeId: string) => assignEmployeeToRecord(unit, employeeId),
 }));
 vi.mock('../../lib/stateflowApi', async () => {
   const real = await vi.importActual<typeof import('../../lib/stateflowApi')>('../../lib/stateflowApi');
@@ -95,22 +97,50 @@ describe('what a button does depends on the transition', () => {
     expect(setWebReassign).not.toHaveBeenCalled();
   });
 
-  it('opens the picker for Assign instead of firing — the write IS the action', async () => {
-    fetchAvailableStates.mockResolvedValue(flow(['Assign']));
+  it.each(['Assign', 'Re-assign', 'Allocate'])('opens the people picker for %s instead of firing', async (name) => {
+    // Choosing the person IS the action; the transition follows the write.
+    fetchAvailableStates.mockResolvedValue(flow([name]));
     render(<StateflowActions unit={unit} />);
-    (await screen.findByRole('button', { name: 'Assign' })).click();
+    (await screen.findByRole('button', { name })).click();
 
-    expect(openPanel).toHaveBeenCalledWith('details');
+    await waitFor(() => expect(screen.getByLabelText('Search people')).toBeDefined());
     expect(executeStateTransition).not.toHaveBeenCalled();
   });
 
-  it('routes Re-assign to the reassign flow, not the plain picker', async () => {
-    fetchAvailableStates.mockResolvedValue(flow(['Re-assign']));
+  it.each(['Deallocate', 'Unassign'])('fires %s rather than opening the picker', async (name) => {
+    // These contain an assign-ish word but mean the opposite.
+    fetchAvailableStates.mockResolvedValue(flow([name]));
     render(<StateflowActions unit={unit} />);
-    (await screen.findByRole('button', { name: 'Re-assign' })).click();
+    (await screen.findByRole('button', { name })).click();
 
-    expect(setWebReassign).toHaveBeenCalledWith('1676024');
-    expect(executeStateTransition).not.toHaveBeenCalled();
+    await waitFor(() => expect(executeStateTransition).toHaveBeenCalled());
+    expect(screen.queryByLabelText('Search people')).toBeNull();
+  });
+
+  it('writes the picked person onto the record, and refreshes', async () => {
+    fetchAvailableStates.mockResolvedValue(flow(['Allocate']));
+    const onChanged = vi.fn();
+    render(<StateflowActions unit={unit} onChanged={onChanged} />);
+    (await screen.findByRole('button', { name: 'Allocate' })).click();
+
+    const person = await screen.findByRole('button', { name: /Niviya/ });
+    person.click();
+
+    await waitFor(() => expect(assignEmployeeToRecord).toHaveBeenCalledWith(unit, '7'));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    // The dialog closes once the write lands.
+    await waitFor(() => expect(screen.queryByLabelText('Search people')).toBeNull());
+  });
+
+  it('keeps the picker open and names the reason when the org refuses the assignment', async () => {
+    fetchAvailableStates.mockResolvedValue(flow(['Assign']));
+    assignEmployeeToRecord.mockRejectedValueOnce(new Error('employee already holds a desk'));
+    render(<StateflowActions unit={unit} />);
+    (await screen.findByRole('button', { name: 'Assign' })).click();
+    (await screen.findByRole('button', { name: /Niviya/ })).click();
+
+    await waitFor(() => expect(screen.getByText(/already holds a desk/)).toBeDefined());
+    expect(screen.getByLabelText('Search people')).toBeDefined();
   });
 
   it('re-reads the record after a transition, so the details around it update', async () => {

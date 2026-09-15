@@ -60,8 +60,13 @@ export function findCancelTransition(transitions: TransitionOption[]): Transitio
  * firing. VACATE is the opposite: it goes straight to the transition API.
  */
 export function isAssignTransition(t: TransitionOption): boolean {
-  return /assign/i.test(t.name) && !/vacat|un-?assign|de-?assign|release/i.test(t.name);
+  // Orgs name it Assign, Re-assign or Allocate (parking stalls use the latter in ENEC CAFM).
+  // The negative half matters as much: "Unassign" and "Deallocate" both contain the positive word.
+  return /assign|allocat/i.test(t.name) && !ASSIGN_OPPOSITE.test(t.name);
 }
+
+/** Words that turn an assign-ish name into its opposite. */
+const ASSIGN_OPPOSITE = /vacat|un-?assign|de-?assign|un-?allocat|de-?allocat|release|free/i;
 
 /**
  * Run the record's own assign transition IF its current state still offers one — called AFTER the
@@ -95,7 +100,7 @@ export function isReassignTransition(t: TransitionOption): boolean {
  * on screen after any other spelling (reported: transition done, details not updated).
  */
 export function isVacateTransition(t: TransitionOption): boolean {
-  return /vacat|un-?assign|de-?assign|release|check\s*out|free/i.test(t.name);
+  return /vacat|un-?assign|de-?assign|un-?allocat|de-?allocat|release|check\s*out|free/i.test(t.name);
 }
 
 function assertConfigured(): void {

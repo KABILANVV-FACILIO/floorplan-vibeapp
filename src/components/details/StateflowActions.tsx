@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { invalidateUnitRecordInfo, resolveUnitRecord } from '../../lib/facilioApiDataSource';
-import { executeStateTransition, fetchAvailableStates, isAssignTransition, isReassignTransition } from '../../lib/stateflowApi';
+import { executeStateTransition, fetchAvailableStates, isAssignTransition } from '../../lib/stateflowApi';
 import type { FlowState, TransitionOption } from '../../lib/stateflowApi';
 import type { Unit } from '../../lib/types';
 import { Button } from '../primitives/Button';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
+import { AssignEmployeeModal } from './AssignEmployeeModal';
 import styles from './StateflowActions.module.css';
 
 /**
@@ -34,6 +35,7 @@ export function StateflowActions({ unit, showState = true, onChanged }: { unit: 
   const [flow, setFlow] = useState<FlowState | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [failed, setFailed] = useState(false);
+  const [picking, setPicking] = useState(false);
 
   const ref = resolveUnitRecord(unit);
   const moduleName = ref?.moduleName;
@@ -59,13 +61,13 @@ export function StateflowActions({ unit, showState = true, onChanged }: { unit: 
   }, [load]);
 
   /**
-   * Assign/Re-assign hand off to this app's own picker rather than firing — writing the assignee
-   * is the action, and the transition follows it. Everything else executes.
+   * Assign / Re-assign / Allocate open the people picker rather than firing: choosing the person
+   * IS the action, and the transition follows the write (see `assignEmployeeToRecord`). Everything
+   * else — Vacate, Block, whatever the org defines — executes directly.
    */
   function onPick(t: TransitionOption) {
     if (isAssignTransition(t)) {
-      if (isReassignTransition(t)) actions.setWebReassign(unit.id);
-      else actions.openPanel('details');
+      setPicking(true);
       return;
     }
     void run(t);
@@ -103,6 +105,16 @@ export function StateflowActions({ unit, showState = true, onChanged }: { unit: 
 
   return (
     <div className={styles.wrap}>
+      {picking && (
+        <AssignEmployeeModal
+          unit={unit}
+          onClose={() => setPicking(false)}
+          onAssigned={() => {
+            void load();
+            onChanged?.();
+          }}
+        />
+      )}
       {withState && (
         <div className={styles.stateRow}>
           <span className={styles.stateLabel}>State</span>
