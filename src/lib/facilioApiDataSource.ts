@@ -195,6 +195,9 @@ export class FacilioApiDataSource implements FloorplanDataSource {
    */
   async getUnits(floorId: string): Promise<Unit[]> {
     this.assertConfigured();
+    // Throw rather than return [] — a demo floor's units belong to the local tier, and the
+    // composite only falls through on a rejection. Returning empty would strand the canvas.
+    if (!isRealFloorId(floorId)) throw new Error(`facilio-api: ${floorId} is not an org floor id`);
     const byType = await getFloorplanDetailsByType(floorId);
     const units: Unit[] = [];
     // Real records already represented by a marker — matched on the marker's `recordId`, which this
@@ -342,7 +345,7 @@ export class FacilioApiDataSource implements FloorplanDataSource {
     if (!moduleName) throw new Error(`facilio-api: no real module for ${unit.type}`);
 
     const floorId = unit.floor || loc.floorId;
-    if (!floorId) throw new Error('facilio-api: createUnit needs a floor');
+    if (!isRealFloorId(floorId)) throw new Error(`facilio-api: createUnit needs an org floor id, got "${floorId}"`);
     const floorRes = await facilioApi.fetchRecord<any>('floor', { id: floorId });
     const floorRec = recordOf<any>(floorRes, 'floor');
     if (floorRes.error || !floorRec) throw new Error(`facilio-api: floor ${floorId} not found`);
@@ -537,7 +540,22 @@ async function fetchFloorplanDetailsByType(floorId: string): Promise<Record<stri
  */
 const floorPlanTypeCache = new Map<string, Promise<Record<string, any>>>();
 
+/**
+ * Org floor ids are record ids — always numeric. The demo seed's are slugs (`hqA3`), and the app
+ * can be sitting on one: it boots on the mock floor and only moves once a real portfolio resolves,
+ * and a session whose portfolio never resolves stays there for good.
+ *
+ * Sending a slug to a floor-scoped endpoint is not a miss, it's a 500 —
+ * `getFloorplanDetailsByType?floorId=hqA3` errors rather than answering "no plans". So the id is
+ * checked before any such call: the demo floor belongs to the local tier, and this one declines it.
+ */
+export function isRealFloorId(floorId: string | null | undefined): boolean {
+  return !!floorId && /^\d+$/.test(floorId);
+}
+
 function getFloorplanDetailsByType(floorId: string): Promise<Record<string, any>> {
+  // No plan types for a floor the org doesn't have — and, crucially, no request.
+  if (!isRealFloorId(floorId)) return Promise.resolve({});
   let pending = floorPlanTypeCache.get(floorId);
   if (!pending) {
     pending = fetchFloorplanDetailsByType(floorId);
@@ -566,7 +584,7 @@ export interface FloorPlanTypeSummary {
  * every floor for data only the current one needs).
  */
 export async function getFloorPlanSummary(floorId: string): Promise<FloorPlanTypeSummary[]> {
-  if (!isFacilioApiConfigured) return [];
+  if (!isFacilioApiConfigured || !isRealFloorId(floorId)) return [];
   const byType = await getFloorplanDetailsByType(floorId);
   return Object.entries(byType).map(([typeNum, rec]: [string, any]) => ({
     id: PLAN_ID_BY_TYPE[Number(typeNum)] ?? 'custom',
@@ -591,7 +609,7 @@ export async function getFloorPlanSummary(floorId: string): Promise<FloorPlanTyp
  * a live shape is confirmed, but out of scope for this change (which only needed the file).
  */
 export async function fetchFloorplanImage(floorId: string, planId: PlanId): Promise<string | null> {
-  if (!isFacilioApiConfigured || !apiOrigin) return null;
+  if (!isFacilioApiConfigured || !apiOrigin || !isRealFloorId(floorId)) return null;
   const byType = await getFloorplanDetailsByType(floorId);
   const summary = byType[String(FLOOR_PLAN_TYPE[planId])];
   if (!summary?.id) {
@@ -695,6 +713,7 @@ export async function uploadFloorplanFile(
   imageDimensions?: { width: number; height: number }
 ): Promise<FloorplanFileUploadResult> {
   if (!isFacilioApiConfigured) throw new Error('facilio-api: not configured');
+  if (!isRealFloorId(floorId)) throw new Error(`facilio-api: ${floorId} is not an org floor — nothing to attach a plan to`);
 
   const uploadRes = await facilioApi.uploadFiles([file]);
   if (uploadRes.error || !uploadRes.ids?.length) {
@@ -773,6 +792,10 @@ export interface MarkerSaveResult {
 export async function saveFloorplanMarkers(floorId: string, units: Unit[]): Promise<MarkerSaveResult> {
   const result: MarkerSaveResult = { plansSynced: 0, skipped: [] };
   if (!isFacilioApiConfigured) return result;
+  if (!isRealFloorId(floorId)) {
+    result.skipped.push(`${floorId} is not an org floor — markers stay in this browser`);
+    return result;
+  }
   const pointUnits = units.filter(
     (u): u is Unit & { geom: PointGeom } => u.geom.kind === 'point' && (u.type === 'workstation' || u.type === 'locker' || u.type === 'parking')
   );
@@ -821,7 +844,7 @@ export async function saveFloorplanMarkers(floorId: string, units: Unit[]): Prom
  * re-projects markers that already have one.
  */
 export async function ensurePlanGeoreference(floorId: string, planId: PlanId, imageDimensions: { width: number; height: number }): Promise<void> {
-  if (!isFacilioApiConfigured) return;
+  if (!isFacilioApiConfigured || !isRealFloorId(floorId)) return;
   const byType = await getFloorplanDetailsByType(floorId).catch(() => ({}) as Record<string, any>);
   const summary = byType[String(FLOOR_PLAN_TYPE[planId])];
   if (!summary?.id) return;
@@ -1070,7 +1093,7 @@ async function ensureRealSpaceRecord(unit: Unit): Promise<RealSpaceRef | null> {
  * that floor's path first — and the floor record is the authoritative source for it.
  */
 export async function fetchFloorPath(floorId: string): Promise<{ siteId: string | null; buildingId: string | null } | null> {
-  if (!isFacilioApiConfigured) return null;
+  if (!isFacilioApiConfigured || !isRealFloorId(floorId)) return null;
   const res = await facilioApi.fetchRecord<any>('floor', { id: floorId });
   const rec = recordOf<any>(res, 'floor');
   if (res.error || !rec) return null;
@@ -1117,7 +1140,7 @@ export async function fetchMyDesk(employeeId?: number): Promise<MyDeskInfo | nul
  * back to just navigating to the floor.
  */
 export async function findUnitIdForDeskRecord(floorId: string, deskRecordId: number): Promise<string | null> {
-  if (!isFacilioApiConfigured) return null;
+  if (!isFacilioApiConfigured || !isRealFloorId(floorId)) return null;
   const byType = await getFloorplanDetailsByType(floorId).catch(() => ({}) as Record<string, any>);
   const summary = byType[String(FLOOR_PLAN_TYPE.workstation)];
   if (!summary?.id) return null;
