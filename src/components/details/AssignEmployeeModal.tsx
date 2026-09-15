@@ -49,7 +49,7 @@ export function AssignEmployeeModal({ unit, onClose, onAssigned }: { unit: Unit;
   }
 
   return (
-    <Modal onClose={onClose} width={560}>
+    <Modal onClose={onClose} width={640}>
       <ModalHeader
         title={`Assign ${TYPE_META[unit.type].name.toLowerCase()}`}
         subtitle={`${unit.label} — pick who it belongs to`}

@@ -20,19 +20,19 @@
   border-color: var(--blue-500);
   box-shadow: var(--shadow-focus);
 }
-/* A fixed, generous height so the dialog doesn't jump as the search narrows the list. */
+/* A fixed, generous height so the dialog doesn't jump as the search narrows the list — an org
+   directory runs to hundreds of people, so this is the main thing the dialog is for. */
 .list {
   margin-top: 10px;
-  height: 46vh;
-  min-height: 220px;
+  height: 52vh;
+  min-height: 300px;
+  max-height: 560px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.list > * {
-  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  align-content: start;
+  gap: 2px 8px;
 }
 .row {
   display: flex;
@@ -68,6 +68,7 @@
 .name {
   flex: 1;
   min-width: 0;
+  /* Names must never truncate mid-directory — that was the reported symptom. */
   font: 500 13px/1.3 var(--font-sans);
   color: var(--ink-900);
   overflow: hidden;
@@ -75,6 +76,7 @@
   white-space: nowrap;
 }
 .empty {
+  grid-column: 1 / -1;
   padding: 24px 10px;
   text-align: center;
   font: 400 12px/1.5 var(--font-sans);

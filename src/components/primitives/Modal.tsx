@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
 import styles from './Modal.module.css';
 
@@ -7,13 +8,24 @@ interface ModalProps {
   children: ReactNode;
 }
 
+/**
+ * Portaled to <body>, always.
+ *
+ * The backdrop is `position: fixed`, and a fixed element resolves against the nearest TRANSFORMED
+ * ancestor rather than the viewport. Opened from inside the unit popover — a 214px card carrying
+ * `transform: translate(-50%, 0)` — the whole dialog was being laid out inside that card, so a
+ * 560px picker rendered at about 330px with every name truncated. Rendering outside the tree puts
+ * it back on the viewport, whatever it was opened from.
+ */
 export function Modal({ onClose, width = 560, children }: ModalProps) {
-  return (
+  if (typeof document === 'undefined') return null;
+  return createPortal(
     <div className={styles.backdrop} onClick={onClose}>
-      <div className={styles.card} style={{ width, maxWidth: '100%' }} onClick={(e) => e.stopPropagation()}>
+      <div className={styles.card} style={{ width, maxWidth: 'min(100%, 92vw)' }} onClick={(e) => e.stopPropagation()}>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
