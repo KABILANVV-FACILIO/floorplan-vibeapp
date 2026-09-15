@@ -35,6 +35,43 @@ export function computeSyntheticGeometry(width: number, height: number): GeoQuad
   };
 }
 
+/**
+ * A quad that FITS markers already on the plan, for a plan record that carries none of its own.
+ *
+ * Confirmed against a live org: `indoorfloorplan` rows created in Facilio's editor have
+ * `geometry` NULL, while the markers placed on them sit in a small implicit space around
+ * [0, 0] (e.g. `[-0.00028, 0.000017]`). Seeding the synthetic quad instead — anchored in San
+ * Francisco — puts every one of those markers thousands of kilometres outside the plan, and the
+ * app drops them as out-of-frame: a floor with real, org-placed desks renders empty. Fitting the
+ * quad to the markers that are actually there keeps them visible and in their relative positions.
+ *
+ * Padded, and widened to the image's aspect ratio so positions aren't stretched. This is a
+ * best-fit, not a calibration — nobody georeferenced these plans, so no quad is "correct"; this
+ * one at least agrees with the data already in the org.
+ */
+export function quadFittingPoints(points: [number, number][], width: number, height: number, pad = 0.15): GeoQuad | null {
+  if (points.length === 0) return null;
+  const lngs = points.map((p) => p[0]);
+  const lats = points.map((p) => p[1]);
+  const cx = (Math.min(...lngs) + Math.max(...lngs)) / 2;
+  const cy = (Math.min(...lats) + Math.max(...lats)) / 2;
+  // A single marker (or a perfectly straight row) has no extent on one axis — give the box a
+  // floor so it still has area and the division below stays finite.
+  let w = Math.max(Math.max(...lngs) - Math.min(...lngs), 1e-6) * (1 + pad * 2);
+  let h = Math.max(Math.max(...lats) - Math.min(...lats), 1e-6) * (1 + pad * 2);
+  const aspect = (width || 1) / (height || 1);
+  if (w / h < aspect) w = h * aspect;
+  else h = w / aspect;
+  const halfW = w / 2;
+  const halfH = h / 2;
+  return {
+    tl: [cx - halfW, cy + halfH],
+    tr: [cx + halfW, cy + halfH],
+    br: [cx + halfW, cy - halfH],
+    bl: [cx - halfW, cy - halfH],
+  };
+}
+
 /** Fraction (0-1 of image width/height) -> [lng, lat], via bilinear interpolation across the quad. */
 export function quadToLngLat(quad: GeoQuad, xFrac: number, yFrac: number): [number, number] {
   const top: [number, number] = [quad.tl[0] + (quad.tr[0] - quad.tl[0]) * xFrac, quad.tl[1] + (quad.tr[1] - quad.tl[1]) * xFrac];

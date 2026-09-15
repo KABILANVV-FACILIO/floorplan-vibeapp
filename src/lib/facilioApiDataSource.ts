@@ -1,7 +1,7 @@
 import { apiOrigin, customGet, customPost, facilioApi, fetchFilePreview, isFacilioApiConfigured } from './facilioApi';
 import { renderCadToDataUrl } from './cadPreview';
 import { renderPdfToDataUrl } from './pdfPreview';
-import { computeSyntheticGeometry, geometryStringToQuad, lngLatToQuadFraction, quadToGeometryString, quadToLngLat } from './geoReference';
+import { computeSyntheticGeometry, geometryStringToQuad, lngLatToQuadFraction, quadFittingPoints, quadToGeometryString, quadToLngLat } from './geoReference';
 import type { FloorplanDataSource } from './dataSource';
 import type { Asset } from './assets';
 import { TYPE_META } from './types';
@@ -785,7 +785,22 @@ export async function ensurePlanGeoreference(floorId: string, planId: PlanId, im
   const record = recordOf<any>(recordRes, 'indoorfloorplan');
   if (recordRes.error || !record) return;
   if (geometryStringToQuad(record.geometry)) return; // already georeferenced
-  const geometry = quadToGeometryString(computeSyntheticGeometry(imageDimensions.width, imageDimensions.height));
+
+  // Prefer a quad that fits the markers this plan ALREADY has (placed in Facilio's own editor,
+  // which leaves `geometry` null and writes points in a small implicit space around [0,0]).
+  // Inventing the synthetic quad over the top of those makes every one of them out-of-frame, so
+  // the app shows an empty plan for a floor that really does have desks on it.
+  const existing = await facilioApi
+    .fetchAllRelatedList<any>({ moduleName: 'indoorfloorplan', id: summary.id, relatedModuleName: 'floorplanmarker', relatedFieldName: 'indoorfloorplan' })
+    .then((r) => (r.error ? [] : r.list ?? []))
+    .catch(() => [] as any[]);
+  const existingPoints = existing.map((m: any) => parsePointGeometry(m.geometry)).filter((p): p is [number, number] => !!p);
+  const fitted = quadFittingPoints(existingPoints, imageDimensions.width, imageDimensions.height);
+  if (fitted) {
+    // eslint-disable-next-line no-console
+    console.info(`[facilio-api] plan #${summary.id} has ${existingPoints.length} existing marker(s) — fitting its georeference to them instead of seeding a synthetic quad`);
+  }
+  const geometry = quadToGeometryString(fitted ?? computeSyntheticGeometry(imageDimensions.width, imageDimensions.height));
   const res = await facilioApi.updateRecord('indoorfloorplan', { id: summary.id, data: { geometry } });
   if (res.error) {
     // eslint-disable-next-line no-console
@@ -794,6 +809,33 @@ export async function ensurePlanGeoreference(floorId: string, planId: PlanId, im
   }
   // eslint-disable-next-line no-console
   console.info(`[facilio-api] georeferenced plan #${summary.id} (${planId}) to ${imageDimensions.width}x${imageDimensions.height} — markers can now be saved and read back`);
+}
+
+/**
+ * `floorplanmarker.type` — the GeoJSON object kind. Every marker Facilio's own editor wrote in
+ * the live org uses "Feature" (the point itself lives in `geometry`); this app wrote "Point",
+ * which is not what the platform's floorplan viewer reads. The app never reads this field —
+ * `parsePointGeometry` looks at `geometry.type` — so aligning it costs nothing here.
+ */
+const MARKER_GEOJSON_TYPE = 'Feature';
+
+/**
+ * The link from a marker back to the real record it represents: `recordId` plus
+ * `markerModuleId` (the module those ids belong to). Both are real fields on `floorplanmarker`,
+ * and every marker the org's own editor created sets them — this app set neither, so its markers
+ * were orphans: Facilio's floorplan screens could not resolve them to a desk/locker/stall, and
+ * `getUnits`' placed-vs-unplaced reconciliation (which matches on `recordId`) never matched.
+ *
+ * A unit backed by a real record carries that record's id as its own `unit.id` (createUnit
+ * returns it, and pool records arrive with it), so a numeric id IS the record id. App-local ids
+ * like `u1699…` are not, and get no link rather than a fabricated one.
+ */
+async function markerRecordLink(unit: Unit): Promise<{ recordId?: number; markerModuleId?: number }> {
+  const moduleName = REAL_SPACE_MODULE[unit.type];
+  const recordId = Number(unit.id);
+  if (!moduleName || !Number.isInteger(recordId) || recordId <= 0) return {};
+  const markerModuleId = await moduleIdFor(moduleName, recordId).catch(() => null);
+  return markerModuleId ? { recordId, markerModuleId } : { recordId };
 }
 
 /** Returns false when the plan has no georeference and nothing could be written. */
@@ -823,14 +865,19 @@ async function syncMarkersForIndoorFloorPlan(indoorFloorPlanId: number, units: (
     const [lng, lat] = quadToLngLat(quad, unit.geom.x, unit.geom.y);
     const geometry = JSON.stringify({ type: 'Point', coordinates: [lng, lat] });
     const properties = JSON.stringify({ unitType: unit.type, secondary: unit.secondary ?? null });
+    const link = await markerRecordLink(unit);
     seenGeoIds.add(unit.id);
     const match = existingByGeoId.get(unit.id);
     if (match) {
-      if (match.geometry !== geometry || match.label !== unit.label) {
+      const linkMissing = link.recordId != null && (match.recordId == null || match.markerModuleId == null);
+      if (match.geometry !== geometry || match.label !== unit.label || linkMissing) {
         // `facilioApi` resolves (doesn't reject) on a failed request — the failure shows up
         // as `res.error`, not a rejected promise, so a bare `.catch()` here would never catch
         // a real validation error; check `.error` explicitly and log it instead.
-        const res = await facilioApi.updateRecord('floorplanmarker', { id: match.id, data: { geometry, properties, label: unit.label, type: 'Point' } });
+        const res = await facilioApi.updateRecord('floorplanmarker', {
+          id: match.id,
+          data: { geometry, properties, label: unit.label, type: MARKER_GEOJSON_TYPE, ...link },
+        });
         if (res.error) {
           // eslint-disable-next-line no-console
           console.warn(`[facilio-api] marker update failed for unit ${unit.id}`, res.error);
@@ -838,7 +885,7 @@ async function syncMarkersForIndoorFloorPlan(indoorFloorPlanId: number, units: (
       }
     } else {
       const res = await facilioApi.createRecord('floorplanmarker', {
-        data: { geoId: unit.id, geometry, properties, type: 'Point', label: unit.label, indoorfloorplan: { id: indoorFloorPlanId } },
+        data: { geoId: unit.id, geometry, properties, type: MARKER_GEOJSON_TYPE, label: unit.label, indoorfloorplan: { id: indoorFloorPlanId }, ...link },
       });
       if (res.error) {
         // eslint-disable-next-line no-console
@@ -931,9 +978,10 @@ async function ensureRealSpaceRecord(unit: Unit): Promise<RealSpaceRef | null> {
         geoId: unit.id,
         geometry: JSON.stringify({ type: 'Point', coordinates: [lng, lat] }),
         properties: JSON.stringify({ unitType: unit.type, secondary: unit.secondary ?? null }),
-        type: 'Point',
+        type: MARKER_GEOJSON_TYPE,
         label: unit.label,
         indoorfloorplan: { id: summary.id },
+        ...(await markerRecordLink(unit)),
       },
     });
     const createdMarker = recordOf<any>(createMarkerRes, 'floorplanmarker');
@@ -959,7 +1007,12 @@ async function ensureRealSpaceRecord(unit: Unit): Promise<RealSpaceRef | null> {
   const createdSpace = recordOf<any>(createRes, moduleName);
   if (createRes.error || !createdSpace?.id) return null;
   const recordId = createdSpace.id;
-  await facilioApi.updateRecord('floorplanmarker', { id: marker.id, data: { recordId } }).catch(() => {});
+  // `markerModuleId` alongside `recordId` — the pair is what the platform's own markers carry, and
+  // a recordId without the module it belongs to is not resolvable.
+  const markerModuleId = await moduleIdFor(moduleName, recordId).catch(() => null);
+  await facilioApi
+    .updateRecord('floorplanmarker', { id: marker.id, data: { recordId, ...(markerModuleId ? { markerModuleId } : {}) } })
+    .catch(() => {});
   const ref = { recordId, siteId };
   realSpaceRecordCache.set(unit.id, ref);
   return ref;
