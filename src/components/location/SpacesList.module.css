@@ -92,6 +92,10 @@
   gap: 4px;
   min-height: 0;
 }
+/* Rows keep their natural height — see the note on `.peopleList` in AssignPanel.module.css. */
+.list > * {
+  flex-shrink: 0;
+}
 .row {
   display: flex;
   align-items: center;
@@ -103,6 +107,13 @@
 }
 .row:hover {
   background: var(--ink-050);
+}
+/* The row for whatever is selected on the plan — so a selection made on the canvas is findable
+   in this list, and vice versa. */
+.rowSelected,
+.rowSelected:hover {
+  background: var(--blue-025);
+  border-color: var(--blue-300);
 }
 .dot {
   flex-shrink: 0;

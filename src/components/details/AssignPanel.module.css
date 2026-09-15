@@ -42,6 +42,12 @@
   flex-direction: column;
   gap: 4px;
 }
+/* Rows keep their natural height: a column flex item defaults to `flex-shrink: 1`, so without
+   this the rows squash to fit and the list never overflows — it looks truncated and refuses to
+   scroll, which is the same trap `.stack > *` guards against in the panels that got it right. */
+.peopleList > * {
+  flex-shrink: 0;
+}
 .personRow {
   display: flex;
   align-items: center;

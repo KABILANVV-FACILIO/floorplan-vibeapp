@@ -73,6 +73,10 @@
   overflow-y: auto;
   margin-top: 4px;
 }
+/* Rows keep their natural height — see `.scrollArea > *` above. */
+.assetList > * {
+  flex-shrink: 0;
+}
 .assetRow {
   display: flex;
   align-items: center;

@@ -233,3 +233,23 @@ export function clampPanelPos(x: number, y: number, w: number, stageW: number, s
     y: clamp(y, 4, Math.max(4, stageH - 60)),
   };
 }
+
+/**
+ * How tall a floating panel may be, given where its top sits.
+ *
+ * Preferred height keeps the panel clear of the stage's bottom-left overlays (the legend and the
+ * "Reset layout" button, ~92px plus shadow bleed). But that preference must never win over the
+ * stage's actual edge: the stage clips (`overflow: hidden`), so a panel sized past the bottom
+ * loses its own scrollbar along with the content under it — the panel looks like it fits, shows
+ * no way to scroll, and the rest is simply gone. Dragging a panel low enough used to do exactly
+ * that, because the 180px floor applied even when less than 180px was left.
+ */
+const PANEL_BOTTOM_CLEARANCE = 120;
+const PANEL_EDGE_MARGIN = 12;
+const PANEL_MIN_HEIGHT = 180;
+
+export function panelMaxHeight(stageH: number, panelY: number): number {
+  const hardRoom = Math.max(80, stageH - panelY - PANEL_EDGE_MARGIN);
+  const preferred = stageH - panelY - PANEL_BOTTOM_CLEARANCE;
+  return Math.min(hardRoom, Math.max(PANEL_MIN_HEIGHT, preferred));
+}

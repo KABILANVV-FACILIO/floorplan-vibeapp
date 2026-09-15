@@ -30,21 +30,37 @@ interface Placement {
   up: boolean;
 }
 
-function computePlacement(trigger: HTMLElement): Placement {
+/** Gap between trigger and listbox, and the margin kept against the viewport edge. */
+const GAP = 5;
+const EDGE = 8;
+/** Comfortable cap — beyond this the listbox scrolls rather than filling the screen. */
+const MAX_LISTBOX_H = 320;
+/** Below this a side counts as "no room" and the other one is preferred. */
+const COMFORTABLE_H = 170;
+
+export function computePlacement(trigger: HTMLElement, viewport?: { w: number; h: number }): Placement {
   const rect = trigger.getBoundingClientRect();
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
+  const vw = viewport?.w ?? window.innerWidth;
+  const vh = viewport?.h ?? window.innerHeight;
   const width = Math.max(rect.width, 168);
-  const left = Math.min(Math.max(rect.left, 8), vw - width - 8);
-  const spaceBelow = vh - rect.bottom - 12;
-  const spaceAbove = rect.top - 12;
-  // Flip upward when there's no room below (triggers near the bottom of the
-  // viewport — e.g. inside the mobile bottom sheet, where a downward listbox
-  // rendered entirely off-screen).
-  if (spaceBelow < 170 && spaceAbove > spaceBelow) {
-    return { left, top: rect.top - 5, width, maxHeight: Math.max(120, spaceAbove - 5), up: true };
-  }
-  return { left, top: rect.bottom + 5, width, maxHeight: Math.max(150, spaceBelow), up: false };
+  const left = Math.min(Math.max(rect.left, EDGE), Math.max(EDGE, vw - width - EDGE));
+
+  const spaceBelow = vh - rect.bottom - GAP - EDGE;
+  const spaceAbove = rect.top - GAP - EDGE;
+  // Flip upward when there's no comfortable room below (a trigger near the bottom of the
+  // viewport — e.g. the details panel's Desk type field, or the mobile bottom sheet).
+  const up = spaceBelow < COMFORTABLE_H && spaceAbove > spaceBelow;
+  const space = up ? spaceAbove : spaceBelow;
+
+  // NEVER larger than the room that actually exists. The old floors (`Math.max(150, spaceBelow)`
+  // / `Math.max(120, spaceAbove - 5)`) handed the listbox a height the viewport could not show,
+  // so the tail of the list rendered off-screen where `overflow-y: auto` never engages: the
+  // options below the fold were both invisible and unscrollable.
+  const maxHeight = Math.max(72, Math.min(MAX_LISTBOX_H, space));
+
+  return up
+    ? { left, top: rect.top - GAP, width, maxHeight, up: true }
+    : { left, top: rect.bottom + GAP, width, maxHeight, up: false };
 }
 
 /**

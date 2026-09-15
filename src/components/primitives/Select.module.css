@@ -66,6 +66,9 @@
      portaled to <body> and fixed-positioned so it isn't clipped by a scrollable panel. */
   z-index: 300;
   overflow-y: auto;
+  /* Reaching the end of the list must not hand the scroll on to whatever is underneath
+     (the canvas' wheel-to-zoom, or a panel's own scroller). */
+  overscroll-behavior: contain;
   margin: 0;
   padding: 4px;
   list-style: none;
