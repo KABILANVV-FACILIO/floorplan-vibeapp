@@ -2,7 +2,7 @@ import { apiOrigin, customGet, customPost, facilioApi, fetchFilePreview, isFacil
 import { renderCadToDataUrl } from './cadPreview';
 import { renderPdfToDataUrl } from './pdfPreview';
 import { computeSyntheticGeometry, geometryStringToQuad, lngLatToQuadFraction, quadFittingPoints, quadToGeometryString, quadToLngLat } from './geoReference';
-import type { FloorplanDataSource } from './dataSource';
+import type { CreateSpaceLoc, FloorplanDataSource } from './dataSource';
 import type { Asset } from './assets';
 import { TYPE_META } from './types';
 import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, PlanId, PointGeom, Site, Unit, UnitType } from './types';
@@ -321,10 +321,53 @@ export class FacilioApiDataSource implements FloorplanDataSource {
   async saveUnits(): Promise<void> {
     throw new Error('facilio-api: per-edit persistence is local; real markers sync at explicit save (persistUnits)');
   }
-  // Space creation is wired on the CMMS connector tier (create-space), not this raw module-CRUD
-  // layer — throw so the composite falls through to it.
-  async createUnit(): Promise<Unit> {
-    throw new Error('facilio-api: space creation goes through the CMMS connector — not wired here');
+  /**
+   * A real desk / locker / parking-stall record, created straight down V3.
+   *
+   * This used to throw so the composite fell through to the CMMS connector's `create-space`, and
+   * that action drops the floor: checked in a live org, the two desks it made came back parented
+   * to the SITE (`Resources.SPACE_ID` = the site id) with no `floor` at all, while every desk the
+   * org's own editor created is parented to a space on the floor. A desk that isn't on the floor
+   * never comes back from `relatedList floor -> desks`, so it vanishes from "Available to place"
+   * and from Facilio's own floor views.
+   *
+   * `site` / `building` / `floor` are real lookup fields on the space base module (confirmed
+   * against the org's `Fields`: SITE_ID / BUILDING_ID / FLOOR_ID), and they're read off the FLOOR
+   * RECORD rather than the caller's `loc` — the portfolio tree loads lazily, so `loc` carries
+   * whatever happened to be expanded, while the floor record always knows its own parents.
+   */
+  async createUnit(loc: CreateSpaceLoc, unit: Unit): Promise<Unit> {
+    this.assertConfigured();
+    const moduleName = REAL_SPACE_MODULE[unit.type];
+    if (!moduleName) throw new Error(`facilio-api: no real module for ${unit.type}`);
+
+    const floorId = unit.floor || loc.floorId;
+    if (!floorId) throw new Error('facilio-api: createUnit needs a floor');
+    const floorRes = await facilioApi.fetchRecord<any>('floor', { id: floorId });
+    const floorRec = recordOf<any>(floorRes, 'floor');
+    if (floorRes.error || !floorRec) throw new Error(`facilio-api: floor ${floorId} not found`);
+    const siteId = lookupId(floorRec, 'site') ?? loc.siteId;
+    const buildingId = lookupId(floorRec, 'building') ?? loc.buildingId;
+    if (!siteId) throw new Error(`facilio-api: floor ${floorId} has no site`);
+
+    const deskTypeInt = unit.type === 'workstation' ? DESK_TYPE_INT[unit.deskType ?? 'ASSIGNED'] : undefined;
+    const res = await facilioApi.createRecord<any>(moduleName, {
+      data: {
+        name: unit.label,
+        site: { id: siteId },
+        ...(buildingId ? { building: { id: buildingId } } : {}),
+        floor: { id: floorId },
+        ...(deskTypeInt ? { deskType: deskTypeInt } : {}),
+      },
+    });
+    const created = recordOf<any>(res, moduleName);
+    if (res.error || !created?.id) {
+      throw new Error(`facilio-api: could not create ${moduleName} (${res.error?.code ?? '?'} ${res.error?.message ?? ''})`.trim());
+    }
+    // eslint-disable-next-line no-console
+    console.info(`[facilio-api] createUnit: ${moduleName} #${created.id} "${unit.label}" on floor ${floorId} (site ${siteId}${buildingId ? `, building ${buildingId}` : ''})`);
+    // The record id becomes the unit id — that is what makes the marker's geoId/recordId line up.
+    return { ...unit, id: String(created.id) };
   }
   async getAssignments(): Promise<Assignments> {
     throw new Error('facilio-api: assignments (Moves-derived) not wired');
@@ -348,6 +391,7 @@ export class FacilioApiDataSource implements FloorplanDataSource {
 
 /** Real Facilio desk typing (`V3DeskContext.DeskType`): 1=ASSIGNED, 2=HOTEL, 3=HOT; -1/0 = unset. */
 const DESK_TYPE_BY_INT: Record<number, Unit['deskType']> = { 1: 'ASSIGNED', 2: 'HOTEL', 3: 'HOT' };
+const DESK_TYPE_INT: Record<NonNullable<Unit['deskType']>, number> = { ASSIGNED: 1, HOTEL: 2, HOT: 3 };
 
 /**
  * A real org record with no marker -> an `unplaced` Unit for the "Available to place" pool. The
