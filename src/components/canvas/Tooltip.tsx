@@ -68,7 +68,6 @@ export function Tooltip() {
   const { cx, cy } = unitCenter(unit);
   const place = tooltipPlacement(cx, cy, state.view, state.stage, size);
   const status = unitStatus(state, unit, (id) => contactName(state, id));
-  const contactId = state.assignments[unit.id];
 
   // Amenity/asset markers are informational — no booking/assignment concept,
   // so they skip the status pill, action buttons, and any mode notes.
@@ -88,9 +87,9 @@ export function Tooltip() {
   const amenityDetail = unit.secondary || (unit.markerKind || unit.icon ? markerName : 'Marker');
 
   // A record's details, every one read off the unit or the org's own state — nothing invented.
-  // Who the ORG says holds it, falling back to the app's own assignment map — which is what you
-  // see before a save, and all there is on a demo floor.
-  const holder = record?.employee ?? (contactId ? contactName(state, contactId) : null);
+  // Who the ORG says holds it — the record's `employee`, and only that. The app's own assignment
+  // map used to stand in for it, which meant the card could name a holder the record doesn't have.
+  const holder = record?.employee ?? null;
   const todaysBooking = state.bookings
     .filter((b) => b.unitId === unit.id && b.date === state.date)
     .sort((a, b) => a.start - b.start)[0];
