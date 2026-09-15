@@ -22,6 +22,9 @@ interface FlatNode {
  * expand — and there is a search box, because scrolling a tree that big to find a floor is not a
  * plan. Typing swaps the tree for a flat hit list; picking a hit loads and expands its path, then
  * selects the floor, so the tree underneath shows where you landed.
+ *
+ * Only `loading…` and `no plan` are badged. An expanded node with nothing under it already reads
+ * as empty; labelling it "no floors" / "no buildings" just adds noise to a tree of 431 buildings.
  */
 export function PortfolioTree() {
   const { state, actions } = useFloorplan();
@@ -41,7 +44,7 @@ export function PortfolioTree() {
         hasChildren: true,
         expanded: siteExpanded,
         active: false,
-        badge: siteLoading ? 'loading…' : siteExpanded && site.buildings?.length === 0 ? 'no buildings' : null,
+        badge: siteLoading ? 'loading…' : null,
         drillIn: false,
         onClick: () => void actions.expandNode(site.id),
       });
@@ -57,7 +60,7 @@ export function PortfolioTree() {
           hasChildren: true,
           expanded: buildingExpanded,
           active: false,
-          badge: buildingLoading ? 'loading…' : buildingExpanded && building.floors?.length === 0 ? 'no floors' : null,
+          badge: buildingLoading ? 'loading…' : null,
           drillIn: false,
           onClick: () => void actions.expandNode(building.id),
         });
