@@ -1,4 +1,4 @@
-import { DEFAULT_ENABLED_MODULES, DEFAULT_PERMS, floorImageKey, isRoomLike } from '../lib/types';
+import { DEFAULT_ENABLED_MODULES, DEFAULT_PERMS, floorImageKey, isRoomLike, planForPlacement } from '../lib/types';
 import type { Booking, Building, Floor, FloorSearchHit, MarkerDef, ModuleKey, PlanId, Site, Unit } from '../lib/types';
 import { clamp, fitView } from '../lib/geometry';
 import { seedBookings } from '../lib/mockData';
@@ -267,7 +267,10 @@ export function reducer(state: AppState, action: Action): AppState {
       if (!target || target.geom.kind !== 'point' || isRoomLike(target.type)) return state;
       const dragged = state.unplacedUnits.find((u) => u.id === action.unitId) ?? state.units.find((u) => u.id === action.unitId);
       if (!dragged || dragged.id === target.id) return state;
-      const placedDragged: Unit = { ...dragged, geom: { ...target.geom }, room: target.room, floor: state.floorId, unplaced: undefined };
+      // The dragged record takes the target's exact spot, so it takes the target's PLAN as well —
+      // otherwise a desk dropped onto a locker-plan marker keeps its own type-derived plan and
+      // disappears from the plan it was just dropped on.
+      const placedDragged: Unit = { ...dragged, geom: { ...target.geom }, room: target.room, floor: state.floorId, plan: target.plan, unplaced: undefined };
       const units = state.units.filter((u) => u.id !== action.targetId && u.id !== action.unitId).concat(placedDragged);
       const unplacedUnits = [...state.unplacedUnits.filter((u) => u.id !== action.unitId), { ...target, unplaced: true }];
       return {
@@ -420,7 +423,7 @@ export function reducer(state: AppState, action: Action): AppState {
       if (!pooled) return state;
       // `unplaced` must clear here: the canvas hides anything still flagged, so a real desk dragged
       // onto the plan would vanish the instant it landed.
-      const placed: Unit = { ...pooled, geom: action.geom, room: action.room, floor: state.floorId, unplaced: undefined };
+      const placed: Unit = { ...pooled, geom: action.geom, room: action.room, floor: state.floorId, plan: planForPlacement(state.planId, pooled.type), unplaced: undefined };
       const units = [...state.units, placed];
       return {
         ...state,

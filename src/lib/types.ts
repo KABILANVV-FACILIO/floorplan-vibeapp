@@ -42,6 +42,21 @@ export function isZoneTool(tool: EditTool): boolean {
   return tool === 'room' || tool === 'delivery';
 }
 
+/**
+ * Which plan a unit being PLACED belongs to.
+ *
+ * `Unit.plan` is the floorplan IMAGE a marker is drawn on — the canvas filters by it, and the org
+ * sync converts the marker's 0-1 position through that plan's georeference quad. So it is decided
+ * by the plan on screen when the point was picked, never by the unit's type: placing a desk while
+ * the Lockers plan is open used to tag it `workstation`, which made it vanish from the plan the
+ * user was looking at and wrote its locker-plan coordinates into the workstation plan's record.
+ *
+ * Room-like zones are plan-agnostic (they draw on every plan), so they keep `custom`.
+ */
+export function planForPlacement(currentPlan: PlanId, type: UnitType): PlanId {
+  return isRoomLike(type) ? 'custom' : currentPlan;
+}
+
 /** Informational point markers (not assignable/bookable), shown on every plan type. */
 export type AmenityIcon = 'asset' | 'fire' | 'stairs' | 'elevator' | 'restroom';
 

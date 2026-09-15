@@ -3,7 +3,7 @@ import type { Dispatch, MutableRefObject, ReactNode } from 'react';
 import { dataSource, clearLocalData } from '../lib/dataSource';
 import type { CreateSpaceLoc } from '../lib/dataSource';
 import { PORTFOLIO as MOCK_PORTFOLIO, EMPLOYEES as MOCK_EMPLOYEES, seedBookings, seedUnits, seedAssignments } from '../lib/mockData';
-import { floorImageKey, isRoomLike, resolveMarkerDef, TYPE_META } from '../lib/types';
+import { floorImageKey, isRoomLike, planForPlacement, resolveMarkerDef, TYPE_META } from '../lib/types';
 import type { AmenityIcon, Booking, FloorSearchHit, MarkerDef, ModuleKey, PlanId, Role, Site, Unit, UnitType } from '../lib/types';
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
@@ -570,7 +570,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       if (!target || !dragged || target.geom.kind !== 'point' || isRoomLike(target.type) || dragged.id === target.id) return;
       if (dragged.type !== target.type) return;
       dispatch({ type: 'REPLACE_UNIT_AT', unitId, targetId });
-      const placedDragged: Unit = { ...dragged, geom: { ...target.geom }, room: target.room, floor: state.floorId, unplaced: undefined };
+      const placedDragged: Unit = { ...dragged, geom: { ...target.geom }, room: target.room, floor: state.floorId, plan: target.plan, unplaced: undefined };
       dataSource.saveUnits(
         state.floorId,
         state.units.filter((u) => u.id !== targetId && u.id !== unitId).concat(placedDragged),
@@ -584,7 +584,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       if (!spot || !pooled) return;
       const room = roomLabelAt(state, spot.x, spot.y);
       dispatch({ type: 'PLACE_EXISTING_UNIT', unitId, geom: { kind: 'point', x: spot.x, y: spot.y }, room });
-      dataSource.saveUnits(state.floorId, [...state.units, { ...pooled, geom: { kind: 'point', x: spot.x, y: spot.y }, room, floor: state.floorId, unplaced: undefined }]);
+      dataSource.saveUnits(state.floorId, [...state.units, { ...pooled, geom: { kind: 'point', x: spot.x, y: spot.y }, room, floor: state.floorId, plan: planForPlacement(state.planId, pooled.type), unplaced: undefined }]);
       showToast(`${pooled.label} placed`);
     },
     /**
@@ -607,7 +607,9 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
         room: roomLabelAt(state, x, y),
         geom: { kind: 'point', x, y },
         floor: state.floorId,
-        plan: type,
+        // The plan the user is LOOKING at, not the one the type implies: these coordinates were
+        // picked against this image and are only meaningful through its georeference.
+        plan: planForPlacement(state.planId, type),
         // New desks start ASSIGNED (the backend default) — switch to HOT/HOTEL in the
         // Selection panel to make them bookable instead of assignable.
         ...(type === 'workstation' ? { deskType: 'ASSIGNED' as const } : {}),
@@ -627,7 +629,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       const pooled = state.unplacedUnits.find((u) => u.id === unitId);
       if (pooled) {
         dispatch({ type: 'PLACE_EXISTING_UNIT', unitId, geom: { kind: 'point', x, y }, room });
-        dataSource.saveUnits(state.floorId, [...state.units, { ...pooled, geom: { kind: 'point', x, y }, room, floor: state.floorId, unplaced: undefined }]);
+        dataSource.saveUnits(state.floorId, [...state.units, { ...pooled, geom: { kind: 'point', x, y }, room, floor: state.floorId, plan: planForPlacement(state.planId, pooled.type), unplaced: undefined }]);
         showToast(`${pooled.label} placed`);
         return;
       }
@@ -720,7 +722,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
               room: room ? room.label : null,
               geom: { kind: 'point', x, y },
               floor: state.floorId,
-              plan: type === 'workstation' || type === 'locker' || type === 'parking' ? type : 'custom',
+              plan: planForPlacement(state.planId, type),
             });
           }
         }
