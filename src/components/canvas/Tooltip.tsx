@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { contactName, isAssignable, isBookable, moduleEnabled, unitById } from '../../state/selectors';
 import { fmtTime, tooltipPlacement, unitCenter } from '../../lib/geometry';
-import { isIdleStatus, unitStatus } from '../../lib/unitStatus';
+import { unitStatus } from '../../lib/unitStatus';
 import { StatusPill } from '../primitives/StatusPill';
 import { Button } from '../primitives/Button';
 import { DESK_TYPES, isRoomLike, resolveMarkerDef, TYPE_META } from '../../lib/types';
@@ -113,11 +113,10 @@ export function Tooltip() {
     for (const f of record?.fields ?? []) details.push(f);
   }
 
-  // The record's own state wins over the app's computed one — it is what the org says. A free /
-  // vacant unit reports nothing at all: an empty desk is the default, and a pill announcing it
-  // was noise on every card.
+  // The status is always a TAG, and the record's own state wins over the app's computed one — it
+  // is what the org says this thing is. The app's word ("Free") only stands in when the record
+  // has no state, or before the record has been read.
   const statusText = record?.status ?? status.text;
-  const showStatus = !isAmenity && !isIdleStatus(statusText);
 
   const bookable = isBookable(unit);
   const assignable = isAssignable(unit);
@@ -170,11 +169,9 @@ export function Tooltip() {
       {/* Everything below is booking/assignment — irrelevant for amenities/assets. */}
       {!isAmenity && (
       <>
-      {showStatus && (
-        <div className={styles.statusRow}>
-          <StatusPill label={statusText} bg={status.bg} fg={status.fg} />
-        </div>
-      )}
+      <div className={styles.statusRow}>
+        <StatusPill label={statusText} bg={status.bg} fg={status.fg} />
+      </div>
 
       <StateflowActions unit={unit} showState={false} onChanged={() => setRecordNonce((n) => n + 1)} />
 

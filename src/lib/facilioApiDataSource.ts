@@ -1123,7 +1123,6 @@ const RECORD_FIELDS: Record<string, { name: string; label: string }[]> = {
   desks: [
     { name: 'deskCode', label: 'Desk code' },
     { name: 'department', label: 'Department' },
-    { name: 'isActive', label: 'Active' },
   ],
   lockers: [],
   parkingstall: [
