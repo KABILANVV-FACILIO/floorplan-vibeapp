@@ -2,11 +2,11 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { contactName, isAssignable, isBookable, moduleEnabled, unitById } from '../../state/selectors';
 import { fmtTime, tooltipPlacement, unitCenter } from '../../lib/geometry';
-import { unitStatus } from '../../lib/unitStatus';
+import { isIdleStatus, unitStatus } from '../../lib/unitStatus';
 import { StatusPill } from '../primitives/StatusPill';
 import { Button } from '../primitives/Button';
 import { DESK_TYPES, isRoomLike, resolveMarkerDef, TYPE_META } from '../../lib/types';
-import { fetchUnitRecordInfo } from '../../lib/facilioApiDataSource';
+import { fetchUnitRecordInfo, resolveUnitRecord } from '../../lib/facilioApiDataSource';
 import { StateflowActions } from '../details/StateflowActions';
 import type { UnitRecordInfo } from '../../lib/facilioApiDataSource';
 import styles from './Tooltip.module.css';
@@ -88,27 +88,36 @@ export function Tooltip() {
   const amenityDetail = unit.secondary || (unit.markerKind || unit.icon ? markerName : 'Marker');
 
   // A record's details, every one read off the unit or the org's own state — nothing invented.
-  const holder = contactId ? contactName(state, contactId) : null;
+  // Who the ORG says holds it, falling back to the app's own assignment map — which is what you
+  // see before a save, and all there is on a demo floor.
+  const holder = record?.employee ?? (contactId ? contactName(state, contactId) : null);
   const todaysBooking = state.bookings
     .filter((b) => b.unitId === unit.id && b.date === state.date)
     .sort((a, b) => a.start - b.start)[0];
+  const recordId = resolveUnitRecord(unit)?.recordId ?? null;
+
+  // The card reports each thing ONCE. `Type` is already the eyebrow, the holder gets its own
+  // block below, and the record's state is the pill — repeating them as rows produced a card
+  // that said "Free", "Record status: Vacant" and "State: Vacant" one under the other.
   const details: { label: string; value: string }[] = [];
   if (!isAmenity) {
-    details.push({ label: 'Type', value: TYPE_META[unit.type].name });
     if (unit.type === 'workstation') {
       const deskType = DESK_TYPES.find((d) => d.id === (unit.deskType ?? 'ASSIGNED'));
       if (deskType) details.push({ label: 'Desk type', value: deskType.name });
     }
     if (isRoomLike(unit.type)) details.push({ label: 'Reservable', value: unit.isReservable === false ? 'No' : 'Yes' });
     if (unit.room) details.push({ label: 'Room', value: unit.room });
-    if (holder) details.push({ label: 'Assigned to', value: holder });
     if (todaysBooking) {
       details.push({ label: 'Booked', value: `${fmtTime(todaysBooking.start)}–${fmtTime(todaysBooking.end)}` });
     }
-    // Straight off the org record, appended after what the app knows locally.
-    if (record?.status) details.push({ label: 'Record status', value: record.status });
     for (const f of record?.fields ?? []) details.push(f);
   }
+
+  // The record's own state wins over the app's computed one — it is what the org says. A free /
+  // vacant unit reports nothing at all: an empty desk is the default, and a pill announcing it
+  // was noise on every card.
+  const statusText = record?.status ?? status.text;
+  const showStatus = !isAmenity && !isIdleStatus(statusText);
 
   const bookable = isBookable(unit);
   const assignable = isAssignable(unit);
@@ -124,7 +133,10 @@ export function Tooltip() {
     >
       <div className={styles.head}>
         <div className={styles.headText}>
-          <div className={styles.eyebrow}>{primaryLabel}</div>
+          <div className={styles.eyebrowRow}>
+            <span className={styles.eyebrow}>{primaryLabel}</span>
+            {recordId != null && <span className={styles.recordId}>#{recordId}</span>}
+          </div>
           <div className={styles.name}>{primary}</div>
         </div>
         <button className={styles.close} data-tip="Close" onClick={() => actions.selectUnit(null)}>
@@ -140,6 +152,12 @@ export function Tooltip() {
         </div>
       ) : (
         <div className={styles.details}>
+          {holder && (
+            <div className={styles.holder}>
+              <div className={styles.eyebrow}>Assigned to</div>
+              <div className={styles.holderName}>{holder}</div>
+            </div>
+          )}
           {details.map((d) => (
             <div key={d.label} className={styles.detailRow}>
               <span className={styles.detailLabel}>{d.label}</span>
@@ -152,11 +170,13 @@ export function Tooltip() {
       {/* Everything below is booking/assignment — irrelevant for amenities/assets. */}
       {!isAmenity && (
       <>
-      <div className={styles.statusRow}>
-        <StatusPill label={status.text} bg={status.bg} fg={status.fg} />
-      </div>
+      {showStatus && (
+        <div className={styles.statusRow}>
+          <StatusPill label={statusText} bg={status.bg} fg={status.fg} />
+        </div>
+      )}
 
-      <StateflowActions unit={unit} onChanged={() => setRecordNonce((n) => n + 1)} />
+      <StateflowActions unit={unit} showState={false} onChanged={() => setRecordNonce((n) => n + 1)} />
 
       {state.mode === 'book' && bookable && !booked && (
         <Button variant="primary" fullWidth style={{ marginTop: 10 }} onClick={() => actions.openBookingForm({ unitId: unit.id, date: state.date, start: state.start, end: state.end })}>

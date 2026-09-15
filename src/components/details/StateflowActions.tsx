@@ -23,7 +23,7 @@ import styles from './StateflowActions.module.css';
  * (the Assign panel), and offering a second, divergent path to it from here would be two ways to
  * do one thing. Vacate-ish ones are NOT hidden — those genuinely are the flow's job.
  */
-export function StateflowActions({ unit, onChanged }: { unit: Unit; onChanged?: () => void }) {
+export function StateflowActions({ unit, showState = true, onChanged }: { unit: Unit; showState?: boolean; onChanged?: () => void }) {
   const { actions } = useFloorplan();
   const [flow, setFlow] = useState<FlowState | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -78,10 +78,14 @@ export function StateflowActions({ unit, onChanged }: { unit: Unit; onChanged?: 
   // Assignment has its own UI; see the note above.
   const transitions = (flow?.transitions ?? []).filter((t) => !/^\s*(re-?)?assign\b/i.test(t.name));
   if (!flow || (!flow.currentStateName && transitions.length === 0)) return null;
+  // The popover already reports the state in its pill; repeating it here is the duplication that
+  // made a vacant desk say the same thing three times.
+  const withState = showState && !!flow.currentStateName;
+  if (!withState && transitions.length === 0) return null;
 
   return (
     <div className={styles.wrap}>
-      {flow.currentStateName && (
+      {withState && (
         <div className={styles.stateRow}>
           <span className={styles.stateLabel}>State</span>
           <span className={styles.stateValue}>{flow.currentStateName}</span>

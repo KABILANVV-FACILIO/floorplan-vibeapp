@@ -57,6 +57,34 @@
 }
 /* Label/value pairs for a record's details — compact enough that several fit without turning the
    card into a column of headings. */
+.eyebrowRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+.eyebrowRow .eyebrow {
+  margin-bottom: 0;
+}
+/* The org record's id — the number you need to find this thing anywhere else in Facilio. */
+.recordId {
+  font: 600 10px/1 var(--font-mono, var(--font-sans));
+  color: var(--ink-600);
+  background: var(--ink-050);
+  border: 1px solid var(--ink-100);
+  border-radius: var(--radius-sm);
+  padding: 3px 5px;
+}
+.holder {
+  margin-bottom: 2px;
+}
+.holderName {
+  font: 600 14px/1.25 var(--font-sans);
+  color: var(--ink-900);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .details {
   margin-top: 8px;
   display: flex;

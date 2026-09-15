@@ -1122,15 +1122,13 @@ const RECORD_MODULE: Partial<Record<UnitType, string>> = {
 const RECORD_FIELDS: Record<string, { name: string; label: string }[]> = {
   desks: [
     { name: 'deskCode', label: 'Desk code' },
-    { name: 'employee', label: 'Employee' },
     { name: 'department', label: 'Department' },
     { name: 'isActive', label: 'Active' },
   ],
-  lockers: [{ name: 'employee', label: 'Employee' }],
+  lockers: [],
   parkingstall: [
     { name: 'parkingType', label: 'Parking type' },
     { name: 'parkingMode', label: 'Parking mode' },
-    { name: 'employee', label: 'Employee' },
   ],
   space: [
     { name: 'spaceCategory', label: 'Category' },
@@ -1164,6 +1162,12 @@ function formatFieldValue(raw: unknown): string | null {
 export interface UnitRecordInfo {
   /** The record's own state, from its stateflow — distinct from the app's occupancy view of it. */
   status: string | null;
+  /**
+   * The record's `employee` — who the ORG says holds this desk/locker/stall. First-class rather
+   * than one row among many: it is what "Assigned to" means, and the app's own assignment map is
+   * only a local view of it.
+   */
+  employee: string | null;
   fields: { label: string; value: string }[];
 }
 
@@ -1211,7 +1215,7 @@ export function fetchUnitRecordInfo(unit: Pick<Unit, 'id' | 'type'>): Promise<Un
         const fields = specs
           .map((f) => ({ label: f.label, value: formatFieldValue(rec[f.name]) }))
           .filter((f): f is { label: string; value: string } => f.value !== null);
-        return { status: formatFieldValue(rec.moduleState), fields };
+        return { status: formatFieldValue(rec.moduleState), employee: formatFieldValue(rec.employee), fields };
       })
       .catch(() => null);
     // A failed read shouldn't be cached as "this record has nothing".

@@ -12,6 +12,17 @@ export function moduleColor(state: AppState, type: Unit['type'], key: string): s
 }
 
 
+/**
+ * Status texts that mean "nothing is happening here" — the default condition of an empty desk,
+ * locker or stall. The popover suppresses its pill for these: a card that says "Free" AND
+ * "Record status: Vacant" AND "State: Vacant" reports the absence of news three times.
+ *
+ * Matches the app's own words and the ones orgs use on the record's state.
+ */
+export function isIdleStatus(text: string | null | undefined): boolean {
+  return !!text && /^(free|vacant|available|unassigned|yet to assign|not assigned)$/i.test(text.trim());
+}
+
 /** A pale wash of a state color for a marker's fill (border/text stay the saturated color). */
 function tint(color: string): string {
   return `color-mix(in srgb, ${color} 16%, #fff)`;
