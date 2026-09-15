@@ -1108,7 +1108,6 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     setSettingsTab: (tab: AppState['settingsTab']) => dispatch({ type: 'SET_SETTINGS_TAB', tab }),
     setModuleColor: (key: string, hex: string) => dispatch({ type: 'SET_MODULE_COLOR', key, hex }),
     setModuleEnabled: (module: ModuleKey, enabled: boolean) => dispatch({ type: 'SET_MODULE_ENABLED', module, enabled }),
-    setModuleOpt: (key: string, value: boolean) => dispatch({ type: 'SET_MODULE_OPT', key, value }),
     /**
      * Fetches the asset catalog on first use of the Edit-mode asset picker. Idempotent: the guard
      * is checked before the await, so mounting the picker twice in quick succession still issues
@@ -1243,7 +1242,7 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
     }, 500);
     return () => clearTimeout(saveTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.perms, state.moduleColors, state.slotGranularity, state.bookingModule, state.customMarkers, state.enabledModules, state.moduleOpts]);
+  }, [state.perms, state.moduleColors, state.slotGranularity, state.bookingModule, state.customMarkers, state.enabledModules]);
 
   useEffect(() => {
     if (loadedRef.current) return;

@@ -15,7 +15,6 @@ export interface SettingsConfig {
   perms?: Perms;
   moduleColors?: Record<string, string>;
   /** Per-module option toggles, keyed `${unitType}.${optKey}`. */
-  moduleOpts?: Record<string, boolean>;
   slotGranularity?: number;
   bookingModule?: 'space' | 'facility';
   /** User-created marker-library entries (Edit view › Markers › New marker). */
@@ -31,7 +30,6 @@ export function settingsFromState(state: AppState): SettingsConfig {
   return {
     perms: state.perms,
     moduleColors: state.moduleColors,
-    moduleOpts: state.moduleOpts,
     slotGranularity: state.slotGranularity,
     bookingModule: state.bookingModule,
     customMarkers: state.customMarkers,

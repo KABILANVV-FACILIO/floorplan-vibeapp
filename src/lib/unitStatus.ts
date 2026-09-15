@@ -1,6 +1,6 @@
 import type { AppState } from '../state/types';
 import { conflictsFor, isAssignable, isBookable } from '../state/selectors';
-import { isRoomLike, OPT_DEFS, resolveMarkerDef, STATE_DEFS, TYPE_META } from './types';
+import { isRoomLike, resolveMarkerDef, STATE_DEFS, TYPE_META } from './types';
 import type { Unit } from './types';
 import { fmtTime } from './geometry';
 
@@ -11,12 +11,6 @@ export function moduleColor(state: AppState, type: Unit['type'], key: string): s
   return def ? def.def : '#607796';
 }
 
-/** A module option's current value — the org's override if set, else the OPT_DEFS default. */
-export function moduleOpt(state: AppState, type: Unit['type'], key: string): boolean {
-  const override = state.moduleOpts[`${type}.${key}`];
-  if (override !== undefined) return override;
-  return OPT_DEFS[type]?.find((o) => o.key === key)?.def ?? false;
-}
 
 /** A pale wash of a state color for a marker's fill (border/text stay the saturated color). */
 function tint(color: string): string {

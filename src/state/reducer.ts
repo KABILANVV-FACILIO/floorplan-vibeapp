@@ -116,7 +116,6 @@ export function buildInitialState(): AppState {
     activeView: viewFromLocation(window.location),
     settingsTab: 'permissions',
     moduleColors: {},
-    moduleOpts: {},
     slotGranularity: 30,
     enabledModules: DEFAULT_ENABLED_MODULES,
 
@@ -212,7 +211,6 @@ export type Action =
   | { type: 'SET_SETTINGS_TAB'; tab: AppState['settingsTab'] }
   | { type: 'SET_MODULE_COLOR'; key: string; hex: string }
   | { type: 'SET_MODULE_ENABLED'; module: ModuleKey; enabled: boolean }
-  | { type: 'SET_MODULE_OPT'; key: string; value: boolean }
   | { type: 'SET_SLOT_GRANULARITY'; minutes: number }
   | { type: 'SHOW_TOAST'; message: string | null }
   | { type: 'TOGGLE_PANEL_OPEN'; id: 'context' | 'portfolio' | 'details' }
@@ -484,7 +482,6 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         perms: c.perms ?? state.perms,
         moduleColors: c.moduleColors ?? state.moduleColors,
-        moduleOpts: c.moduleOpts ?? state.moduleOpts,
         slotGranularity: c.slotGranularity ?? state.slotGranularity,
         bookingModule: c.bookingModule ?? state.bookingModule,
         customMarkers: c.customMarkers ?? state.customMarkers,
@@ -528,8 +525,6 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, settingsTab: action.tab };
     case 'SET_MODULE_COLOR':
       return { ...state, moduleColors: { ...state.moduleColors, [action.key]: action.hex } };
-    case 'SET_MODULE_OPT':
-      return { ...state, moduleOpts: { ...state.moduleOpts, [action.key]: action.value } };
     case 'SET_MODULE_ENABLED': {
       const enabledModules = { ...state.enabledModules, [action.module]: action.enabled };
       if (action.enabled) return { ...state, enabledModules };

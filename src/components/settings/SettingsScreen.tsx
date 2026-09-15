@@ -1,9 +1,9 @@
 import { useFloorplan } from '../../state/FloorplanContext';
-import { ACTIONS, OPT_DEFS, ROLES, STATE_DEFS, STATE_SWATCHES, TOGGLEABLE_MODULES, TYPE_META } from '../../lib/types';
+import { ACTIONS, ROLES, STATE_DEFS, STATE_SWATCHES, TOGGLEABLE_MODULES, TYPE_META } from '../../lib/types';
 import type { ModuleKey, PermsAction, Role, UnitType } from '../../lib/types';
 import { moduleEnabled } from '../../state/selectors';
 import { Button } from '../primitives/Button';
-import { moduleColor, moduleOpt } from '../../lib/unitStatus';
+import { moduleColor } from '../../lib/unitStatus';
 import styles from './SettingsScreen.module.css';
 
 const MODULE_TABS: { id: 'permissions' | 'modules' | 'bookings' | UnitType; name: string }[] = [
@@ -290,15 +290,6 @@ function ModuleSwitch({ module, disabled }: { module: ModuleKey; disabled: boole
   );
 }
 
-function OptSwitch({ type, optKey }: { type: UnitType; optKey: string }) {
-  const { state, actions } = useFloorplan();
-  const on = moduleOpt(state, type, optKey);
-  return (
-    <button className={[styles.switch, on ? styles.switchOn : ''].join(' ')} onClick={() => actions.setModuleOpt(`${type}.${optKey}`, !on)} aria-pressed={on}>
-      <span className={styles.knob} style={{ left: on ? 18 : 2 }} />
-    </button>
-  );
-}
 
 function ModuleTab({ type }: { type: UnitType }) {
   const { state, actions } = useFloorplan();
@@ -336,26 +327,6 @@ function ModuleTab({ type }: { type: UnitType }) {
           </div>
         ))}
       </div>
-
-      {OPT_DEFS[type].length > 0 && (
-        <div className={styles.card}>
-          <div className={styles.cardHead}>
-            <h3 className={styles.cardTitle}>Configuration</h3>
-            <p className={styles.cardDesc}>How this module behaves for everyone in the workplace.</p>
-          </div>
-          {OPT_DEFS[type].map((o) => (
-            <div key={o.key} className={styles.matrixRow} style={{ gridTemplateColumns: '1fr 100px' }}>
-              <div className={styles.stateText}>
-                <div className={styles.rowName}>{o.label}</div>
-                <div className={styles.rowDesc}>{o.desc}</div>
-              </div>
-              <div className={styles.switchCell}>
-                <OptSwitch type={type} optKey={o.key} />
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
 
       {showSlot && (
         <div className={styles.card}>

@@ -122,8 +122,6 @@ export interface AppState {
   activeView: 'map' | 'settings' | 'bookings' | 'people';
   settingsTab: 'permissions' | 'modules' | 'bookings' | UnitType;
   moduleColors: Record<string, string>;
-  /** Per-module option toggles, keyed `${unitType}.${optKey}` (see OPT_DEFS for the defaults). */
-  moduleOpts: Record<string, boolean>;
   slotGranularity: number;
   /**
    * Which modules this org runs. A disabled module is hidden everywhere — canvas, legend, edit

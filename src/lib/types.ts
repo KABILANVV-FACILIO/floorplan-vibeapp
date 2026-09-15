@@ -359,33 +359,3 @@ export const STATE_DEFS: Record<UnitType, StateDef[]> = {
   amenity: [{ key: 'free', label: 'Marker', desc: 'Informational marker (stairs, restrooms, extinguishers, …)', def: '#607796' }],
 };
 
-export interface OptDef {
-  key: string;
-  label: string;
-  desc: string;
-  def: boolean;
-}
-
-export const OPT_DEFS: Record<UnitType, OptDef[]> = {
-  workstation: [
-    { key: 'hotDesking', label: 'Allow hot-desking', desc: 'Let employees book unassigned desks by the hour', def: true },
-    { key: 'autoRelease', label: 'Auto-release no-shows', desc: 'Free a booked desk 30 min after an unclaimed start', def: true },
-  ],
-  locker: [
-    { key: 'deposit', label: 'Require deposit', desc: 'Collect a refundable deposit on assignment', def: false },
-    { key: 'autoExpire', label: 'Expire idle lockers', desc: 'Release lockers unused for 90 days', def: true },
-  ],
-  parking: [
-    { key: 'evOnly', label: 'EV stalls need a permit', desc: 'Restrict charging stalls to permit holders', def: true },
-    { key: 'overnight', label: 'Allow overnight parking', desc: 'Permit bookings that span midnight', def: false },
-  ],
-  room: [
-    { key: 'approval', label: 'Require approval', desc: 'Route room requests to a facilities admin', def: false },
-    { key: 'checkin', label: 'Require check-in', desc: 'Auto-cancel if nobody checks in within 10 min', def: true },
-  ],
-  delivery: [
-    { key: 'approval', label: 'Require approval', desc: 'Route drop-off requests to a facilities admin', def: true },
-    { key: 'dock', label: 'Enforce dock capacity', desc: 'Block overlapping bookings past the bay count', def: true },
-  ],
-  amenity: [],
-};
