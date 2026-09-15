@@ -48,13 +48,14 @@ function setTypeDragImage(e: ReactDragEvent, unit: Unit) {
 export function SpacesList() {
   const { state, actions } = useFloorplan();
   const isEdit = state.mode === 'edit';
-  // Edit mode is about PLACING: only the non-marked (unplaced) records are available in the
-  // list — everything already placed is visible (and draggable) on the canvas itself.
+  // Everything on the floor, in every mode: what is already on the plan, plus the org's records
+  // that have no marker yet. Edit mode used to list the unplaced pool ALONE, so a record vanished
+  // from this list the moment you placed it — including the one you had just selected on the plan,
+  // which left the sidebar with no trace of the desk the inspector was editing. The per-row
+  // "Unplaced" pill already distinguishes the two, so there is nothing to gain by hiding one.
   // Disabled modules are filtered out before counting, so their chips read 0 and their rows
   // never appear.
-  // Edit mode shows the pool alone (placed units are on the canvas, draggable there). Otherwise
-  // list everything on the floor: placed units plus the org's records that have no marker yet.
-  const allUnits = isEdit ? state.unplacedUnits : [...state.units, ...state.unplacedUnits];
+  const allUnits = [...state.units, ...state.unplacedUnits];
   const units = allUnits.filter((u) => moduleEnabled(state, u.type));
 
   const counts: Record<string, number> = { all: units.length };
@@ -70,7 +71,7 @@ export function SpacesList() {
     <div className={styles.wrap}>
       <div className={styles.head}>
         <div className={styles.headRow}>
-          <span className={styles.title}>{isEdit ? 'Available to place' : 'Spaces on this floor'}</span>
+          <span className={styles.title}>Spaces on this floor</span>
           <span className={styles.total}>{units.length}</span>
         </div>
         <div className={styles.searchBox}>
@@ -106,12 +107,12 @@ export function SpacesList() {
         ) : (
           <>
             {filtered.map((u) => (
-              <SpaceRow key={u.id} unit={u} unplaced={isEdit} />
+              <SpaceRow key={u.id} unit={u} />
             ))}
             {filtered.length === 0 && (
               <div className={styles.empty}>
                 {isEdit
-                  ? 'No unplaced spaces — deleting a placed marker moves its record here, or create new ones from the map dialog.'
+                  ? 'Nothing on this floor yet — add desks, lockers or stalls from the Edit panel.'
                   : 'No spaces match this filter.'}
               </div>
             )}
@@ -122,19 +123,24 @@ export function SpacesList() {
   );
 }
 
-function SpaceRow({ unit, unplaced }: { unit: Unit; unplaced?: boolean }) {
+function SpaceRow({ unit }: { unit: Unit }) {
   const { state, actions } = useFloorplan();
+  // Read off the unit itself rather than the mode: in assign/book the pool rows used to render as
+  // if they were placed, so clicking one focused the canvas on its 0,0 placeholder geometry.
+  const unplaced = !!unit.unplaced;
+  const isEdit = state.mode === 'edit';
+  const selected = state.selected === unit.id;
   const status = unitStatus(state, unit, (id) => contactName(state, id));
   // The row dot reflects the unit's current-state color from the module color settings
   // (status.dot is moduleColor-driven), so a Settings color change shows here too.
   // Only the unplaced records drag onto the canvas (edit mode); placed markers are moved on the
   // canvas itself. The drag ghost is the type logo, not the row (see setTypeDragImage).
-  const draggable = !!unplaced && !isRoomLike(unit.type);
+  const draggable = unplaced && isEdit && !isRoomLike(unit.type);
   // Click-to-arm alternative to dragging: arm the record, then click the plan to place it.
   const placing = state.placingUnitId === unit.id;
   return (
     <div
-      className={styles.row}
+      className={[styles.row, selected ? styles.rowSelected : ''].join(' ')}
       style={
         unplaced
           ? placing
@@ -160,6 +166,8 @@ function SpaceRow({ unit, unplaced }: { unit: Unit; unplaced?: boolean }) {
           ? draggable
             ? () => actions.setPlacingUnit(placing ? null : unit.id)
             : undefined
+          // A placed record is on the plan: centre on it and select it, so clicking the row and
+          // clicking the marker land in the same place.
           : () => actions.focusUnit(unit.id, state.stage.w, state.stage.h)
       }
       title={draggable ? 'Drag onto the floorplan, or click and then click the map' : undefined}
