@@ -147,6 +147,14 @@ describe('transition name helpers', () => {
     expect(api.isVacateTransition(t('Assign'))).toBe(false);
   });
 
+  it('picks Re-assign out of the assign family — it reopens the picker on a held record', () => {
+    const t = (name: string) => ({ id: 1, name });
+    expect(api.isReassignTransition(t('Re-assign'))).toBe(true);
+    expect(api.isReassignTransition(t('Reassign'))).toBe(true);
+    expect(api.isReassignTransition(t('Assign'))).toBe(false);
+    expect(api.isReassignTransition(t('Vacate'))).toBe(false);
+  });
+
   it('renders a state object as a label, never as [object Object]', () => {
     expect(api.stateName({ displayName: 'In Use' })).toBe('In Use');
     expect(api.stateName({ status: 'Booked' })).toBe('Booked');

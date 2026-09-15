@@ -82,6 +82,14 @@ export async function runAssignTransition(moduleName: string, recordId: number):
 }
 
 /**
+ * Re-assign specifically: an assign transition offered on a record that already has a holder. It
+ * reopens the picker rather than firing, same as Assign, but from a different entry point.
+ */
+export function isReassignTransition(t: TransitionOption): boolean {
+  return isAssignTransition(t) && /re-?assign/i.test(t.name);
+}
+
+/**
  * A VACATE-ish transition — the mirror of isAssignTransition. Orgs name it differently (Vacate,
  * Unassign, Release, Check Out, Free Desk), and matching only /vacat|unassign/ left the assignee
  * on screen after any other spelling (reported: transition done, details not updated).

@@ -185,27 +185,9 @@ export function Tooltip() {
           Manage bookings
         </Button>
       )}
-      {state.mode === 'assign' && assignable && !contactId && (
-        <Button variant="primary" fullWidth style={{ marginTop: 10 }} onClick={() => actions.openPanel('details')}>
-          Assign
-        </Button>
-      )}
-      {state.mode === 'assign' && assignable && !!contactId && (
-        <div style={{ marginTop: 10, display: 'flex', gap: 6 }}>
-          <Button variant="danger" style={{ flex: 1, justifyContent: 'center' }} onClick={() => actions.vacate(unit.id)}>
-            Vacate
-          </Button>
-          <Button
-            variant="primary"
-            style={{ flex: 1, justifyContent: 'center' }}
-            onClick={() => {
-              actions.setWebReassign(unit.id);
-            }}
-          >
-            Reassign
-          </Button>
-        </div>
-      )}
+      {/* Assign / Re-assign / Vacate are NOT hardcoded here. They are stateflow transitions, so
+          they come from `v2/statetransition/getAvailableState` via StateflowActions above —
+          rendered only when the org's flow actually offers them from this record's state. */}
       {state.mode === 'assign' && !assignable && (
         <div className={styles.note}>Booked in Booking mode, not assigned.</div>
       )}
