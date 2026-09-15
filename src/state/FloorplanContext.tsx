@@ -103,6 +103,13 @@ function firstLoadedFloorId(portfolio: Site[]): string | undefined {
  * current floor.
  */
 /**
+ * How far to probe for a default floor at boot. Deep enough to get past an empty site or building,
+ * shallow enough that it can't turn into a portfolio-wide crawl.
+ */
+const MAX_SITES_PROBED = 5;
+const MAX_BUILDINGS_PROBED = 5;
+
+/**
  * Load and expand the lazy tree down to ONE specific floor. Returns false when the floor can't be
  * placed in the visible portfolio (no site on the record, a site the user can't see, a floor with
  * no building), so the caller can fall back rather than open on a floor the tree can't show.
@@ -142,23 +149,32 @@ async function resolveDefaultFloor(dispatch: Dispatch<Action>, portfolio: Site[]
   }
   const loaded = firstLoadedFloorId(portfolio);
   if (loaded) return loaded;
-  const site = portfolio[0];
-  if (!site) return undefined;
-  try {
-    const buildings = site.buildings ?? (await dataSource.getBuildings(site.id));
-    dispatch({ type: 'BUILDINGS_LOADED', siteId: site.id, buildings });
-    const building = buildings[0];
-    if (!building) return undefined;
-    const floors = building.floors ?? (await dataSource.getFloors(building.id));
-    dispatch({ type: 'FLOORS_LOADED', buildingId: building.id, floors });
-    dispatch({ type: 'TOGGLE_NODE', id: site.id });
-    dispatch({ type: 'TOGGLE_NODE', id: building.id });
-    return floors[0]?.id;
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn('[portfolio] could not resolve a default floor', err);
-    return undefined;
+
+  // Keep looking until a floor actually turns up. This used to try the first site's first building
+  // and give up if either was empty — and an empty one is not unusual in a 431-building portfolio.
+  // Giving up left the app on the demo floor `hqA3`, which is not an org record, so every
+  // floor-scoped endpoint it then called answered 500. Bounded so this can't fan out over the
+  // whole portfolio at boot.
+  for (const site of portfolio.slice(0, MAX_SITES_PROBED)) {
+    try {
+      const buildings = site.buildings ?? (await dataSource.getBuildings(site.id));
+      dispatch({ type: 'BUILDINGS_LOADED', siteId: site.id, buildings });
+      for (const building of buildings.slice(0, MAX_BUILDINGS_PROBED)) {
+        const floors = building.floors ?? (await dataSource.getFloors(building.id));
+        dispatch({ type: 'FLOORS_LOADED', buildingId: building.id, floors });
+        if (!floors[0]) continue;
+        dispatch({ type: 'TOGGLE_NODE', id: site.id });
+        dispatch({ type: 'TOGGLE_NODE', id: building.id });
+        return floors[0].id;
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`[portfolio] could not read below site ${site.id}`, err);
+    }
   }
+  // eslint-disable-next-line no-console
+  console.warn(`[portfolio] no floor found in the first ${MAX_SITES_PROBED} site(s) — staying on the current floor`);
+  return undefined;
 }
 
 /**
