@@ -398,8 +398,10 @@ export function Canvas() {
     const r = el.getBoundingClientRect();
     const n = toNorm(e.clientX, e.clientY, r, state.view);
 
-    // An armed "Available to place" record places on this click (edit mode).
-    if (state.mode === 'edit' && state.placingUnitId) {
+    // An armed "Available to place" record places on this click (edit mode) — but only a POINT
+    // record. An armed zone falls through to the draw tool below, which collects its outline and
+    // binds it to that record on close.
+    if (state.mode === 'edit' && state.placingUnitId && !isDrawTool) {
       if (n.x < 0 || n.x > 1 || n.y < 0 || n.y > 1) return;
       actions.placeUnitAt(state.placingUnitId, n.x, n.y);
       actions.setPlacingUnit(null);
@@ -499,13 +501,19 @@ export function Canvas() {
 
   const selectedRoom = isEditSelect && multiSel.size === 0 ? rooms.find((r) => r.id === state.selected) : undefined;
 
+  const armedRecordLabel = state.placingUnitId ? state.unplacedUnits.find((u) => u.id === state.placingUnitId)?.label : undefined;
   let canvasHint = '';
   if (state.mode === 'edit') {
-    if (state.placingUnitId) canvasHint = 'Click anywhere on the plan to place it · Esc to cancel';
+    // An armed ZONE record is traced, not dropped, so it gets the outline hint below rather than
+    // "click anywhere to place it" — which is the wrong instruction and the reason a room record
+    // looked unusable from the sidebar.
+    if (state.placingUnitId && !isZoneTool(state.tool)) canvasHint = 'Click anywhere on the plan to place it · Esc to cancel';
     else if (isZoneTool(state.tool))
       canvasHint =
         state.draft.length === 0
-          ? `Click to start ${state.tool === 'delivery' ? 'a delivery area' : 'a room'} outline`
+          ? state.placingUnitId
+            ? `Trace ${armedRecordLabel ?? 'this record'} on the plan — click to start its outline`
+            : `Click to start ${state.tool === 'delivery' ? 'a delivery area' : 'a room'} outline`
           : 'Click to add points · click the first point (or press Enter) to close';
     else if (state.tool === 'calibrate') canvasHint = state.calib.length === 0 ? 'Click two points a known distance apart' : state.calib.length === 1 ? 'Click the second point' : 'Enter the real-world distance in the panel';
     else if (state.tool !== 'select') canvasHint = 'Click on the plan to place it';

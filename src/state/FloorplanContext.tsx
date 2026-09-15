@@ -699,6 +699,23 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     pushDraftPoint: (pt: [number, number]) => dispatch({ type: 'PUSH_DRAFT_POINT', pt }),
     closeDraft: async () => {
       if (state.draft.length < 3) return;
+      const geom: Unit['geom'] = { kind: 'poly', pts: state.draft };
+
+      // An armed room record from the sidebar: the outline just drawn IS that record's, so bind
+      // the polygon to it rather than minting a second space for a room the org already has.
+      const pooled = state.placingUnitId ? state.unplacedUnits.find((u) => u.id === state.placingUnitId) : undefined;
+      if (pooled && isRoomLike(pooled.type)) {
+        dispatch({ type: 'PLACE_EXISTING_UNIT', unitId: pooled.id, geom, room: null });
+        dispatch({ type: 'CLEAR_DRAFT' });
+        dispatch({ type: 'SET_PLACING_UNIT', id: null });
+        void dataSource.saveUnits(state.floorId, [
+          ...state.units,
+          { ...pooled, geom, room: null, floor: state.floorId, plan: planForPlacement(state.planId, pooled.type), unplaced: undefined },
+        ]);
+        showToast(`${pooled.label} marked on the plan`);
+        return;
+      }
+
       // Which zone the draft becomes follows the armed tool — room and delivery share the whole
       // polygon flow and differ only in the record they close into.
       const zoneType: UnitType = state.tool === 'delivery' ? 'delivery' : 'room';
@@ -708,7 +725,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
         type: zoneType,
         label,
         room: null,
-        geom: { kind: 'poly', pts: state.draft },
+        geom,
         floor: state.floorId,
         // The plan it was traced over — its points are in that image's coordinates.
         plan: planForPlacement(state.planId, zoneType),

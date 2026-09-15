@@ -255,8 +255,15 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, customMarkers: [...state.customMarkers, action.def] };
     case 'SET_MULTI_SELECTED':
       return { ...state, multiSelected: action.ids, selected: action.ids.length > 0 ? null : state.selected };
-    case 'SET_PLACING_UNIT':
-      return { ...state, placingUnitId: action.id, ...(action.id ? { tool: 'select' as const } : {}) };
+    case 'SET_PLACING_UNIT': {
+      if (!action.id) return { ...state, placingUnitId: null };
+      // A zone is TRACED, not dropped, so arming one arms its draw tool; a point record arms
+      // select, which is what its click-to-place path expects. Both must land in the same update —
+      // SET_TOOL clears `placingUnitId`, so doing this in two dispatches disarms the record.
+      const pooled = state.unplacedUnits.find((u) => u.id === action.id);
+      const tool: AppState['tool'] = pooled && isRoomLike(pooled.type) ? (pooled.type === 'delivery' ? 'delivery' : 'room') : 'select';
+      return { ...state, placingUnitId: action.id, tool, draft: [] };
+    }
     // Drop an "Available to place" record (or an already-placed one) onto an existing same-type
     // marker: the dragged record takes the target's exact spot, and the target's record moves to
     // the unplaced pool — re-mapping which record sits at a location without re-aiming the point.

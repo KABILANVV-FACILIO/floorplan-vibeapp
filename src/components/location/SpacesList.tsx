@@ -133,16 +133,19 @@ function SpaceRow({ unit }: { unit: Unit }) {
   const status = unitStatus(state, unit, (id) => contactName(state, id));
   // The row dot reflects the unit's current-state color from the module color settings
   // (status.dot is moduleColor-driven), so a Settings color change shows here too.
-  // Only the unplaced records drag onto the canvas (edit mode); placed markers are moved on the
-  // canvas itself. The drag ghost is the type logo, not the row (see setTypeDragImage).
+  // Only POINT records drag onto the canvas (edit mode); placed markers are moved on the canvas
+  // itself. The drag ghost is the type logo, not the row (see setTypeDragImage).
   const draggable = unplaced && isEdit && !isRoomLike(unit.type);
+  // A zone can't be dragged to a coordinate — it has to be traced. Arming it switches to the draw
+  // tool, and the outline you then draw binds to THIS record instead of creating another one.
+  const traceable = unplaced && isEdit && isRoomLike(unit.type);
   // Click-to-arm alternative to dragging: arm the record, then click the plan to place it.
   const placing = state.placingUnitId === unit.id;
   return (
     <div
       className={[styles.row, selected ? styles.rowSelected : ''].join(' ')}
       style={
-        unplaced
+        unplaced || traceable
           ? placing
             ? { borderStyle: 'dashed', borderColor: 'var(--blue-300)', background: 'var(--blue-025)' }
             : { borderStyle: 'dashed' }
@@ -163,14 +166,20 @@ function SpaceRow({ unit }: { unit: Unit }) {
       }
       onClick={
         unplaced
-          ? draggable
+          ? draggable || traceable
             ? () => actions.setPlacingUnit(placing ? null : unit.id)
             : undefined
           // A placed record is on the plan: centre on it and select it, so clicking the row and
           // clicking the marker land in the same place.
           : () => actions.focusUnit(unit.id, state.stage.w, state.stage.h)
       }
-      data-tip={draggable ? 'Drag onto the floorplan, or click and then click the map' : undefined}
+      data-tip={
+        draggable
+          ? 'Drag onto the floorplan, or click and then click the map'
+          : traceable
+            ? 'Click, then trace this room on the plan'
+            : undefined
+      }
     >
       <span className={styles.dot} style={{ background: status.dot }} />
       <div className={styles.rowText}>
@@ -179,7 +188,7 @@ function SpaceRow({ unit }: { unit: Unit }) {
       </div>
       {unplaced ? (
         placing ? (
-          <StatusPill label="Click map" bg="var(--blue-025)" fg="var(--blue-600)" />
+          <StatusPill label={traceable ? 'Trace it' : 'Click map'} bg="var(--blue-025)" fg="var(--blue-600)" />
         ) : (
           <StatusPill label="Unplaced" bg="var(--ink-050)" fg="var(--ink-600)" />
         )
