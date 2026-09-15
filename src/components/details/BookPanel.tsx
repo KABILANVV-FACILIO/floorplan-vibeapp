@@ -1,7 +1,7 @@
 import { useRef } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
-import { bookedUnitIds, conflictsFor, contactName, isBookable, unitById } from '../../state/selectors';
+import { bookedUnitIds, conflictsFor, contactName, isBookable, unitById, visibleUnits } from '../../state/selectors';
 import { fmtTime } from '../../lib/geometry';
 import { Select } from '../primitives/Select';
 import { Button } from '../primitives/Button';
@@ -18,7 +18,10 @@ const PXH = 28;
 export function BookPanel() {
   const { state, actions } = useFloorplan();
   const sel = unitById(state, state.selected);
-  const bookable = state.units.filter(isBookable);
+  // Through `visibleUnits`, so a module switched off in Settings leaves no bookable resources
+  // behind — the availability count and the "N free" summary are user-facing surfaces like any
+  // other, and were still counting parking stalls and rooms from disabled modules.
+  const bookable = visibleUnits(state).filter(isBookable);
   const bookedIds = bookedUnitIds(state);
   const availCount = bookable.filter((u) => !bookedIds.has(u.id)).length;
 

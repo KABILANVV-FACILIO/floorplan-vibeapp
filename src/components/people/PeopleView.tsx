@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
-import { initials } from '../../state/selectors';
+import { initials, visibleUnits } from '../../state/selectors';
 import { facilioRecordUrl } from '../../lib/facilioApi';
 import styles from './PeopleView.module.css';
 
@@ -11,12 +11,15 @@ export function PeopleView() {
 
   const deskByContact = useMemo(() => {
     const map: Record<string, string> = {};
+    // Only units whose module is switched on — the directory shouldn't name a desk or stall that
+    // no longer appears anywhere else in the app.
+    const units = visibleUnits(state);
     for (const [unitId, contactId] of Object.entries(state.assignments)) {
-      const u = state.units.find((x) => x.id === unitId);
+      const u = units.find((x) => x.id === unitId);
       if (u) map[contactId] = u.label;
     }
     return map;
-  }, [state.assignments, state.units]);
+  }, [state.assignments, state.units, state.enabledModules]);
 
   const people = state.employees
     .filter((c) => !search || c.name.toLowerCase().includes(search.toLowerCase()))

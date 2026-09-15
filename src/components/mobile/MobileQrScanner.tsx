@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
-import { isBookable } from '../../state/selectors';
+import { isBookable, visibleUnits } from '../../state/selectors';
 import type { Unit } from '../../lib/types';
 import styles from './MobileQrScanner.module.css';
 
@@ -51,7 +51,8 @@ export function MobileQrScanner({ onClose }: { onClose: () => void }) {
 
   function handleCode(raw: string) {
     if (doneRef.current) return;
-    const unit = matchUnit(state.units, raw);
+    // Scanning a code for a switched-off module must not resurrect it.
+    const unit = matchUnit(visibleUnits(state), raw);
     if (!unit) {
       setError(`No space matching “${raw.slice(0, 60)}” on this floor.`);
       return;

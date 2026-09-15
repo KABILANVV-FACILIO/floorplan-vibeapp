@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import type { DragEvent as ReactDragEvent } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
-import { contactName, initials, isAssignable, unitById } from '../../state/selectors';
+import { contactName, initials, isAssignable, unitById, visibleUnits } from '../../state/selectors';
 import { TYPE_META } from '../../lib/types';
 import { facilioRecordUrl } from '../../lib/facilioApi';
 import { Select } from '../primitives/Select';
@@ -19,8 +19,10 @@ export function AssignPanel() {
   const q = state.contactSearch.trim().toLowerCase();
   const contacts = state.employees.filter((c) => !q || c.name.toLowerCase().includes(q));
 
+  // A disabled module leaves no trace anywhere, so a holding of one is not listed against the
+  // person either — it would name a unit the rest of the app has stopped showing.
   function unitsHeldBy(contactId: string) {
-    return state.units.filter((u) => state.assignments[u.id] === contactId).map((u) => u.label);
+    return visibleUnits(state).filter((u) => state.assignments[u.id] === contactId).map((u) => u.label);
   }
 
   function onDragStart(e: ReactDragEvent, contactId: string, name: string) {
