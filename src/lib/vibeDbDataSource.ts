@@ -131,9 +131,11 @@ export async function fetchVibeSettings<T>(): Promise<T | null> {
   return callFloorplanFn<T | null>('get-settings');
 }
 
-export async function storeVibeSettings(config: unknown): Promise<void> {
-  if (!isVibeApp || floorplanFnUnavailable) return;
+/** True when the row was actually written — false when this tier can't answer, so callers fall through. */
+export async function storeVibeSettings(config: unknown): Promise<boolean> {
+  if (!isVibeApp || floorplanFnUnavailable) return false;
   await callFloorplanFn('save-settings', { configJson: JSON.stringify(config) });
+  return true;
 }
 
 /** Floorplan-file records (the vibe fileId plus render metadata), keyed by floor + plan type. */

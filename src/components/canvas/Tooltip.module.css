@@ -55,6 +55,34 @@
   font: 500 12px/1.3 var(--font-sans);
   color: var(--ink-700);
 }
+/* Label/value pairs for a record's details — compact enough that several fit without turning the
+   card into a column of headings. */
+.details {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.detailRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.detailLabel {
+  flex-shrink: 0;
+  font: 500 11px/1.3 var(--font-sans);
+  color: var(--ink-500);
+}
+.detailValue {
+  min-width: 0;
+  text-align: right;
+  font: 600 12px/1.3 var(--font-sans);
+  color: var(--ink-900);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .statusRow {
   margin-top: 10px;
 }

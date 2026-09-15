@@ -1,11 +1,11 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { contactName, isAssignable, isBookable, moduleEnabled, unitById } from '../../state/selectors';
-import { tooltipPlacement, unitCenter } from '../../lib/geometry';
+import { fmtTime, tooltipPlacement, unitCenter } from '../../lib/geometry';
 import { unitStatus } from '../../lib/unitStatus';
 import { StatusPill } from '../primitives/StatusPill';
 import { Button } from '../primitives/Button';
-import { resolveMarkerDef, TYPE_META } from '../../lib/types';
+import { DESK_TYPES, isRoomLike, resolveMarkerDef, TYPE_META } from '../../lib/types';
 import styles from './Tooltip.module.css';
 
 export function Tooltip() {
@@ -62,13 +62,28 @@ export function Tooltip() {
         ? 'Desk'
         : TYPE_META[unit.type].name;
   const primary = unit.label;
-  // Only amenities carry a meaningful `secondary` (an asset's "category · detail"). For records it
-  // used to hold a free-text "Seat type" the org has no field for; that input is gone, so the line
-  // says what the unit IS rather than labelling a value nothing can set any more.
-  const secondaryLabel = isAmenity ? 'Details' : 'Type';
-  const secondary = isAmenity
-    ? unit.secondary || (unit.markerKind || unit.icon ? markerName : 'Marker')
-    : [TYPE_META[unit.type].name, unit.room].filter(Boolean).join(' · ');
+  // Only amenities carry a meaningful `secondary` (an asset's "category · detail").
+  const amenityDetail = unit.secondary || (unit.markerKind || unit.icon ? markerName : 'Marker');
+
+  // A record's details, every one read off the unit or the org's own state — nothing invented.
+  const holder = contactId ? contactName(state, contactId) : null;
+  const todaysBooking = state.bookings
+    .filter((b) => b.unitId === unit.id && b.date === state.date)
+    .sort((a, b) => a.start - b.start)[0];
+  const details: { label: string; value: string }[] = [];
+  if (!isAmenity) {
+    details.push({ label: 'Type', value: TYPE_META[unit.type].name });
+    if (unit.type === 'workstation') {
+      const deskType = DESK_TYPES.find((d) => d.id === (unit.deskType ?? 'ASSIGNED'));
+      if (deskType) details.push({ label: 'Desk type', value: deskType.name });
+    }
+    if (isRoomLike(unit.type)) details.push({ label: 'Reservable', value: unit.isReservable === false ? 'No' : 'Yes' });
+    if (unit.room) details.push({ label: 'Room', value: unit.room });
+    if (holder) details.push({ label: 'Assigned to', value: holder });
+    if (todaysBooking) {
+      details.push({ label: 'Booked', value: `${fmtTime(todaysBooking.start)}–${fmtTime(todaysBooking.end)}` });
+    }
+  }
 
   const bookable = isBookable(unit);
   const assignable = isAssignable(unit);
@@ -93,14 +108,19 @@ export function Tooltip() {
           </svg>
         </button>
       </div>
-      <div className={styles.section}>
-        <div className={styles.eyebrow}>{secondaryLabel}</div>
-        <div className={styles.value}>{secondary}</div>
-      </div>
-      {(unit.type === 'workstation' || isAmenity) && unit.room && (
+      {isAmenity ? (
         <div className={styles.section}>
-          <div className={styles.eyebrow}>Room</div>
-          <div className={styles.value}>{unit.room}</div>
+          <div className={styles.eyebrow}>Details</div>
+          <div className={styles.value}>{amenityDetail}</div>
+        </div>
+      ) : (
+        <div className={styles.details}>
+          {details.map((d) => (
+            <div key={d.label} className={styles.detailRow}>
+              <span className={styles.detailLabel}>{d.label}</span>
+              <span className={styles.detailValue}>{d.value}</span>
+            </div>
+          ))}
         </div>
       )}
 

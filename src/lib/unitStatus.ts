@@ -1,6 +1,6 @@
 import type { AppState } from '../state/types';
 import { conflictsFor, isAssignable, isBookable } from '../state/selectors';
-import { isRoomLike, resolveMarkerDef, STATE_DEFS, TYPE_META } from './types';
+import { isRoomLike, resolveMarkerDef, STATE_DEFS } from './types';
 import type { Unit } from './types';
 import { fmtTime } from './geometry';
 
@@ -163,7 +163,14 @@ export function unitStatus(state: AppState, unit: Unit, contactName: (id: string
     return { key: 'amenity', text: name, bg: TOKEN.ink100, fg: TOKEN.ink600, dot: 'var(--ink-500)' };
   }
   if (state.mode === 'edit') {
-    return { key: 'type', text: TYPE_META[unit.type].name, bg: TOKEN.ink100, fg: TOKEN.ink600, dot: moduleColor(state, unit.type, 'free') };
+    // Edit mode used to report the unit's TYPE here, which is not a status — every desk on the
+    // plan read "Desk" whether it was occupied or free. The type is already on the marker, the
+    // legend and the inspector; what this pill is for is whether the thing is in use.
+    const holder = state.assignments[unit.id];
+    if (holder) {
+      return { key: 'assigned', text: `Assigned · ${contactName(holder)}`, bg: TOKEN.blue050, fg: TOKEN.blue700, dot: moduleColor(state, unit.type, 'assigned') };
+    }
+    return { key: 'free', text: 'Free', bg: TOKEN.success050, fg: TOKEN.success700, dot: moduleColor(state, unit.type, 'free') };
   }
   if (state.mode === 'assign') {
     if (!isAssignable(unit)) {
