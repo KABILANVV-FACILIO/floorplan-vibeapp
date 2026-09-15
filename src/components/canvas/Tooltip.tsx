@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { contactName, isAssignable, isBookable, moduleEnabled, unitById } from '../../state/selectors';
 import { fmtTime, tooltipPlacement, unitCenter } from '../../lib/geometry';
@@ -6,6 +6,8 @@ import { unitStatus } from '../../lib/unitStatus';
 import { StatusPill } from '../primitives/StatusPill';
 import { Button } from '../primitives/Button';
 import { DESK_TYPES, isRoomLike, resolveMarkerDef, TYPE_META } from '../../lib/types';
+import { fetchUnitRecordInfo } from '../../lib/facilioApiDataSource';
+import type { UnitRecordInfo } from '../../lib/facilioApiDataSource';
 import styles from './Tooltip.module.css';
 
 export function Tooltip() {
@@ -15,6 +17,10 @@ export function Tooltip() {
   // buttons this unit and mode produce, and placement can't clear the stage edges without it.
   // Measured in a layout effect so the corrected position is painted in the same frame.
   const [size, setSize] = useState<{ w: number; h: number } | undefined>(undefined);
+
+  // The selected unit's ORG RECORD — its own state and the fields the org filled in. The popover
+  // could otherwise only show what a Unit carries locally, which says nothing about the record.
+  const [record, setRecord] = useState<UnitRecordInfo | null>(null);
 
   const unit = unitById(state, state.selected);
   // A unit whose module was switched off in Settings must leave no trace — including a card left
@@ -39,7 +45,21 @@ export function Tooltip() {
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [unit?.id, state.mode, visible]);
+  }, [unit?.id, state.mode, visible, record]);
+
+  const unitId = unit?.id;
+  const unitType = unit?.type;
+  useEffect(() => {
+    setRecord(null);
+    if (!unitId || !unitType || !placeable) return;
+    let live = true;
+    void fetchUnitRecordInfo({ id: unitId, type: unitType }).then((info) => {
+      if (live) setRecord(info);
+    });
+    return () => {
+      live = false;
+    };
+  }, [unitId, unitType, placeable]);
 
   if (!unit || !visible) return null;
 
@@ -83,6 +103,9 @@ export function Tooltip() {
     if (todaysBooking) {
       details.push({ label: 'Booked', value: `${fmtTime(todaysBooking.start)}–${fmtTime(todaysBooking.end)}` });
     }
+    // Straight off the org record, appended after what the app knows locally.
+    if (record?.status) details.push({ label: 'Record status', value: record.status });
+    for (const f of record?.fields ?? []) details.push(f);
   }
 
   const bookable = isBookable(unit);

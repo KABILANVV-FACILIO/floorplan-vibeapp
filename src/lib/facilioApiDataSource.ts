@@ -1102,6 +1102,109 @@ export async function fetchFloorPath(floorId: string): Promise<{ siteId: string 
   return { siteId: siteId != null ? String(siteId) : null, buildingId: buildingId != null ? String(buildingId) : null };
 }
 
+/**
+ * Which org module holds a unit's record. Wider than `REAL_SPACE_MODULE` (which is about where an
+ * ASSIGNMENT lands): zones are real `space` records too, they just aren't assignable.
+ */
+const RECORD_MODULE: Partial<Record<UnitType, string>> = {
+  workstation: 'desks',
+  locker: 'lockers',
+  parking: 'parkingstall',
+  room: 'space',
+  delivery: 'space',
+};
+
+/**
+ * The fields worth surfacing per module, in display order. Every name here is the org's own
+ * (`Fields.NAME`, read off this org's metadata) — nothing invented, and anything the record leaves
+ * empty is dropped rather than shown blank.
+ */
+const RECORD_FIELDS: Record<string, { name: string; label: string }[]> = {
+  desks: [
+    { name: 'deskCode', label: 'Desk code' },
+    { name: 'employee', label: 'Employee' },
+    { name: 'department', label: 'Department' },
+    { name: 'isActive', label: 'Active' },
+  ],
+  lockers: [{ name: 'employee', label: 'Employee' }],
+  parkingstall: [
+    { name: 'parkingType', label: 'Parking type' },
+    { name: 'parkingMode', label: 'Parking mode' },
+    { name: 'employee', label: 'Employee' },
+  ],
+  space: [
+    { name: 'spaceCategory', label: 'Category' },
+    { name: 'area', label: 'Area' },
+    { name: 'maxOccupancy', label: 'Capacity' },
+    { name: 'reservable', label: 'Reservable' },
+  ],
+};
+
+/** On the space base module, so every type above can carry them. */
+const COMMON_RECORD_FIELDS: { name: string; label: string }[] = [{ name: 'approvalStatus', label: 'Approval' }];
+
+/**
+ * A V3 field value as a display string, or null when there is nothing to show. Lookups arrive as
+ * objects, picklists as either a label or a raw id, booleans as booleans — all of which have to
+ * render as text without inventing a value for an empty field.
+ */
+function formatFieldValue(raw: unknown): string | null {
+  if (raw == null || raw === '') return null;
+  if (typeof raw === 'boolean') return raw ? 'Yes' : 'No';
+  if (typeof raw === 'number') return String(raw);
+  if (typeof raw === 'string') return raw;
+  if (typeof raw === 'object') {
+    const o = raw as Record<string, unknown>;
+    const name = o.displayName ?? o.name ?? o.value ?? o.label;
+    return typeof name === 'string' && name ? name : null;
+  }
+  return null;
+}
+
+export interface UnitRecordInfo {
+  /** The record's own state, from its stateflow — distinct from the app's occupancy view of it. */
+  status: string | null;
+  fields: { label: string; value: string }[];
+}
+
+/** Session cache: a record's details don't change while you look at them, and the popover reopens a lot. */
+const unitRecordCache = new Map<string, Promise<UnitRecordInfo | null>>();
+
+/**
+ * The org record behind a placed unit — its state and the fields the org actually filled in.
+ *
+ * The popover could only ever show what this app carries on a Unit (label, type, deskType), which
+ * is a fraction of the record and says nothing about its STATE. This reads the record itself.
+ */
+export function fetchUnitRecordInfo(unit: Pick<Unit, 'id' | 'type'>): Promise<UnitRecordInfo | null> {
+  const moduleName = RECORD_MODULE[unit.type];
+  const id = Number(unit.id);
+  if (!isFacilioApiConfigured || !moduleName || !Number.isInteger(id) || id <= 0) return Promise.resolve(null);
+
+  const key = `${moduleName}:${id}`;
+  let pending = unitRecordCache.get(key);
+  if (!pending) {
+    pending = facilioApi
+      .fetchRecord<any>(moduleName, { id })
+      .then((res) => {
+        const rec = recordOf<any>(res, moduleName);
+        if (res.error || !rec) return null;
+        const specs = [...(RECORD_FIELDS[moduleName] ?? []), ...COMMON_RECORD_FIELDS];
+        const fields = specs
+          .map((f) => ({ label: f.label, value: formatFieldValue(rec[f.name]) }))
+          .filter((f): f is { label: string; value: string } => f.value !== null);
+        return { status: formatFieldValue(rec.moduleState), fields };
+      })
+      .catch(() => null);
+    // A failed read shouldn't be cached as "this record has nothing".
+    pending.then((v) => {
+      if (!v) unitRecordCache.delete(key);
+    });
+    unitRecordCache.set(key, pending);
+  }
+  return pending;
+}
+
 export interface MyDeskInfo {
   recordId: number;
   name: string;
