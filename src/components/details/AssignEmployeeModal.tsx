@@ -36,6 +36,9 @@ export function AssignEmployeeModal({ unit, onClose, onAssigned }: { unit: Unit;
     setBusyId(employeeId);
     try {
       await assignEmployeeToRecord(unit, employeeId);
+      // The org has it; mirror it locally so the marker's initials and the sidebar's
+      // "Assigned · …" update now rather than on the next floor load.
+      actions.markAssigned(unit.id, employeeId);
       actions.showToast(`${unit.label} assigned to ${name}`);
       onAssigned?.();
     } catch (err) {

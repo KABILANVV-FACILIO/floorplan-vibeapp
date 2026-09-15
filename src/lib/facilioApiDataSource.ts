@@ -373,8 +373,37 @@ export class FacilioApiDataSource implements FloorplanDataSource {
     // The record id becomes the unit id — that is what makes the marker's geoId/recordId line up.
     return { ...unit, id: String(created.id) };
   }
-  async getAssignments(): Promise<Assignments> {
-    throw new Error('facilio-api: assignments (Moves-derived) not wired');
+  /**
+   * Who holds each unit on this floor, read off the records' own `employee` field.
+   *
+   * This used to throw, so the app fell through to browser storage and only ever knew about
+   * assignments made in this app, on this device. A desk assigned in Facilio showed as free — no
+   * initials on its marker, no "Assigned · …" in the sidebar — and an assignment made here
+   * vanished for everyone else. `employee` is a real field on desks, lockers and parking stalls,
+   * and it is what this app now writes, so it is what it should read.
+   *
+   * Keyed by RECORD id, which is also the unit id for anything org-backed (see `toUnplacedUnit`
+   * and `createUnit`), so the map lines up with `state.units` without a translation step.
+   */
+  async getAssignments(floorId: string): Promise<Assignments> {
+    this.assertConfigured();
+    if (!isRealFloorId(floorId)) throw new Error(`facilio-api: ${floorId} is not an org floor id`);
+
+    const rel = (module: string) =>
+      facilioApi
+        .fetchAllRelatedList<any>({ moduleName: 'floor', id: floorId, relatedModuleName: module, relatedFieldName: 'floor' })
+        .then((r) => (r.error ? [] : r.list ?? []))
+        .catch(() => [] as any[]);
+    const [desks, lockers, stalls] = await Promise.all([rel('desks'), rel('lockers'), rel('parkingstall')]);
+
+    const out: Assignments = {};
+    for (const record of [...desks, ...lockers, ...stalls]) {
+      const employeeId = lookupId(record, 'employee');
+      if (employeeId != null && employeeId !== '') out[String(record.id)] = String(employeeId);
+    }
+    // eslint-disable-next-line no-console
+    console.info(`[facilio-api] getAssignments floor ${floorId}: ${Object.keys(out).length} held of ${desks.length + lockers.length + stalls.length} records`);
+    return out;
   }
   async assignUnit(): Promise<void> {
     throw new Error('facilio-api: assignment writes go through Moves — not wired');
@@ -1236,18 +1265,22 @@ export function fetchUnitRecordInfo(unit: Pick<Unit, 'id' | 'type'>): Promise<Un
  * flow's own assign step if the current state still has one, which is why it runs after the write
  * rather than instead of it.
  */
-export async function assignEmployeeToRecord(unit: Pick<Unit, 'id' | 'type'>, employeeId: string): Promise<void> {
-  const ref = resolveUnitRecord(unit);
-  if (!ref) throw new Error('facilio-api: this unit has no org record to assign against');
+export async function assignEmployeeToRecord(unit: Unit, employeeId: string): Promise<void> {
+  const moduleName = REAL_SPACE_MODULE[unit.type];
+  if (!moduleName) throw new Error(`facilio-api: ${unit.type} has no assignable record`);
   const id = Number(employeeId);
   if (!Number.isFinite(id)) throw new Error(`facilio-api: "${employeeId}" is not a real employee id`);
 
-  const res = await facilioApi.updateRecord(ref.moduleName, { id: ref.recordId, data: { employee: { id } } });
+  // Resolves the backing record, creating one when the unit was placed but never given a record.
+  const ref = await ensureRealSpaceRecord(unit);
+  if (!ref) throw new Error(`facilio-api: could not resolve an org record for ${unit.label}`);
+
+  const res = await facilioApi.updateRecord(moduleName, { id: ref.recordId, data: { employee: { id } } });
   if (res.error) throw new Error(res.error.message || `assign failed (code ${res.error.code ?? '?'})`);
-  await runAssignTransition(ref.moduleName, ref.recordId).catch((err) => {
+  await runAssignTransition(moduleName, ref.recordId).catch((err) => {
     // The holder is written either way; the state just didn't move.
     // eslint-disable-next-line no-console
-    console.warn(`[facilio-api] assigned ${ref.moduleName} #${ref.recordId} but its state did not advance`, err);
+    console.warn(`[facilio-api] assigned ${moduleName} #${ref.recordId} but its state did not advance`, err);
   });
   invalidateUnitRecordInfo(unit);
 }
@@ -1315,25 +1348,14 @@ export async function findUnitIdForDeskRecord(floorId: string, deskRecordId: num
  */
 export async function assignUnitReal(unit: Unit, contactId: string): Promise<void> {
   if (!isFacilioApiConfigured) return;
-  const moduleName = REAL_SPACE_MODULE[unit.type];
-  if (!moduleName) return;
-  const id = Number(contactId);
-  if (!Number.isFinite(id)) return; // mock employee ids (e.g. "c1") aren't real backend ids.
-
-  const ref = await ensureRealSpaceRecord(unit);
-  if (!ref) return;
-
-  {
-    // A plain `employee` write for EVERY type, desks included. Desks used to go through a `moves`
-    // record, and the backend's Moves flow auto-unassigns whatever desk that employee already
-    // held — so giving someone a second desk silently took away their first. One person may hold
-    // any number of desks here, which rules Moves out as the assignment mechanism.
-    const res = await facilioApi.updateRecord(moduleName, { id: ref.recordId, data: { employee: { id } } });
-    if (res.error) {
-      // eslint-disable-next-line no-console
-      console.warn(`[facilio-api] assign update failed for unit ${unit.id}`, res.error);
-    }
-  }
+  if (!REAL_SPACE_MODULE[unit.type]) return;
+  if (!Number.isFinite(Number(contactId))) return; // mock employee ids (e.g. "c1") aren't real backend ids.
+  // Same write as the picker's, best-effort: the drag-and-drop flow treats the local assignment as
+  // done and must not throw into it.
+  await assignEmployeeToRecord(unit, contactId).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.warn(`[facilio-api] assign failed for unit ${unit.id}`, err);
+  });
 }
 
 /**

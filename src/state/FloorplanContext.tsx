@@ -843,17 +843,24 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     dragStartContact: (id: string | null) => dispatch({ type: 'DRAG_START_CONTACT', id }),
     dragOverUnit: (id: string | null) => dispatch({ type: 'DRAG_OVER_UNIT', id }),
 
+    /**
+     * Reflect an assignment the ORG already has — used after the people picker has written
+     * `employee` onto the record itself. Local state only: writing again here would be a second
+     * write of something that just succeeded.
+     */
+    markAssigned: (unitId: string, contactId: string) => {
+      const next = { ...state.assignments, [unitId]: contactId };
+      dispatch({ type: 'ASSIGN', unitId, contactId, assignments: next });
+      void dataSource.saveUnits(state.floorId, state.units).catch(() => {});
+    },
+
     assign: async (contactId: string, unitId: string) => {
       const target = unitById(state, unitId);
       if (!target) return;
+      // No eviction: one person may hold any number of desks, so assigning them a second one
+      // must not quietly release the first. This used to delete every other unit of the same type
+      // they held — the local mirror of the Moves behaviour that was removed from the org write.
       const next = { ...state.assignments };
-      // one unit per type per contact
-      for (const [uid, cId] of Object.entries(next)) {
-        if (cId === contactId && uid !== unitId) {
-          const other = unitById(state, uid);
-          if (other && other.type === target.type) delete next[uid];
-        }
-      }
       const prevContactId = next[unitId];
       next[unitId] = contactId;
       dispatch({ type: 'ASSIGN', unitId, contactId, assignments: next });

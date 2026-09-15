@@ -14,11 +14,12 @@ const fetchAvailableStates = vi.fn();
 const setWebReassign = vi.fn();
 const openPanel = vi.fn();
 const showToast = vi.fn();
+const markAssigned = vi.fn();
 const invalidateUnitRecordInfo = vi.fn();
 const assignEmployeeToRecord = vi.fn(async (_unit: unknown, _employeeId: string) => {});
 
 vi.mock('../../state/FloorplanContext', () => ({
-  useFloorplan: () => ({ state: { employees: [{ id: '7', name: 'Niviya' }] }, actions: { setWebReassign, openPanel, showToast } }),
+  useFloorplan: () => ({ state: { employees: [{ id: '7', name: 'Niviya' }] }, actions: { setWebReassign, openPanel, showToast, markAssigned } }),
 }));
 vi.mock('../../lib/facilioApiDataSource', () => ({
   resolveUnitRecord: (u: { id: string }) => (/^\d+$/.test(u.id) ? { moduleName: 'desks', recordId: Number(u.id) } : null),
@@ -127,6 +128,8 @@ describe('what a button does depends on the transition', () => {
     person.click();
 
     await waitFor(() => expect(assignEmployeeToRecord).toHaveBeenCalledWith(unit, '7'));
+    // Mirrored into app state, so the marker's initials and the sidebar update without a reload.
+    expect(markAssigned).toHaveBeenCalledWith(unit.id, '7');
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     // The dialog closes once the write lands.
     await waitFor(() => expect(screen.queryByLabelText('Search people')).toBeNull());
