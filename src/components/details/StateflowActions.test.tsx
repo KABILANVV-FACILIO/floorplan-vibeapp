@@ -15,11 +15,13 @@ const setWebReassign = vi.fn();
 const openPanel = vi.fn();
 const showToast = vi.fn();
 const markAssigned = vi.fn();
+const setUnitBusy = vi.fn();
+const refreshAssignments = vi.fn(async () => {});
 const invalidateUnitRecordInfo = vi.fn();
 const assignEmployeeToRecord = vi.fn(async (_unit: unknown, _employeeId: string) => {});
 
 vi.mock('../../state/FloorplanContext', () => ({
-  useFloorplan: () => ({ state: { employees: [{ id: '7', name: 'Niviya' }] }, actions: { setWebReassign, openPanel, showToast, markAssigned } }),
+  useFloorplan: () => ({ state: { employees: [{ id: '7', name: 'Niviya' }] }, actions: { setWebReassign, openPanel, showToast, markAssigned, setUnitBusy, refreshAssignments } }),
 }));
 vi.mock('../../lib/facilioApiDataSource', () => ({
   resolveUnitRecord: (u: { id: string }) => (/^\d+$/.test(u.id) ? { moduleName: 'desks', recordId: Number(u.id) } : null),
@@ -146,7 +148,7 @@ describe('what a button does depends on the transition', () => {
     await waitFor(() => expect(screen.queryByLabelText('Search people')).toBeNull());
   });
 
-  it('re-reads the record after a transition, so the details around it update', async () => {
+  it('re-reads the record and the holders after a transition', async () => {
     fetchAvailableStates.mockResolvedValue(flow(['Block']));
     const onChanged = vi.fn();
     render(<StateflowActions unit={unit} onChanged={onChanged} />);
@@ -155,6 +157,26 @@ describe('what a button does depends on the transition', () => {
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     expect(invalidateUnitRecordInfo).toHaveBeenCalled();
     expect(fetchAvailableStates).toHaveBeenCalledTimes(2); // initial load, then the refresh
+    // Vacate clears `employee`; without this the marker keeps its initials until a floor reload.
+    expect(refreshAssignments).toHaveBeenCalled();
+  });
+
+  it('marks the RECORD busy while the write is in flight, then clears it', async () => {
+    fetchAvailableStates.mockResolvedValue(flow(['Block']));
+    render(<StateflowActions unit={unit} />);
+    (await screen.findByRole('button', { name: 'Block' })).click();
+
+    await waitFor(() => expect(setUnitBusy).toHaveBeenCalledWith(unit.id));
+    await waitFor(() => expect(setUnitBusy).toHaveBeenLastCalledWith(null));
+  });
+
+  it('clears the busy flag even when the transition is refused', async () => {
+    fetchAvailableStates.mockResolvedValue(flow(['Block']));
+    executeStateTransition.mockRejectedValueOnce(new Error('nope'));
+    render(<StateflowActions unit={unit} />);
+    (await screen.findByRole('button', { name: 'Block' })).click();
+
+    await waitFor(() => expect(setUnitBusy).toHaveBeenLastCalledWith(null));
   });
 
   it('reports a refused transition instead of pretending it worked', async () => {

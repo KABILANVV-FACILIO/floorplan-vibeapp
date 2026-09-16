@@ -8,7 +8,7 @@ import type { AmenityIcon, Booking, FloorSearchHit, MarkerDef, ModuleKey, PlanId
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
-import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, findUnitIdForDeskRecord, getFloorPlanSummary, saveFloorplanMarkers, vacateUnitReal } from '../lib/facilioApiDataSource';
+import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, saveFloorplanMarkers, vacateUnitReal } from '../lib/facilioApiDataSource';
 import { measureImageDataUrl } from '../lib/geoReference';
 import { listFloorplanFloorIds, loadFloorplanFile, persistFloorplanFile } from '../lib/floorplanFileStore';
 import { loadSettings, saveSettings, settingsFromState } from '../lib/settingsStore';
@@ -480,6 +480,30 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       if (floorId === state.floorId) return;
       loadFloor(floorId);
     },
+
+    /**
+     * Re-read the floor already on screen — its desks, lockers, stalls and rooms, who holds them,
+     * the day's bookings, which plan types exist and the plan image itself.
+     *
+     * Never re-resolves WHICH floor, so pressing it can't move you, and `SELECT_FLOOR_START` is a
+     * no-op for the current floor so the camera is left alone: zoom and pan survive. Every memo is
+     * dropped first — the whole point of pressing Refresh is to get the org's current answer, and
+     * a surviving cache would serve the stale one.
+     */
+    refreshFloor: async () => {
+      if (state.refreshing) return;
+      dispatch({ type: 'SET_REFRESHING', value: true });
+      try {
+        invalidateOrgCaches();
+        await loadFloor(state.floorId);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[refresh] could not re-read the floor', err);
+        showToast('Could not refresh this floor');
+      } finally {
+        dispatch({ type: 'SET_REFRESHING', value: false });
+      }
+    },
     setPlan: (planId: PlanId) => {
       dispatch({ type: 'SET_PLAN', planId });
       // Switching to a plan type whose image hasn't been fetched yet on this floor (the common
@@ -556,6 +580,26 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     setSpaceSearch: (value: string) => dispatch({ type: 'SET_SPACE_SEARCH', value }),
 
     selectUnit: (id: string | null) => dispatch({ type: 'SELECT_UNIT', id }),
+
+    /** Marks a record as having an org write in flight — its marker spins, its buttons lock. */
+    setUnitBusy: (id: string | null) => dispatch({ type: 'SET_UNIT_BUSY', id }),
+
+    /**
+     * Re-read who holds what on this floor, from the org.
+     *
+     * Called after a stateflow transition: Vacate clears `employee` on the record, Assign sets it,
+     * and neither shows on the marker or in the sidebar until the map is re-read. Cheaper than a
+     * full floor refresh, which would also re-fetch the plan image for a change that can't affect it.
+     */
+    refreshAssignments: async () => {
+      try {
+        const assignments = await dataSource.getAssignments(state.floorId);
+        dispatch({ type: 'ASSIGNMENTS_LOADED', assignments });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[refresh] could not re-read assignments', err);
+      }
+    },
 
     /**
      * Clicking a spot with a desk/locker/parking tool no longer silently mints a new record —

@@ -45,3 +45,24 @@
   border-top: 5px solid var(--blue-600, #1d4ed8);
   margin-top: -1px;
 }
+
+/* Replaces the marker's glyph while an org write is in flight for that record. Sized off the
+   marker so it stays centred at any zoom, and it inherits `currentColor` so it reads on the
+   filled and outlined variants alike. */
+.busy {
+  width: 60%;
+  height: 60%;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: currentColor;
+  border-right-color: currentColor;
+  opacity: 0.85;
+  animation: fp-spin 700ms linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .busy {
+    animation: none;
+    border-color: currentColor;
+    opacity: 0.5;
+  }
+}

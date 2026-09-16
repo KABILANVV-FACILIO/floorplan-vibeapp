@@ -15,6 +15,9 @@ export function Marker({ unit, invZ, onDragStart }: { unit: Unit; invZ: number; 
   const draggable = state.mode === 'edit' && state.tool === 'select';
   const isMine = myAssignedUnit(state)?.id === unit.id;
   const isHighlighted = state.highlightUnitId === unit.id;
+  // An org write is in flight for THIS record — shown on the record, not only on the button that
+  // started it, because the transition is happening to the thing on the plan.
+  const isBusy = state.busyUnitId === unit.id;
 
   function onClick(e: ReactMouseEvent) {
     e.stopPropagation();
@@ -120,14 +123,15 @@ export function Marker({ unit, invZ, onDragStart }: { unit: Unit; invZ: number; 
         }}
       >
         {isHighlighted && <div className={styles.wave} />}
-        {style.img ? (
+        {isBusy && <span className={styles.busy} aria-label="Working" />}
+        {!isBusy && (style.img ? (
           <img src={style.img} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 'inherit', pointerEvents: 'none' }} />
         ) : (
           <>
             {style.occText && <span style={{ font: '700 9px/1 var(--font-sans)' }}>{style.occText}</span>}
             {!style.occText && style.icon && ICONS[style.icon]}
           </>
-        )}
+        ))}
       </div>
       {/* Primary name label ABOVE the marker (hidden when the "Your desk"
           pill already sits above it, to avoid stacking two labels). */}

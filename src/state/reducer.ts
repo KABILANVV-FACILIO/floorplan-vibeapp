@@ -82,12 +82,14 @@ export function buildInitialState(): AppState {
     portfolio: [],
     pxPerMeter: null,
     loading: true,
+    refreshing: false,
     dataSourceName: null,
 
     selected: null,
     multiSelected: [],
     placingUnitId: null,
     highlightUnitId: null,
+    busyUnitId: null,
     draft: [],
     calib: [],
     calibLen: '',
@@ -171,6 +173,8 @@ export type Action =
   | { type: 'ASSETS_LOADED'; assets: AppState['assets'] }
   | { type: 'SELECT_UNIT'; id: string | null }
   | { type: 'HIGHLIGHT_UNIT'; id: string | null }
+  | { type: 'SET_UNIT_BUSY'; id: string | null }
+  | { type: 'ASSIGNMENTS_LOADED'; assignments: AppState['assignments'] }
   | { type: 'ADD_UNIT'; unit: Unit }
   | { type: 'ADD_UNITS'; units: Unit[] }
   | { type: 'UPDATE_UNIT'; id: string; patch: Partial<Unit> }
@@ -232,6 +236,7 @@ export type Action =
   | { type: 'SET_MY_DESK'; myDesk: AppState['myDesk'] }
   | { type: 'MARK_SAVED' }
   | { type: 'SET_SAVING'; value: boolean }
+  | { type: 'SET_REFRESHING'; value: boolean }
   | { type: 'DISCARD_CHANGES' }
   | { type: 'SET_PENDING_MODE_SWITCH'; mode: AppState['mode'] | null }
   | { type: 'RESET_DEMO'; units: Unit[]; assignments: AppState['assignments']; bookings: Booking[] };
@@ -322,6 +327,8 @@ export function reducer(state: AppState, action: Action): AppState {
     }
     case 'SET_PLAN':
       return { ...state, planId: action.planId, ...resetSelectionState(state) };
+    case 'SET_REFRESHING':
+      return { ...state, refreshing: action.value };
     case 'SET_STAGE_SIZE':
       return { ...state, stage: { w: action.w, h: action.h } };
     case 'SET_VIEW':
@@ -366,6 +373,10 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, selected: action.id, webReassign: null, ...(action.id ? { multiSelected: [] } : {}) };
     case 'HIGHLIGHT_UNIT':
       return { ...state, highlightUnitId: action.id };
+    case 'SET_UNIT_BUSY':
+      return { ...state, busyUnitId: action.id };
+    case 'ASSIGNMENTS_LOADED':
+      return { ...state, assignments: action.assignments };
     case 'ADD_UNIT': {
       const units = [...state.units, action.unit];
       return { ...state, units, selected: action.unit.id, unsavedChanges: countUnsavedChanges(units, state.savedUnits) };

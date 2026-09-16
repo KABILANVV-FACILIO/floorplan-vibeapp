@@ -602,6 +602,22 @@ function invalidateFloorplanDetails(floorId: string): void {
   floorPlanTypeCache.delete(floorId);
 }
 
+/**
+ * Forget everything remembered about the org, so the next read goes to it.
+ *
+ * Behind the Refresh control: the point of pressing it is to get the org's current answer, and a
+ * memo that survived the press would quietly serve the stale one — which is the failure the button
+ * exists to fix.
+ */
+export function invalidateOrgCaches(): void {
+  floorPlanTypeCache.clear();
+  realSpaceRecordCache.clear();
+  moduleIdCache.clear();
+  bookingFormListCache.clear();
+  bookingFormDetailCache.clear();
+  floorIndex = null;
+}
+
 export interface FloorPlanTypeSummary {
   id: PlanId;
   name: string;

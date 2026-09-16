@@ -7,6 +7,7 @@ import { facilioRecordUrl } from '../../lib/facilioApi';
 import { Select } from '../primitives/Select';
 import { Button } from '../primitives/Button';
 import { SkeletonRows } from '../primitives/Skeleton';
+import { StateflowActions } from './StateflowActions';
 import card from './Card.module.css';
 import styles from './AssignPanel.module.css';
 
@@ -75,6 +76,10 @@ export function AssignPanel() {
             ) : (
               <p className={card.helper}>This space is booked in Booking mode, not assigned.</p>
             )}
+            {/* The same transitions the plan's popover offers — the org's flow decides them, so
+                the two surfaces must not disagree about what you can do to this record. Assign
+                and Allocate open the people picker here exactly as they do there. */}
+            <StateflowActions unit={sel} onChanged={() => void actions.refreshAssignments()} />
           </div>
         </div>
       )}

@@ -77,6 +77,8 @@ export interface AppState {
   portfolio: Site[];
   pxPerMeter: number | null;
   loading: boolean;
+  /** The toolbar's Refresh is re-reading the floor that's already on screen. */
+  refreshing: boolean;
   dataSourceName: string | null;
 
   selected: string | null;
@@ -93,6 +95,8 @@ export interface AppState {
   placingUnitId: string | null;
   /** Unit to visually pulse for ~2s (e.g. after "My desk" jumps to it) — separate from `selected`, which also opens the info panel. */
   highlightUnitId: string | null;
+  /** A record with an org write in flight — its marker shows a spinner and its buttons lock. */
+  busyUnitId: string | null;
   draft: [number, number][];
   calib: [number, number][];
   calibLen: string;

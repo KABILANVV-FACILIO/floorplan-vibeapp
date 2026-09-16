@@ -34,6 +34,7 @@ export function AssignEmployeeModal({ unit, onClose, onAssigned }: { unit: Unit;
 
   async function pick(employeeId: string, name: string) {
     setBusyId(employeeId);
+    actions.setUnitBusy(unit.id);
     try {
       await assignEmployeeToRecord(unit, employeeId);
       // The org has it; mirror it locally so the marker's initials and the sidebar's
@@ -47,6 +48,7 @@ export function AssignEmployeeModal({ unit, onClose, onAssigned }: { unit: Unit;
       actions.showToast(`Could not assign ${unit.label} — ${(err as Error)?.message ?? 'the org refused it'}`);
     } finally {
       setBusyId(null);
+      actions.setUnitBusy(null);
       onClose();
     }
   }

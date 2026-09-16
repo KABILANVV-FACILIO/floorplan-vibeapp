@@ -82,16 +82,22 @@ export function StateflowActions({ unit, showState = true, onChanged }: { unit: 
       data = { transitionCommentData: { body, bodyHTML: body } };
     }
     setBusyId(t.id);
+    // The record itself is busy, not just this button — the marker on the plan spins too, because
+    // the transition is happening to the thing you are looking at, not to the control you pressed.
+    actions.setUnitBusy(unit.id);
     try {
       await executeStateTransition(moduleName, recordId, t.id, data);
       invalidateUnitRecordInfo(unit);
-      await load();
+      // Re-read the record: a transition is exactly what changes its state and its holder, and
+      // Vacate clears `employee`, which drives the marker's initials and the sidebar's pill.
+      await Promise.all([load(), actions.refreshAssignments()]);
       onChanged?.();
       actions.showToast(`${unit.label}: ${t.name}`);
     } catch (err) {
       actions.showToast(`Could not ${t.name} — ${(err as Error)?.message ?? 'the org refused it'}`);
     } finally {
       setBusyId(null);
+      actions.setUnitBusy(null);
     }
   }
 
