@@ -49,6 +49,20 @@ export function Toolbar({ leftPad, rightPad }: { leftPad: number; rightPad: numb
           </button>
         )}
 
+        {/* PRINT the floor as the sheet designed for it — the title block, a card per module, the
+            occupancy legend and the plan itself (see components/print/PrintSheet). The sheet is
+            already in the page; this only opens the print dialog, so Cmd+P produces the same thing.
+            Editing the plan is not a state you print from. */}
+        {state.mode !== 'edit' && (
+          <button className={styles.iconToggle} data-tip="Print this floor" aria-label="Print this floor" onClick={() => window.print()}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M6 9V3h12v6" />
+              <rect x="4" y="9" width="16" height="8" rx="2" />
+              <path d="M8 17h8v4H8z" />
+            </svg>
+          </button>
+        )}
+
         {/* REFRESH the floor already on screen — plan image, desks/rooms/stalls, who holds them and
             the day's bookings. Never re-resolves WHICH floor, so it can't move you, and it leaves
             the camera alone so zoom and pan survive. */}

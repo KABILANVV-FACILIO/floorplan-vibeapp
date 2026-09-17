@@ -146,3 +146,27 @@ button {
     transform: rotate(360deg);
   }
 }
+
+/* ---- print ----------------------------------------------------------------
+ * The app portals its transient furniture straight to <body> — the hover-tooltip layer, the date
+ * popup, modals. None of that belongs on paper, and it is outside the shell's own `fp-screen`
+ * class, so it has to be excluded here rather than there.
+ *
+ * `print-color-adjust: exact` because the sheet IS its colours: drop them and the occupancy dots,
+ * the legend and the module bars all print as the same grey.
+ */
+@media print {
+  body > *:not(#root) {
+    display: none !important;
+  }
+  html,
+  body,
+  #root {
+    height: auto;
+    background: #fff;
+  }
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

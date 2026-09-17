@@ -1,0 +1,223 @@
+/*
+ * The floor plan print sheet — a port of `Floorplan Print.dc.html` from the Claude Design project
+ * "Copy of Floorplan Canvas Architecture".
+ *
+ * The design was authored against the Facilio Atom design system, which is the same token set this
+ * app already carries in src/styles/tokens.css (identical values), so every colour here is the
+ * app's own variable rather than the literal hex the design file wrote. The two exceptions are
+ * noted where they appear.
+ *
+ * Screen: nothing. This exists for paper, so the browser's own print preview is the preview.
+ */
+.sheet {
+  display: none;
+}
+
+@media print {
+  /* The app is the screen view; the sheet is the paper view. They never both show. */
+  :global(.fp-screen) {
+    display: none !important;
+  }
+
+  .sheet {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    box-sizing: border-box;
+    width: 100%;
+    height: 100vh;
+    padding: 30px 34px 20px;
+    font-family: var(--font-sans);
+    color: var(--ink-900);
+    background: #fff;
+    overflow: hidden;
+  }
+}
+
+/* Letter landscape, edge to edge — the sheet paints its own margins above. */
+@page {
+  size: letter landscape;
+  margin: 0;
+}
+
+/* ---- header ------------------------------------------------------------- */
+.head {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+  flex: none;
+}
+.headLeft {
+  flex: 1;
+  min-width: 0;
+}
+.brandRow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+/* The wordmark's own ink — deliberately darker than --ink-900, and the one literal the design
+   introduces that the token set has no name for. */
+.wordmark {
+  font: 800 17px/1 var(--font-sans);
+  color: #1b1b3a;
+  letter-spacing: -0.02em;
+}
+.wordmarkDot {
+  color: var(--brand-pink);
+}
+.brandRule {
+  width: 1px;
+  height: 11px;
+  background: var(--ink-200);
+}
+.eyebrow {
+  font: 500 10px/1 var(--font-sans);
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--ink-600);
+}
+.title {
+  font: 700 27px/1.12 var(--font-sans);
+  letter-spacing: -0.015em;
+  margin-top: 11px;
+}
+.siteLine {
+  font: 400 12.5px/1.4 var(--font-sans);
+  color: var(--ink-600);
+  margin-top: 4px;
+}
+.headRight {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+.generatedAt {
+  font: 400 11px/1.3 var(--font-sans);
+  color: var(--ink-600);
+}
+
+/* ---- per-module stat cards ---------------------------------------------- */
+.cards {
+  display: flex;
+  gap: 10px;
+}
+.card {
+  width: 118px;
+  border: 1px solid var(--ink-200);
+  border-radius: 8px;
+  padding: 9px 11px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  break-inside: avoid;
+}
+.cardName {
+  font: 500 9.5px/1 var(--font-sans);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-600);
+}
+.cardFigures {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+.cardBig {
+  font: 700 24px/0.9 var(--font-display);
+  color: var(--success-500);
+}
+.cardOf {
+  font: 400 10.5px/1 var(--font-sans);
+  color: var(--ink-600);
+}
+.cardBar {
+  display: flex;
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  /* The design's own track tint — a desaturated green the token set doesn't carry. */
+  background: #e6efe4;
+}
+.cardBarFill {
+  background: var(--blue-500);
+}
+
+/* ---- legend ------------------------------------------------------------- */
+.legend {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  border-top: 1px solid var(--ink-200);
+  padding-top: 9px;
+  flex: none;
+}
+.legendItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 400 11.5px/1 var(--font-sans);
+  color: var(--ink-700);
+}
+.legendDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+}
+.spacer {
+  flex: 1;
+}
+.totalLine {
+  font: 400 11.5px/1 var(--font-sans);
+  color: var(--ink-600);
+}
+
+/* ---- the plan ----------------------------------------------------------- */
+.planWrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+}
+.plan {
+  position: relative;
+  height: 100%;
+  max-width: 100%;
+  aspect-ratio: 1492 / 1054;
+  border: 1px solid var(--ink-200);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+/* Washed out so the occupancy dots are the only saturated thing on the page. */
+.planImg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  filter: grayscale(1) contrast(0.55) brightness(1.16);
+}
+.seat {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 2px #fff;
+}
+
+/* ---- footer ------------------------------------------------------------- */
+.foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: none;
+  border-top: 1px solid var(--ink-100);
+  padding-top: 9px;
+}
+.footNote,
+.sheetLine {
+  font: 400 10px/1.3 var(--font-sans);
+  color: var(--ink-600);
+}
