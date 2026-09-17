@@ -1,0 +1,110 @@
+/*
+ * The one month calendar. Sized by a single custom property so the desktop popup and the mobile
+ * sheet are the SAME calendar at two scales, rather than two calendars that drift apart — which
+ * is what they were: a 339-line inline-styled grid nobody rendered, and a second grid in the
+ * mobile sheet with its own month maths.
+ */
+.cal {
+  --cal-cell: 32px;
+  --cal-row: 30px;
+  --cal-day-font: 12.5px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.lg {
+  --cal-cell: 40px;
+  --cal-row: 40px;
+  --cal-day-font: 14px;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.monthLabel {
+  font: 600 13px var(--font-sans);
+  color: var(--ink-900);
+}
+.lg .monthLabel {
+  font-size: 15px;
+}
+.navBtn {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--ink-200);
+  background: #fff;
+  color: var(--ink-700);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.lg .navBtn {
+  width: 32px;
+  height: 32px;
+}
+.navBtn:disabled {
+  color: var(--ink-300);
+  cursor: default;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(7, var(--cal-cell));
+  gap: 2px;
+  justify-content: center;
+}
+.weekCell {
+  text-align: center;
+  font: 600 10.5px var(--font-sans);
+  color: var(--ink-400);
+  padding: 2px 0;
+}
+
+.day {
+  width: var(--cal-cell);
+  height: var(--cal-row);
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-800);
+  font: 500 var(--cal-day-font) var(--font-sans);
+  cursor: pointer;
+  padding: 0;
+}
+.day:hover:not(:disabled):not(.sel) {
+  background: var(--ink-050);
+}
+.day:focus-visible {
+  outline: 2px solid var(--blue-500);
+  outline-offset: 1px;
+}
+/* A day from the previous or next month: still selectable, just clearly not this month's. */
+.dim {
+  color: var(--ink-400);
+}
+.today {
+  border-color: var(--blue-300);
+  border-width: 1.5px;
+}
+.sel {
+  background: var(--blue-500);
+  color: #fff;
+  font-weight: 600;
+  border-color: var(--blue-500);
+}
+.day:disabled {
+  color: var(--ink-300);
+  cursor: not-allowed;
+}
+
+/* The bookable window, stated rather than enforced silently — the native picker showed nothing. */
+.range {
+  font: 500 11px var(--font-sans);
+  color: var(--ink-500);
+  text-align: center;
+}
