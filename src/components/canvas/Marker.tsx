@@ -4,10 +4,25 @@ import { contactName, myAssignedUnit } from '../../state/selectors';
 import { markerStyle, unitStatus } from '../../lib/unitStatus';
 import { isRoomLike } from '../../lib/types';
 import type { PointGeom, Unit } from '../../lib/types';
+import type { LabelPlacement } from '../../lib/labelLayout';
 import { MARKER_ICONS as ICONS } from './markerIcons';
 import styles from './Marker.module.css';
 
-export function Marker({ unit, invZ, onDragStart }: { unit: Unit; invZ: number; onDragStart?: (unit: Unit, e: ReactMouseEvent) => void }) {
+export function Marker({
+  unit,
+  invZ,
+  labels,
+  onDragStart,
+}: {
+  unit: Unit;
+  invZ: number;
+  /**
+   * Which of this marker's labels the canvas found room for. Decided there, not here: whether a
+   * label fits depends on the OTHER markers, which a single marker cannot see.
+   */
+  labels?: LabelPlacement;
+  onDragStart?: (unit: Unit, e: ReactMouseEvent) => void;
+}) {
   const { state, actions } = useFloorplan();
   const geom = unit.geom as PointGeom;
   const style = markerStyle(state, unit);
@@ -76,14 +91,18 @@ export function Marker({ unit, invZ, onDragStart }: { unit: Unit; invZ: number; 
   // underneath. Book view: the space name. Amenities: their name, always.
   const contactId = state.assignments[unit.id];
   const assignedName = state.mode === 'assign' && contactId ? contactName(state, contactId) : null;
-  const showLabel = (state.mode === 'assign' || state.mode === 'book' || unit.type === 'amenity') && invZ <= 1.9;
+  // The zoom threshold this used to carry (`invZ <= 1.9`) dropped every label past one zoom level
+  // whether or not there was room for it, and kept every label before it whether or not there was.
+  // Room is what actually matters, and only the canvas can judge it.
+  const showName = !!labels?.name;
+  const showSub = !!labels?.sub;
 
   return (
     <>
-      {isMine && (
+      {isMine && showName && (
         <div
           className={styles.myDeskBadge}
-          style={{ left: `${geom.x * 100}%`, top: `${geom.y * 100}%`, transform: `translate(-50%, calc(-100% - ${Math.round(style.size / 2 + 6)}px)) scale(${invZ})`, transformOrigin: 'bottom center' }}
+          style={{ left: `${geom.x * 100}%`, top: `${geom.y * 100}%`, transform: `scale(${invZ}) translate(-50%, calc(-100% - ${Math.round(style.size / 2 + 6)}px))`, transformOrigin: '0 0' }}
         >
           <div className={styles.myDeskPill}>
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -108,7 +127,12 @@ export function Marker({ unit, invZ, onDragStart }: { unit: Unit; invZ: number; 
           top: `${geom.y * 100}%`,
           width: style.size,
           height: style.size,
-          transform: `translate(-50%,-50%) scale(${invZ})`,
+          // Scale BEFORE translating: the plane is scaled by z, so a translate written here is in
+          // PLAN px and reaches the screen multiplied by z. Inside the scale it is divided by z
+          // first, so the offset is a constant number of screen px at every zoom — which is what
+          // a 24px chip centred on its point, and a label a fixed gap away from it, both need.
+          transform: `scale(${invZ}) translate(-50%,-50%)`,
+          transformOrigin: '0 0',
           background: style.bg,
           border: `2px solid ${style.bd}`,
           color: style.fg,
@@ -135,14 +159,14 @@ export function Marker({ unit, invZ, onDragStart }: { unit: Unit; invZ: number; 
       </div>
       {/* Primary name label ABOVE the marker (hidden when the "Your desk"
           pill already sits above it, to avoid stacking two labels). */}
-      {showLabel && !isMine && (
+      {showName && !isMine && (
         <div
           style={{
             position: 'absolute',
             left: `${geom.x * 100}%`,
             top: `${geom.y * 100}%`,
-            transform: `translate(-50%, calc(-100% - ${Math.round(style.size / 2 + 4)}px)) scale(${invZ})`,
-            transformOrigin: 'bottom center',
+            transform: `scale(${invZ}) translate(-50%, calc(-100% - ${Math.round(style.size / 2 + 4)}px))`,
+            transformOrigin: '0 0',
             pointerEvents: 'none',
             zIndex: 1,
             font: '600 8.5px/1.1 var(--font-sans)',
@@ -158,14 +182,14 @@ export function Marker({ unit, invZ, onDragStart }: { unit: Unit; invZ: number; 
         </div>
       )}
       {/* Secondary label (assignee) BELOW the marker. */}
-      {showLabel && assignedName && (
+      {showSub && assignedName && (
         <div
           style={{
             position: 'absolute',
             left: `${geom.x * 100}%`,
             top: `${geom.y * 100}%`,
-            transform: `translate(-50%, ${Math.round(style.size / 2 + 4)}px) scale(${invZ})`,
-            transformOrigin: 'top center',
+            transform: `scale(${invZ}) translate(-50%, ${Math.round(style.size / 2 + 4)}px)`,
+            transformOrigin: '0 0',
             pointerEvents: 'none',
             zIndex: 1,
             font: '500 8px/1.1 var(--font-sans)',

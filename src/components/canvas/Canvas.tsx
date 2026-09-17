@@ -10,7 +10,9 @@ import { DraftOverlay } from './DraftOverlay';
 import { Legend } from './Legend';
 import { ZoomControls } from './ZoomControls';
 import { Tooltip } from './Tooltip';
-import { visibleUnits } from '../../state/selectors';
+import { ButtonSpinner } from '../primitives/ButtonSpinner';
+import { contactName, myAssignedUnit, visibleUnits } from '../../state/selectors';
+import { planMarkerLabels } from '../../lib/labelLayout';
 import { floorImageKey, isRoomLike, isZoneTool, unitOnPlan } from '../../lib/types';
 import type { PolyGeom, Unit, UnitGeom } from '../../lib/types';
 import styles from './Canvas.module.css';
@@ -499,6 +501,50 @@ export function Canvas() {
     .filter((u) => !isRoomLike(u.type) && !u.unplaced && (u.type === 'amenity' || unitOnPlan(u, state.planId)))
     .map((u) => ({ ...u, geom: previewedGeom(u) }));
 
+  // Which of those markers may show a label, and which would land on a neighbour. Labels keep a
+  // constant screen size while the gaps between markers shrink with the zoom, so on a dense floor
+  // the only thing that decides legibility is whether the label actually fits — not the zoom level
+  // (see lib/labelLayout).
+  const mineId = myAssignedUnit(state)?.id ?? null;
+  const labelsOn = state.mode === 'assign' || state.mode === 'book';
+  const labelPlan = useMemo(() => {
+    const inputs = markers
+      .filter((m) => labelsOn || m.type === 'amenity')
+      .map((m) => {
+        const g = m.geom as PolyGeom | { kind: 'point'; x: number; y: number };
+        const mine = m.id === mineId;
+        const holder = state.mode === 'assign' ? state.assignments[m.id] : undefined;
+        return {
+          id: m.id,
+          x: 'x' in g ? g.x : 0,
+          y: 'y' in g ? g.y : 0,
+          size: 24,
+          // "Your desk" replaces the name label rather than stacking above it.
+          name: mine ? 'Your desk' : m.label,
+          pill: mine,
+          must: mine,
+          sub: holder ? contactName(state, holder) : null,
+          rank: m.id === state.selected ? 0 : mine ? 1 : 2,
+        };
+      });
+    return planMarkerLabels(inputs, { planW: IMG_W, planH: IMG_H, zoom: state.view.z });
+    // Deliberately NOT `markers`: that array is rebuilt on every render, so depending on it would
+    // re-run the whole layout on every pan frame. These are what `markers` is actually built from,
+    // plus the zoom — the only thing that can change which labels collide.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    state.units,
+    state.enabledModules,
+    state.planId,
+    editPreview,
+    labelsOn,
+    mineId,
+    state.selected,
+    state.assignments,
+    state.mode,
+    state.view.z,
+  ]);
+
   const selectedRoom = isEditSelect && multiSel.size === 0 ? rooms.find((r) => r.id === state.selected) : undefined;
 
   const armedRecordLabel = state.placingUnitId ? state.unplacedUnits.find((u) => u.id === state.placingUnitId)?.label : undefined;
@@ -556,6 +602,7 @@ export function Canvas() {
             key={m.id}
             unit={dragPreview?.id === m.id ? { ...m, geom: { kind: 'point', x: dragPreview.x, y: dragPreview.y } } : m}
             invZ={Number(invZ)}
+            labels={labelPlan.get(m.id)}
             onDragStart={startMarkerDrag}
           />
         ))}
@@ -609,7 +656,8 @@ export function Canvas() {
                   borderRadius: '50%',
                   background: '#fff',
                   border: '2.5px solid var(--blue-500)',
-                  transform: 'translate(-50%,-50%) scale(var(--inv))',
+                  transform: 'scale(var(--inv)) translate(-50%,-50%)',
+        transformOrigin: '0 0',
                   cursor: 'grab',
                   boxShadow: '0 1px 3px rgba(16,24,40,0.3)',
                   zIndex: 5,
@@ -652,6 +700,10 @@ function RoomLabel({ unit }: { unit: Unit }) {
   if (unit.geom.kind !== 'poly') return null;
   const geom = unit.geom as PolyGeom;
   const { x, y } = polygonCentroid(geom.pts);
+  // An org write is in flight for THIS record. A traced room is a record like any other — it can
+  // be transitioned from the same buttons a desk can — and it has no marker to spin, so the
+  // waiting shows on the label, which is the room's only fixture on the plan.
+  const busy = state.busyUnitId === unit.id;
 
   let sub = '';
   let subFg = 'var(--ink-600)';
@@ -676,7 +728,8 @@ function RoomLabel({ unit }: { unit: Unit }) {
         position: 'absolute',
         left: `${x * 100}%`,
         top: `${y * 100}%`,
-        transform: 'translate(-50%,-50%) scale(var(--inv))',
+        transform: 'scale(var(--inv)) translate(-50%,-50%)',
+        transformOrigin: '0 0',
         pointerEvents: 'none',
         display: 'flex',
         flexDirection: 'column',
@@ -687,10 +740,17 @@ function RoomLabel({ unit }: { unit: Unit }) {
       <span style={{ background: '#fff', color: 'var(--ink-900)', border: '1px solid var(--ink-200)', borderRadius: 4, padding: '3px 8px', font: '600 11px/1 var(--font-sans)', boxShadow: 'var(--shadow-xs)', whiteSpace: 'nowrap' }}>
         {unit.label}
       </span>
-      {sub && (
-        <span style={{ background: 'rgba(255,255,255,0.92)', color: subFg, borderRadius: 4, padding: '2px 6px', font: '500 10px/1 var(--font-sans)', whiteSpace: 'nowrap' }}>
-          {sub}
+      {busy ? (
+        <span style={{ display: 'flex', alignItems: 'center', background: 'rgba(255,255,255,0.92)', color: 'var(--ink-600)', borderRadius: 4, padding: '2px 6px 2px 5px', font: '500 10px/1 var(--font-sans)', whiteSpace: 'nowrap' }}>
+          <ButtonSpinner />
+          Working…
         </span>
+      ) : (
+        sub && (
+          <span style={{ background: 'rgba(255,255,255,0.92)', color: subFg, borderRadius: 4, padding: '2px 6px', font: '500 10px/1 var(--font-sans)', whiteSpace: 'nowrap' }}>
+            {sub}
+          </span>
+        )
       )}
     </div>
   );
