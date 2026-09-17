@@ -4,10 +4,12 @@ import { useFloorplan } from '../../state/FloorplanContext';
 import { unitById } from '../../state/selectors';
 import { fmtTime } from '../../lib/geometry';
 import { isFacilioApiConfigured } from '../../lib/facilioApi';
+import { orgNow } from '../../lib/orgTime';
 import { fetchBookingFormById, fetchBookingFormList, pickDefaultBookingForm } from '../../lib/facilioApiDataSource';
 import type { BookingFormFieldMeta, BookingFormMeta, BookingFormSummary } from '../../lib/facilioApiDataSource';
 import { isRoomLike } from '../../lib/types';
 import type { Employee, UnitType } from '../../lib/types';
+import { DatePicker } from '../primitives/DatePicker';
 import { Modal, ModalFooter, ModalHeader } from '../primitives/Modal';
 import { Select } from '../primitives/Select';
 import { Button } from '../primitives/Button';
@@ -226,13 +228,42 @@ function BookingFormInner() {
     </Field>
   );
 
+  // Start/end are the org's datetime fields, so they get the picker's datetime mode — the app's
+  // calendar with HH/MM columns beside it — rather than the browser's `datetime-local`, whose
+  // look and keyboard behaviour differ per browser and match nothing else in this dialog.
+  const dtField = (iso: string, set: (v: string) => void) => {
+    const [d, t] = (iso || '').split('T');
+    const mins = t ? Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5)) : 9 * 60;
+    const date = d || orgNow().dateISO;
+    const write = (day: string, m: number) => set(`${day}T${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`);
+    return { date, mins, write };
+  };
+  const startDt = dtField(startInput, setStartInput);
+  const endDt = dtField(endInput, setEndInput);
+
   const timeWindow = !isFacility ? (
     <div key="__time" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
       <Field label="Start Time" required>
-        <input className={card.input} type="datetime-local" value={startInput} onChange={(e) => setStartInput(e.target.value)} />
+        <DatePicker
+          value={startDt.date}
+          minutes={startDt.mins}
+          minuteStep={5}
+          onChange={(day) => startDt.write(day, startDt.mins)}
+          onMinutesChange={(m) => startDt.write(startDt.date, m)}
+          fullWidth
+          aria-label="Start time"
+        />
       </Field>
       <Field label="End Time" required>
-        <input className={card.input} type="datetime-local" value={endInput} onChange={(e) => setEndInput(e.target.value)} />
+        <DatePicker
+          value={endDt.date}
+          minutes={endDt.mins}
+          minuteStep={5}
+          onChange={(day) => endDt.write(day, endDt.mins)}
+          onMinutesChange={(m) => endDt.write(endDt.date, m)}
+          fullWidth
+          aria-label="End time"
+        />
       </Field>
     </div>
   ) : (
@@ -240,7 +271,7 @@ function BookingFormInner() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
         <div>
           <div className={card.label}>Select Date</div>
-          <input className={card.input} type="date" value={slotDate} onChange={(e) => setSlotDate(e.target.value)} />
+          <DatePicker value={slotDate} onChange={setSlotDate} fullWidth aria-label="Select date" />
         </div>
         <div>
           <div className={card.label}>Time Slot</div>
@@ -358,8 +389,27 @@ function BookingFormInner() {
     let control: ReactNode;
     if (f.type === 'TEXTAREA') control = <textarea className={card.input} style={{ height: 64, padding: '8px 10px', resize: 'vertical' }} value={val} onChange={(e) => set(e.target.value)} />;
     else if (f.type === 'NUMBER' || f.type === 'DECIMAL') control = <input className={card.input} type="number" value={val} onChange={(e) => set(e.target.value)} />;
-    else if (f.type === 'DATE') control = <input className={card.input} type="date" value={val} onChange={(e) => set(e.target.value)} />;
-    else if (f.type === 'DATETIME') control = <input className={card.input} type="datetime-local" value={val} onChange={(e) => set(e.target.value)} />;
+    else if (f.type === 'DATE') control = <DatePicker value={val} onChange={set} fullWidth aria-label={f.label} />;
+    else if (f.type === 'DATETIME') {
+      // The org's DATETIME fields travel as "yyyy-mm-ddThh:mm". The picker speaks date + minutes,
+      // so the two halves are split here and put back together on change — the same control the
+      // rest of the app uses, rather than the browser's datetime widget.
+      const [d, t] = (val || '').split('T');
+      const mins = t ? Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5)) : 9 * 60;
+      const date = d || orgNow().dateISO;
+      const write = (iso: string, m: number) => set(`${iso}T${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`);
+      control = (
+        <DatePicker
+          value={date}
+          minutes={mins}
+          minuteStep={5}
+          onChange={(iso) => write(iso, mins)}
+          onMinutesChange={(m) => write(date, m)}
+          fullWidth
+          aria-label={f.label}
+        />
+      );
+    }
     else if (f.type === 'DECISION_BOX')
       control = (
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, font: '400 12.5px/1 var(--font-sans)', color: 'var(--ink-700)' }}>

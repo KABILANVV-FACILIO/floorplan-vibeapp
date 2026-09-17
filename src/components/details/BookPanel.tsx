@@ -3,6 +3,7 @@ import type { MouseEvent as ReactMouseEvent } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { bookedUnitIds, conflictsFor, contactName, isBookable, unitById, visibleUnits } from '../../state/selectors';
 import { fmtTime } from '../../lib/geometry';
+import { DatePicker } from '../primitives/DatePicker';
 import { Select } from '../primitives/Select';
 import { Button } from '../primitives/Button';
 import { SkeletonRows } from '../primitives/Skeleton';
@@ -33,7 +34,7 @@ export function BookPanel() {
         </div>
         <div className={card.cardBody}>
           <label className={card.label}>Date</label>
-          <input className={card.input} type="date" value={state.date} onChange={(e) => actions.setDate(e.target.value)} />
+          <DatePicker value={state.date} onChange={(iso) => actions.setDate(iso)} fullWidth aria-label="Date" />
           <div className={styles.timeRow}>
             <div style={{ flex: 1 }}>
               <label className={card.label}>Start</label>

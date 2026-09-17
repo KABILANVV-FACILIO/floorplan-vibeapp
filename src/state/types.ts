@@ -97,6 +97,12 @@ export interface AppState {
   highlightUnitId: string | null;
   /** A record with an org write in flight — its marker shows a spinner and its buttons lock. */
   busyUnitId: string | null;
+  /**
+   * Bumped whenever an org write lands on a record, so every surface showing that record re-reads
+   * it. A transition fired in the plan's popover changes the same record the sidebar is showing,
+   * and a callback to whoever owns the button that fired it only ever refreshes that one surface.
+   */
+  recordNonce: number;
   draft: [number, number][];
   calib: [number, number][];
   calibLen: string;
@@ -117,7 +123,6 @@ export interface AppState {
   bookingModule: 'space' | 'facility';
   /** Bumped on every booking add/cancel so surfaces holding their own booking cache (the calendar) know to refetch. */
   bookingsNonce: number;
-  webReassign: string | null;
   schedView: 'list' | 'calendar';
 
   role: Role;

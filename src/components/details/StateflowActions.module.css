@@ -32,3 +32,24 @@
   flex-wrap: wrap;
   gap: 6px;
 }
+
+/*
+ * Two transitions inline, the rest behind the overflow. A flow can offer four or five moves, and
+ * five buttons wrapped across a 300px panel read as a wall rather than as a choice — the two the
+ * flow lists first are the likely ones, and the others are one press away.
+ */
+.more {
+  flex: 0 0 auto;
+  min-width: 34px;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.overflow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--ink-100);
+  border-radius: 6px;
+  background: var(--ink-25, #fbfcfd);
+}

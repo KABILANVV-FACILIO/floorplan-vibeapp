@@ -8,6 +8,7 @@ import { Button } from '../primitives/Button';
 import { DESK_TYPES, isRoomLike, resolveMarkerDef, TYPE_META } from '../../lib/types';
 import { fetchUnitRecordInfo, resolveUnitRecord } from '../../lib/facilioApiDataSource';
 import { StateflowActions } from '../details/StateflowActions';
+import { LocalAssign } from '../details/LocalAssign';
 import type { UnitRecordInfo } from '../../lib/facilioApiDataSource';
 import styles from './Tooltip.module.css';
 
@@ -22,7 +23,6 @@ export function Tooltip() {
   // The selected unit's ORG RECORD — its own state and the fields the org filled in. The popover
   // could otherwise only show what a Unit carries locally, which says nothing about the record.
   const [record, setRecord] = useState<UnitRecordInfo | null>(null);
-  const [recordNonce, setRecordNonce] = useState(0);
 
   const unit = unitById(state, state.selected);
   // A unit whose module was switched off in Settings must leave no trace — including a card left
@@ -51,8 +51,14 @@ export function Tooltip() {
 
   const unitId = unit?.id;
   const unitType = unit?.type;
+  // Drop the previous record the moment the card points at a different one — its state and holder
+  // would otherwise be read as this unit's for as long as the fetch takes. A re-read of the SAME
+  // record keeps what's on screen until the new answer lands, since it is about this unit either way.
   useEffect(() => {
     setRecord(null);
+  }, [unitId, unitType]);
+
+  useEffect(() => {
     if (!unitId || !unitType || !placeable) return;
     let live = true;
     void fetchUnitRecordInfo({ id: unitId, type: unitType }).then((info) => {
@@ -61,7 +67,9 @@ export function Tooltip() {
     return () => {
       live = false;
     };
-  }, [unitId, unitType, placeable, recordNonce]);
+    // `recordNonce` re-reads the record after ANY write to it — a transition fired here, or the
+    // same one fired in the sidebar, which is showing the very record this card is about.
+  }, [unitId, unitType, placeable, state.recordNonce]);
 
   if (!unit || !visible) return null;
 
@@ -172,7 +180,15 @@ export function Tooltip() {
         <StatusPill label={statusText} bg={status.bg} fg={status.fg} />
       </div>
 
-      <StateflowActions unit={unit} showState={false} onChanged={() => setRecordNonce((n) => n + 1)} />
+      {/* The same buttons the sidebar shows, from the same place — this card and the panel are two
+          views of ONE record, and a user who can vacate a desk in one must not find the other
+          silent about it. The app's own controls stand in here exactly as they do there, and only
+          in Assign view, where assigning is what the card is for. */}
+      <StateflowActions
+        unit={unit}
+        showState={false}
+        fallback={state.mode === 'assign' && assignable ? <LocalAssign unit={unit} /> : null}
+      />
 
       {state.mode === 'book' && bookable && !booked && (
         <Button variant="primary" fullWidth style={{ marginTop: 10 }} onClick={() => actions.openBookingForm({ unitId: unit.id, date: state.date, start: state.start, end: state.end })}>

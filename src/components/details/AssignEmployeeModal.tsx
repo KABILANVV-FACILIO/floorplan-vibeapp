@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
-import { assignEmployeeToRecord } from '../../lib/facilioApiDataSource';
+import { assignEmployeeToRecord, resolveUnitRecord } from '../../lib/facilioApiDataSource';
 import { initials } from '../../state/selectors';
 import type { Unit } from '../../lib/types';
 import { TYPE_META } from '../../lib/types';
@@ -19,9 +19,11 @@ import styles from './AssignEmployeeModal.module.css';
  * (`assignEmployeeToRecord`), which is the pair of steps the real client performs.
  *
  * A full-size dialog rather than a dropdown: an org directory is long, and picking a colleague is
- * the whole point of the action.
+ * the whole point of the action. It is the ONE way this app picks a person — the plan's popover
+ * and the sidebar both open this, rather than the sidebar keeping a select of its own that wrote
+ * somewhere else.
  */
-export function AssignEmployeeModal({ unit, onClose, onAssigned }: { unit: Unit; onClose: () => void; onAssigned?: () => void }) {
+export function AssignEmployeeModal({ unit, onClose }: { unit: Unit; onClose: () => void }) {
   const { state, actions } = useFloorplan();
   const [query, setQuery] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -36,12 +38,21 @@ export function AssignEmployeeModal({ unit, onClose, onAssigned }: { unit: Unit;
     setBusyId(employeeId);
     actions.setUnitBusy(unit.id);
     try {
-      await assignEmployeeToRecord(unit, employeeId);
-      // The org has it; mirror it locally so the marker's initials and the sidebar's
-      // "Assigned · …" update now rather than on the next floor load.
-      actions.markAssigned(unit.id, employeeId);
-      actions.showToast(`${unit.label} assigned to ${name}`);
-      onAssigned?.();
+      if (resolveUnitRecord(unit)) {
+        await assignEmployeeToRecord(unit, employeeId);
+        // The org has it; mirror it locally so the marker's initials and the sidebar's
+        // "Assigned · …" update now rather than on the next floor load.
+        actions.markAssigned(unit.id, employeeId);
+        actions.showToast(`${unit.label} assigned to ${name}`);
+      } else {
+        // No org record behind this unit (the local/demo tier): assign it the app's own way, and
+        // let it report itself. The dialog is still the right place to choose a person — only
+        // where the answer is written differs.
+        await actions.assign(employeeId, unit.id);
+      }
+      // Every surface showing this record re-reads it: its state moved with the write, and the
+      // sidebar and the popover are usually both open on it.
+      actions.recordChanged();
     } catch (err) {
       // Reported the way every other failure in this app is — a toast — rather than a banner
       // inside a dialog the user then has to dismiss themselves.

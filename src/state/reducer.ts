@@ -90,6 +90,7 @@ export function buildInitialState(): AppState {
     placingUnitId: null,
     highlightUnitId: null,
     busyUnitId: null,
+    recordNonce: 0,
     draft: [],
     calib: [],
     calibLen: '',
@@ -107,7 +108,6 @@ export function buildInitialState(): AppState {
     bookForm: null,
     bookingModule: 'space',
     bookingsNonce: 0,
-    webReassign: null,
     schedView: 'list',
 
     role: 'admin',
@@ -174,6 +174,7 @@ export type Action =
   | { type: 'SELECT_UNIT'; id: string | null }
   | { type: 'HIGHLIGHT_UNIT'; id: string | null }
   | { type: 'SET_UNIT_BUSY'; id: string | null }
+  | { type: 'RECORD_CHANGED' }
   | { type: 'ASSIGNMENTS_LOADED'; assignments: AppState['assignments'] }
   | { type: 'ADD_UNIT'; unit: Unit }
   | { type: 'ADD_UNITS'; units: Unit[] }
@@ -193,7 +194,6 @@ export type Action =
   | { type: 'DRAG_OVER_UNIT'; id: string | null }
   | { type: 'ASSIGN'; unitId: string; contactId: string; assignments: AppState['assignments'] }
   | { type: 'VACATE'; unitId: string; assignments: AppState['assignments'] }
-  | { type: 'SET_WEB_REASSIGN'; id: string | null }
   | { type: 'SET_DATE'; value: string; bookings: Booking[] }
   | { type: 'SET_TIME_RANGE'; start: number; end: number }
   | { type: 'SET_BOOK_MODAL'; open: boolean }
@@ -242,7 +242,7 @@ export type Action =
   | { type: 'RESET_DEMO'; units: Unit[]; assignments: AppState['assignments']; bookings: Booking[] };
 
 function resetSelectionState(_s: AppState): Partial<AppState> {
-  return { selected: null, multiSelected: [], placingUnitId: null, draft: [], calib: [], calibLen: '', dragOverId: null, webReassign: null };
+  return { selected: null, multiSelected: [], placingUnitId: null, draft: [], calib: [], calibLen: '', dragOverId: null };
 }
 
 export function reducer(state: AppState, action: Action): AppState {
@@ -370,11 +370,13 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, assets: action.assets };
 
     case 'SELECT_UNIT':
-      return { ...state, selected: action.id, webReassign: null, ...(action.id ? { multiSelected: [] } : {}) };
+      return { ...state, selected: action.id, ...(action.id ? { multiSelected: [] } : {}) };
     case 'HIGHLIGHT_UNIT':
       return { ...state, highlightUnitId: action.id };
     case 'SET_UNIT_BUSY':
       return { ...state, busyUnitId: action.id };
+    case 'RECORD_CHANGED':
+      return { ...state, recordNonce: state.recordNonce + 1 };
     case 'ASSIGNMENTS_LOADED':
       return { ...state, assignments: action.assignments };
     case 'ADD_UNIT': {
@@ -475,11 +477,9 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'DRAG_OVER_UNIT':
       return { ...state, dragOverId: action.id };
     case 'ASSIGN':
-      return { ...state, assignments: action.assignments, dragOverId: null, dragContactId: null, selected: action.unitId, webReassign: null };
+      return { ...state, assignments: action.assignments, dragOverId: null, dragContactId: null, selected: action.unitId };
     case 'VACATE':
       return { ...state, assignments: action.assignments };
-    case 'SET_WEB_REASSIGN':
-      return { ...state, webReassign: action.id };
 
     case 'SET_DATE':
       return { ...state, date: action.value, bookings: action.bookings };

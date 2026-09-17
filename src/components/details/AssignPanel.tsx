@@ -3,10 +3,12 @@ import type { DragEvent as ReactDragEvent } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { contactName, initials, isAssignable, unitById, visibleUnits } from '../../state/selectors';
 import { TYPE_META } from '../../lib/types';
+import type { Unit } from '../../lib/types';
 import { facilioRecordUrl } from '../../lib/facilioApi';
-import { Select } from '../primitives/Select';
 import { Button } from '../primitives/Button';
+import { ButtonSpinner } from '../primitives/ButtonSpinner';
 import { SkeletonRows } from '../primitives/Skeleton';
+import { LocalAssign } from './LocalAssign';
 import { StateflowActions } from './StateflowActions';
 import card from './Card.module.css';
 import styles from './AssignPanel.module.css';
@@ -72,14 +74,17 @@ export function AssignPanel() {
           </div>
           <div className={card.cardBody}>
             {isAssignable(sel) ? (
-              <AssignBody unitId={sel.id} />
+              <>
+                <Holder unitId={sel.id} />
+                {/* The same buttons the plan's popover offers — the org's flow decides them, so
+                    the two surfaces must not disagree about what you can do to this record, and
+                    Assign/Allocate open the people picker here exactly as they do there. The
+                    app's own controls stand in only where the org offers no flow at all. */}
+                <StateflowActions unit={sel} fallback={<LocalAssign unit={sel} />} />
+              </>
             ) : (
               <p className={card.helper}>This space is booked in Booking mode, not assigned.</p>
             )}
-            {/* The same transitions the plan's popover offers — the org's flow decides them, so
-                the two surfaces must not disagree about what you can do to this record. Assign
-                and Allocate open the people picker here exactly as they do there. */}
-            <StateflowActions unit={sel} onChanged={() => void actions.refreshAssignments()} />
           </div>
         </div>
       )}
@@ -147,43 +152,15 @@ export function AssignPanel() {
   );
 }
 
-function AssignBody({ unitId }: { unitId: string }) {
-  const { state, actions } = useFloorplan();
+/** Who the org says holds this record — the same thing the popover leads with. */
+function Holder({ unitId }: { unitId: string }) {
+  const { state } = useFloorplan();
   const contactId = state.assignments[unitId];
-  const reassigning = state.webReassign === unitId;
-
-  if (contactId && !reassigning) {
-    return (
-      <div>
-        <div className={styles.assignedRow}>
-          <span className={styles.avatar}>{initials(contactName(state, contactId))}</span>
-          <span className={styles.assignedName}>{contactName(state, contactId)}</span>
-        </div>
-        <div className={styles.actionsRow}>
-          <Button variant="danger" style={{ flex: 1, justifyContent: 'center' }} onClick={() => actions.vacate(unitId)}>
-            Vacate
-          </Button>
-          <Button variant="primary" style={{ flex: 1, justifyContent: 'center' }} onClick={() => actions.setWebReassign(unitId)}>
-            Reassign
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
+  if (!contactId) return null;
   return (
-    <div>
-      <Select
-        value={contactId ?? null}
-        placeholder="— Choose a person —"
-        options={state.employees.map((c) => ({ value: c.id, label: c.name }))}
-        onChange={(v) => actions.assign(v, unitId)}
-        fullWidth
-        aria-label="Assign to"
-      />
-      <p className={styles.dragHint} style={{ marginTop: 8 }}>
-        Or drag a person from the list below onto this space.
-      </p>
+    <div className={styles.assignedRow}>
+      <span className={styles.avatar}>{initials(contactName(state, contactId))}</span>
+      <span className={styles.assignedName}>{contactName(state, contactId)}</span>
     </div>
   );
 }

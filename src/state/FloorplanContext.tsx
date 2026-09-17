@@ -585,6 +585,16 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     setUnitBusy: (id: string | null) => dispatch({ type: 'SET_UNIT_BUSY', id }),
 
     /**
+     * An org write landed on a record: everything showing that record re-reads it.
+     *
+     * The plan's popover and the sidebar show the SAME record, so a transition fired in one leaves
+     * the other holding the state and the holder the write just replaced. A single bump they both
+     * watch is the only thing that keeps them agreeing, and it is what "reload the record" means
+     * here — the read itself is never cached.
+     */
+    recordChanged: () => dispatch({ type: 'RECORD_CHANGED' }),
+
+    /**
      * Re-read who holds what on this floor, from the org.
      *
      * Called after a stateflow transition: Vacate clears `employee` on the record, Assign sets it,
@@ -957,14 +967,6 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       const prevName = prevContactId ? MOCK_EMPLOYEES.find((c) => c.id === prevContactId)?.name : null;
       if (target) showToast(`${target.label} vacated` + (prevName ? ` — ${prevName} unassigned` : ''));
     },
-    setWebReassign: (id: string | null) => {
-      dispatch({ type: 'SET_WEB_REASSIGN', id });
-      // The reassign UI lives in the details panel — starting a reassign (e.g. from a marker
-      // tooltip) while that panel is minimized would otherwise leave the action with nowhere
-      // to show. Force it open (never close it) so the flow is always visible.
-      if (id) dispatch({ type: 'SET_PANEL_OPEN', id: 'details', open: true });
-    },
-
     setDate: async (value: string) => {
       const bookings = await dataSource.getBookings(state.floorId, value);
       dispatch({ type: 'SET_DATE', value, bookings });
