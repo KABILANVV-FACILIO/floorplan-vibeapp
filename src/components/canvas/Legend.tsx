@@ -2,6 +2,7 @@ import { useFloorplan } from '../../state/FloorplanContext';
 import { moduleColor } from '../../lib/unitStatus';
 import { AMENITY_META, isRoomLike, TYPE_META } from '../../lib/types';
 import { enabledTypes } from '../../state/selectors';
+import { departmentColor, departmentsIn } from '../../lib/departmentColors';
 import type { AmenityIcon } from '../../lib/types';
 
 export function Legend() {
@@ -15,6 +16,16 @@ export function Legend() {
       label: TYPE_META[t].name,
       color: isRoomLike(t) ? 'rgba(60,34,157,0.62)' : moduleColor(state, t, 'free'),
     }));
+  } else if (state.mode === 'assign' && state.colorBy === 'department') {
+    // The legend has to name what the colours MEAN, and in this mode they mean departments — a
+    // "Free / Assigned" key beside department-coloured desks would be a straight lie.
+    const present = departmentsIn(state.units);
+    const ids = present.map((d) => d.id);
+    items = present.map((d) => ({ label: d.name, color: departmentColor(d.id, state.departmentColors, ids) }));
+    // Desks with no department on their record keep the state colours, so the key says so.
+    if (state.units.some((u) => u.type === 'workstation' && !u.department)) {
+      items.push({ label: 'No department', color: moduleColor(state, 'workstation', 'free') });
+    }
   } else if (state.mode === 'assign') {
     items = [
       { label: 'Free', color: moduleColor(state, 'workstation', 'free') },

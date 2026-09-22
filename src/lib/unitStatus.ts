@@ -1,6 +1,7 @@
 import type { AppState } from '../state/types';
 import { conflictsFor, isAssignable, isBookable } from '../state/selectors';
 import { isRoomLike, resolveMarkerDef, STATE_DEFS } from './types';
+import { departmentColor, departmentsIn } from './departmentColors';
 import type { Unit } from './types';
 import { fmtTime } from './geometry';
 
@@ -100,6 +101,32 @@ export function markerStyle(state: AppState, unit: Unit, markerScale = 1): Marke
   }
 
   if (state.mode === 'assign') {
+    // Coloured by DEPARTMENT: the chip stops reporting availability and reports the team instead.
+    // Only desks carry a department, and only in Assign view — Booking view is asking "what is
+    // free at 10:00", which a department colour cannot answer.
+    if (state.colorBy === 'department' && unit.type === 'workstation' && unit.departmentId) {
+      // Keyed by the department's record id, so a rename in Facilio keeps the colour. The set of
+      // ids on the plan goes along, so no two departments here can land on the same colour.
+      const c = departmentColor(
+        unit.departmentId,
+        state.departmentColors,
+        departmentsIn(state.units).map((d) => d.id),
+      );
+      return {
+        bg: c,
+        bd: c,
+        fg: '#fff',
+        opacity: 1,
+        shadow,
+        size,
+        radius,
+        zIndex,
+        // The holder's initials still read on the fill, so a department colour never costs you
+        // the one thing the marker already told you.
+        occText: contactId ? initialsOf(contactNameFallback(state, contactId)) : null,
+        icon: contactId ? null : markerIcon(unit.type),
+      };
+    }
     if (!isAssignable(unit)) {
       // solid neutral, NOT a washed-out ghost — every marker stays legible
       return { bg: 'var(--ink-100)', bd: 'var(--ink-500)', fg: 'var(--ink-600)', opacity: 1, shadow, size, radius, zIndex, occText: null, icon: markerIcon(unit.type) };

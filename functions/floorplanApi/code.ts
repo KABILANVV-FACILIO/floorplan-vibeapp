@@ -38,6 +38,22 @@ const DDL = [
      id integer primary key,
      config text not null
    )`,
+  /*
+   * Department -> marker colour, one row per department, keyed by the DEPARTMENT RECORD's id in
+   * the org rather than its name: renaming a department in Facilio must not lose its colour, and
+   * two orgs' "Operations" are not the same thing.
+   *
+   * A table of its own rather than a key inside fp_settings, so anything else that needs the
+   * org's colour scheme — a report, another app, a later export — can read it as data instead of
+   * unpacking this app's settings blob. `department_name` rides along for exactly that reader:
+   * it makes a row legible without a lookup back into Facilio.
+   */
+  `create table if not exists fp_department_color (
+     department_id text primary key,
+     department_name text not null default '',
+     color text not null,
+     updated_at text not null default ''
+   )`,
   `create table if not exists fp_floorplan_file (
      floor_id text not null,
      plan_id text not null,
@@ -244,6 +260,52 @@ server.addHandler({
   parameters: { id: { description: 'Booking id', type: 'string' } },
   execute: async (args) => {
     connect().query('delete from fp_booking where id = $1', [args.id]);
+    return { ok: true };
+  },
+});
+
+server.addHandler({
+  name: 'get-department-colors',
+  description: 'Every configured department colour, as [{departmentId, departmentName, color}].',
+  parameters: {},
+  execute: async () => {
+    const { rows } = connect().query('select department_id, department_name, color from fp_department_color');
+    return rows.map((r: any) => ({ departmentId: r.department_id, departmentName: r.department_name, color: r.color }));
+  },
+});
+
+server.addHandler({
+  name: 'save-department-color',
+  description: 'Set one department\'s marker colour (upsert by department id).',
+  parameters: {
+    departmentId: { description: 'Department record id in the org', type: 'string' },
+    departmentName: { description: 'Department name, stored so a row reads without a lookup', type: 'string' },
+    color: { description: 'Hex colour, e.g. #0059d6', type: 'string' },
+  },
+  execute: async (args) => {
+    const id = String(args.departmentId ?? '').trim();
+    const color = String(args.color ?? '').trim();
+    if (!id) throw new Error('departmentId is required');
+    if (!/^#[0-9a-fA-F]{6}$/.test(color)) throw new Error('color must be a #rrggbb hex value');
+    connect().query(
+      `insert into fp_department_color (department_id, department_name, color, updated_at)
+       values ($1, $2, $3, $4)
+       on conflict (department_id) do update set
+         department_name = excluded.department_name,
+         color = excluded.color,
+         updated_at = excluded.updated_at`,
+      [id, String(args.departmentName ?? ''), color, new Date().toISOString()]
+    );
+    return { ok: true };
+  },
+});
+
+server.addHandler({
+  name: 'clear-department-color',
+  description: 'Drop one department\'s colour, so it falls back to the app\'s default wheel.',
+  parameters: { departmentId: { description: 'Department record id in the org', type: 'string' } },
+  execute: async (args) => {
+    connect().query('delete from fp_department_color where department_id = $1', [String(args.departmentId ?? '')]);
     return { ok: true };
   },
 });

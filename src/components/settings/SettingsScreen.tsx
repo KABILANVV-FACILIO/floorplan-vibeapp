@@ -4,6 +4,7 @@ import type { ModuleKey, PermsAction, Role, UnitType } from '../../lib/types';
 import { moduleEnabled } from '../../state/selectors';
 import { Button } from '../primitives/Button';
 import { moduleColor } from '../../lib/unitStatus';
+import { departmentColor, departmentsIn, DEPARTMENT_PALETTE } from '../../lib/departmentColors';
 import styles from './SettingsScreen.module.css';
 
 const MODULE_TABS: { id: 'permissions' | 'modules' | 'bookings' | UnitType; name: string }[] = [
@@ -328,6 +329,8 @@ function ModuleTab({ type }: { type: UnitType }) {
         ))}
       </div>
 
+      {type === 'workstation' && <DepartmentColors />}
+
       {showSlot && (
         <div className={styles.card}>
           <div className={styles.cardHead}>
@@ -346,6 +349,98 @@ function ModuleTab({ type }: { type: UnitType }) {
             ))}
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Colour the desks by the DEPARTMENT on their record instead of by availability.
+ *
+ * The departments listed are the ones actually on the loaded floors — there is no department
+ * master list in this app, and inventing one would mean maintaining a second copy of something
+ * the desk records already say. A department with no desk on any loaded floor has nothing to
+ * colour, so it isn't offered.
+ *
+ * Every department already has a colour off a fixed wheel before anyone comes here; these
+ * controls record only the disagreements, which is why an untouched org still reads correctly.
+ */
+function DepartmentColors() {
+  const { state, actions } = useFloorplan();
+  // The ORG's own departments, read from the `department` module at boot — not merely the ones
+  // that happen to sit on the floor currently open, so a team whose desks are all elsewhere
+  // still gets a colour. The floor's own departments stand in when that list is unavailable
+  // (the local tier), so Settings is never empty when the plan is clearly coloured.
+  const departments = state.departments.length ? state.departments : departmentsIn(state.units);
+  const ids = departments.map((d) => d.id);
+  const on = state.colorBy === 'department';
+
+  return (
+    <div className={styles.card}>
+      <div className={styles.cardHead}>
+        <h3 className={styles.cardTitle}>Colour desks by</h3>
+        <p className={styles.cardDesc}>
+          Availability answers “what can I take”. Department answers “who sits where” — the question when you are moving
+          a team. Assignment view only; Booking view always shows what is free.
+        </p>
+      </div>
+
+      <div className={styles.stateRow}>
+        <div className={styles.stateText}>
+          <div className={styles.rowName}>{on ? 'Department' : 'Availability'}</div>
+          <div className={styles.rowDesc}>
+            {on
+              ? 'Each desk takes its department’s colour, keeping the holder’s initials.'
+              : 'Free and assigned desks take the state colours above.'}
+          </div>
+        </div>
+        <div className={styles.swatchRow}>
+          <Button variant={on ? 'secondary' : 'primary'} onClick={() => actions.setColorBy('status')}>
+            Availability
+          </Button>
+          <Button variant={on ? 'primary' : 'secondary'} onClick={() => actions.setColorBy('department')}>
+            Department
+          </Button>
+        </div>
+      </div>
+
+      {departments.length === 0 ? (
+        <div className={styles.stateRow}>
+          <div className={styles.stateText}>
+            <div className={styles.rowDesc}>
+              No desk on the floors loaded so far carries a department. The colours appear here as soon as one does.
+            </div>
+          </div>
+        </div>
+      ) : (
+        departments.map((dept) => {
+          const current = departmentColor(dept.id, state.departmentColors, ids);
+          const here = state.units.filter((u) => u.departmentId === dept.id).length;
+          return (
+            <div key={dept.id} className={styles.stateRow}>
+              <span className={styles.stateSwatch} style={{ background: current }} />
+              <div className={styles.stateText}>
+                <div className={styles.rowName}>{dept.name}</div>
+                <div className={styles.rowDesc}>{here > 0 ? `${here} desks on this floor` : 'No desks on this floor'}</div>
+              </div>
+              <div className={styles.swatchRow}>
+                {DEPARTMENT_PALETTE.map((hex) => (
+                  <button
+                    key={hex}
+                    data-tip={hex}
+                    className={styles.swatchBtn}
+                    aria-label={`${dept.name}: ${hex}`}
+                    style={{
+                      background: hex,
+                      boxShadow: current === hex ? '0 0 0 2px #fff, 0 0 0 4px var(--blue-500)' : 'none',
+                    }}
+                    onClick={() => actions.setDepartmentColor(dept.id, hex, dept.name)}
+                  />
+                ))}
+              </div>
+            </div>
+          );
+        })
       )}
     </div>
   );

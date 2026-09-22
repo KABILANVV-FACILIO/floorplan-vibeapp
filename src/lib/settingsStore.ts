@@ -23,6 +23,13 @@ import { fetchVibeSettings, storeVibeSettings } from './vibeDbDataSource';
 export interface SettingsConfig {
   perms?: Perms;
   moduleColors?: Record<string, string>;
+  /** Whether desk markers are coloured by availability or by department (Settings › Desks). */
+  colorBy?: 'status' | 'department';
+  /*
+   * Per-department colours are NOT here: they live in their own table (`fp_department_color`),
+   * keyed by the department's record id, so other readers can use the scheme without unpacking
+   * this blob. Only the mode above is an app preference.
+   */
   slotGranularity?: number;
   bookingModule?: 'space' | 'facility';
   /** User-created marker-library entries (Edit view › Markers › New marker). */
@@ -40,6 +47,7 @@ export function settingsFromState(state: AppState): SettingsConfig {
   return {
     perms: state.perms,
     moduleColors: state.moduleColors,
+    colorBy: state.colorBy,
     slotGranularity: state.slotGranularity,
     bookingModule: state.bookingModule,
     customMarkers: state.customMarkers,

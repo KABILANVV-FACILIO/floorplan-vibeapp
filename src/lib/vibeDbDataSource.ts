@@ -138,6 +138,38 @@ export async function storeVibeSettings(config: unknown): Promise<boolean> {
   return true;
 }
 
+export interface DepartmentColorRow {
+  departmentId: string;
+  departmentName: string;
+  color: string;
+}
+
+/**
+ * The org's department -> marker colour scheme, from its own table (`fp_department_color`).
+ *
+ * Deliberately not part of the settings blob: it is keyed by the department's record id in the
+ * org, and anything else that needs the scheme — a report, another app — can read the table as
+ * data rather than unpacking this app's settings.
+ */
+export async function fetchDepartmentColors(): Promise<DepartmentColorRow[]> {
+  if (!isVibeApp || floorplanFnUnavailable) return [];
+  return (await callFloorplanFn<DepartmentColorRow[] | null>('get-department-colors')) ?? [];
+}
+
+/** True when the row was actually written — false when this tier can't answer. */
+export async function storeDepartmentColor(departmentId: string, departmentName: string, color: string): Promise<boolean> {
+  if (!isVibeApp || floorplanFnUnavailable) return false;
+  await callFloorplanFn('save-department-color', { departmentId, departmentName, color });
+  return true;
+}
+
+/** Drop a department's colour so it falls back to the app's default wheel. */
+export async function clearDepartmentColor(departmentId: string): Promise<boolean> {
+  if (!isVibeApp || floorplanFnUnavailable) return false;
+  await callFloorplanFn('clear-department-color', { departmentId });
+  return true;
+}
+
 /** Floorplan-file records (the vibe fileId plus render metadata), keyed by floor + plan type. */
 export async function fetchVibeFloorplanFile<T>(floorId: string, planId: string): Promise<T | null> {
   if (!isVibeApp || floorplanFnUnavailable) return null;
