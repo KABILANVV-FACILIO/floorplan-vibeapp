@@ -90,7 +90,11 @@ export function Marker({
   // Under-marker label. Assign view: desk name on top, assignee (if any)
   // underneath. Book view: the space name. Amenities: their name, always.
   const contactId = state.assignments[unit.id];
-  const assignedName = state.mode === 'assign' && contactId ? contactName(state, contactId) : null;
+  // "Omar Haddad · Facilities": who holds it and which team they are on, under the desk number
+  // above. The department is the thing a workplace manager is actually scanning for, and reading
+  // it off a colour alone means holding a legend in your head.
+  const holder = state.mode === 'assign' && contactId ? contactName(state, contactId) : null;
+  const assignedName = holder ? (unit.department ? `${holder} · ${unit.department}` : holder) : null;
   // The zoom threshold this used to carry (`invZ <= 1.9`) dropped every label past one zoom level
   // whether or not there was room for it, and kept every label before it whether or not there was.
   // Room is what actually matters, and only the canvas can judge it.
@@ -157,32 +161,17 @@ export function Marker({
           </>
         ))}
       </div>
-      {/* Primary name label ABOVE the marker (hidden when the "Your desk"
-          pill already sits above it, to avoid stacking two labels). */}
+      {/*
+        ONE card under the chip: the desk number, and under it who holds it and their department.
+        These used to be two labels — number above, holder below — which the declutter could split
+        apart: in a block of six desks you got one number floating over the group and one holder
+        line under it, belonging to two DIFFERENT desks and reading as a caption for the block.
+        Kept together and kept adjacent, a label can only be read as belonging to its own marker.
+
+        Hidden entirely when the "Your desk" pill already marks this chip: that pill names the one
+        desk the reader was looking for, and stacking a second label under it is noise.
+      */}
       {showName && !isMine && (
-        <div
-          style={{
-            position: 'absolute',
-            left: `${geom.x * 100}%`,
-            top: `${geom.y * 100}%`,
-            transform: `scale(${invZ}) translate(-50%, calc(-100% - ${Math.round(style.size / 2 + 4)}px))`,
-            transformOrigin: '0 0',
-            pointerEvents: 'none',
-            zIndex: 1,
-            font: '600 8.5px/1.1 var(--font-sans)',
-            color: 'var(--ink-700)',
-            background: 'rgba(255,255,255,0.9)',
-            border: '1px solid var(--ink-100)',
-            padding: '2px 5px',
-            borderRadius: 3,
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {unit.label}
-        </div>
-      )}
-      {/* Secondary label (assignee) BELOW the marker. */}
-      {showSub && assignedName && (
         <div
           style={{
             position: 'absolute',
@@ -192,16 +181,18 @@ export function Marker({
             transformOrigin: '0 0',
             pointerEvents: 'none',
             zIndex: 1,
-            font: '500 8px/1.1 var(--font-sans)',
-            color: 'var(--ink-500)',
-            background: 'rgba(255,255,255,0.9)',
+            background: 'rgba(255,255,255,0.92)',
             border: '1px solid var(--ink-100)',
             padding: '2px 5px',
             borderRadius: 3,
             whiteSpace: 'nowrap',
+            textAlign: 'center',
           }}
         >
-          {assignedName}
+          <div style={{ font: '600 8.5px/1.15 var(--font-sans)', color: 'var(--ink-800)' }}>{unit.label}</div>
+          {showSub && assignedName && (
+            <div style={{ font: '500 8px/1.2 var(--font-sans)', color: 'var(--ink-500)' }}>{assignedName}</div>
+          )}
         </div>
       )}
     </>

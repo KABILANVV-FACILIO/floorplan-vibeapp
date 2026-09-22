@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { floorMeta, visibleUnits } from '../../state/selectors';
 import { isRoomLike } from '../../lib/types';
 import { fitView, fmtTime, polygonCentroid, zoomAt } from '../../lib/geometry';
 import type { ViewTransform } from '../../lib/geometry';
 import { IMG_H, IMG_W } from '../../lib/mockData';
+import { clusterMarkers, zoomToSplit } from '../../lib/markerClusters';
 import { FloorplanBackground } from '../canvas/FloorplanBackground';
 import { MobileFloorPicker } from './MobileFloorPicker';
 import { MobileUnitSheet } from './MobileUnitSheet';
@@ -20,6 +21,12 @@ import { contactName, myAssignedUnit } from '../../state/selectors';
 import { floorImageKey } from '../../lib/types';
 import type { Unit } from '../../lib/types';
 import styles from './MobileApp.module.css';
+
+/**
+ * How far apart two markers must be on glass to stay separate: the 22px chip plus enough room for
+ * a fingertip to mean one of them rather than either.
+ */
+const CLUSTER_GAP_PX = 30;
 
 interface MobileAppProps {
   mode: 'page' | 'docked' | 'fullscreen';
@@ -331,6 +338,34 @@ function MobileMap({
 
   const v = view ?? { tx: 0, ty: 0, z: 0.2 };
   const invZ = 1 / v.z;
+  // A marker keeps its size on screen while the gaps between markers shrink with the zoom, so on a
+  // phone a bank of desks lands as a clump of overlapping circles: nothing readable, nothing
+  // tappable, no way to count what is under there. Anything closer than a chip-and-a-bit becomes
+  // one bubble carrying its count, and tapping it zooms to where it comes apart.
+  const markerPoints = useMemo(
+    () => markers.map((m) => ({ id: m.id, x: (m.geom as { x: number; y: number }).x, y: (m.geom as { x: number; y: number }).y })),
+    [markers],
+  );
+  const clusterOpts = { planW: IMG_W, planH: IMG_H, zoom: v.z, minGapPx: CLUSTER_GAP_PX };
+  const clusters = useMemo(() => clusterMarkers(markerPoints, clusterOpts), [markerPoints, v.z]);
+  const byId = useMemo(() => new Map(markers.map((m) => [m.id, m])), [markers]);
+  const pointById = useMemo(() => new Map(markerPoints.map((p) => [p.id, p])), [markerPoints]);
+
+  /** Zoom to the point where a bubble's members separate, keeping it under the finger. */
+  function openCluster(cluster: (typeof clusters)[number]) {
+    const el = wrapRef.current;
+    const cur = viewRef.current;
+    if (!el || !cur) return;
+    const r = el.getBoundingClientRect();
+    const target = Math.min(zoomToSplit(cluster, pointById, clusterOpts), 6);
+    // The bubble's own position on screen is the anchor, so the desks it stood for stay put while
+    // the plan grows around them.
+    const cx = cluster.x * IMG_W * cur.z + cur.tx;
+    const cy = cluster.y * IMG_H * cur.z + cur.ty;
+    const zoomed = zoomAt(cur, target / cur.z, cx, cy);
+    // Then bring that point to the middle of the card, where a thumb isn't covering it.
+    setView({ ...zoomed, tx: zoomed.tx + (r.width / 2 - cx), ty: zoomed.ty + (r.height / 2 - cy) });
+  }
 
   return (
     <div ref={wrapRef} className={styles.mapCard} onMouseDown={onMouseDown} style={{ touchAction: 'none' }}>
@@ -382,15 +417,41 @@ function MobileMap({
             );
           })}
         </svg>
-        {markers.map((m) => {
-          if (m.geom.kind !== 'point') return null;
+        {clusters.map((cluster) => {
+          // A bubble standing for several markers: the count IS the information at this zoom, so
+          // it is drawn instead of a stack of chips nobody could read or hit.
+          if (cluster.ids.length > 1) {
+            return (
+              <button
+                key={cluster.key}
+                className={styles.marker}
+                style={{
+                  left: `${cluster.x * 100}%`,
+                  top: `${cluster.y * 100}%`,
+                  transform: `scale(${Math.min(invZ, 3.5)}) translate(-50%, -50%)`,
+                  transformOrigin: '0 0',
+                  zIndex: 2,
+                }}
+                aria-label={`${cluster.ids.length} spaces here — zoom in`}
+                onClick={() => openCluster(cluster)}
+              >
+                <span className={styles.clusterDot}>{cluster.ids.length}</span>
+              </button>
+            );
+          }
+
+          const m = byId.get(cluster.ids[0]);
+          if (!m || m.geom.kind !== 'point') return null;
           const selected = state.mobSel === m.id;
           const contactId = state.assignments[m.id];
-          const contact = contactId ? contactName(state, contactId) : null;
+          const holder = contactId ? contactName(state, contactId) : null;
+          // Same pairing as the web plan: desk number above, "Holder · Department" below.
+          const contact = holder ? (m.department ? `${holder} · ${m.department}` : holder) : null;
           // Same palette as the web: markerStyle keyed on a mode synced to the
           // mobile tab, so bg / border / fill are identical across views.
           const ms = markerStyle({ ...state, mode: state.mobileTab } as typeof state, m);
-          // labels appear once zoomed in enough to not collide; the selected pin always shows
+          // A marker that stands alone has room for its name; one that only just escaped a bubble
+          // does not, so the label waits for the zoom that gives it space.
           const showLabel = v.z >= 0.5 || selected;
           return (
             <button
@@ -399,7 +460,11 @@ function MobileMap({
               style={{
                 left: `${m.geom.x * 100}%`,
                 top: `${m.geom.y * 100}%`,
-                transform: `translate(-50%, -50%) scale(${Math.min(invZ, 3.5)})`,
+                // Scale BEFORE translating: the plane is scaled by z, so a translate written here
+                // lands in PLAN px and reaches the screen multiplied by z — which left every pin
+                // sitting off the spot it marks, by more the further out you zoomed.
+                transform: `scale(${Math.min(invZ, 3.5)}) translate(-50%, -50%)`,
+                transformOrigin: '0 0',
                 zIndex: selected ? 3 : showLabel ? 2 : 1,
               }}
               onClick={() => actions.setMobSel(m.id)}

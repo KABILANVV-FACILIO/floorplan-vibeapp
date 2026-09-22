@@ -513,7 +513,11 @@ export function Canvas() {
       .map((m) => {
         const g = m.geom as PolyGeom | { kind: 'point'; x: number; y: number };
         const mine = m.id === mineId;
-        const holder = state.mode === 'assign' ? state.assignments[m.id] : undefined;
+        const holderId = state.mode === 'assign' ? state.assignments[m.id] : undefined;
+        const holderName = holderId ? contactName(state, holderId) : null;
+        // The label below now carries "Holder · Department", so the layout has to measure THAT —
+        // measuring the bare name would reserve a box the real label overflows.
+        const holder = holderName ? (m.department ? `${holderName} · ${m.department}` : holderName) : null;
         return {
           id: m.id,
           x: 'x' in g ? g.x : 0,
@@ -523,7 +527,7 @@ export function Canvas() {
           name: mine ? 'Your desk' : m.label,
           pill: mine,
           must: mine,
-          sub: holder ? contactName(state, holder) : null,
+          sub: holder,
           rank: m.id === state.selected ? 0 : mine ? 1 : 2,
         };
       });

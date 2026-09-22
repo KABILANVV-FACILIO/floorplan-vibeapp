@@ -23,15 +23,30 @@ describe('a label is drawn only where it fits', () => {
   });
 
   it('drops the label that would land on a neighbouring chip', () => {
-    // 30 plan px apart vertically: the lower desk's name wants the space the upper desk's chip is in.
+    // 30 plan px apart vertically. The card sits BELOW its chip, so the upper desk's card wants
+    // the space the lower desk's chip occupies — the upper one yields, the lower one keeps its.
     const plan = planMarkerLabels([desk('WS-01', 0.5, 0.5), desk('WS-02', 0.5, 0.53)], opts);
-    expect(plan.get('WS-01')?.name).toBe(true);
-    expect(plan.get('WS-02')?.name).toBe(false);
+    expect(plan.get('WS-01')?.name).toBe(false);
+    expect(plan.get('WS-02')?.name).toBe(true);
   });
 
-  it('drops a holder name that would land on the chip below it', () => {
+  it('keeps the desk number and the holder together, or drops both', () => {
+    // The bug this replaced: the declutter kept one desk's number and another desk's holder line,
+    // leaving "WS-07" over a block of six and "David Chen · Facilities" under it — a title and a
+    // caption for two different desks. Half a label is worse than none.
+    const plan = planMarkerLabels(
+      [desk('WS-01', 0.5, 0.5, { sub: 'David Chen · Facilities' }), desk('WS-02', 0.5, 0.53, { sub: 'Amrithya · Finance' })],
+      opts,
+    );
+    for (const id of ['WS-01', 'WS-02']) {
+      const p = plan.get(id)!;
+      expect(p.name).toBe(p.sub);
+    }
+  });
+
+  it('drops the whole card when it would land on the chip below it', () => {
     const plan = planMarkerLabels([desk('WS-01', 0.5, 0.5, { sub: 'Sofia Rossi' }), desk('WS-02', 0.5, 0.53)], opts);
-    expect(plan.get('WS-01')?.sub).toBe(false);
+    expect(plan.get('WS-01')).toEqual({ name: false, sub: false });
   });
 
   it('never lets two labels share the same space', () => {
@@ -59,10 +74,10 @@ describe('when something has to go, the important label stays', () => {
   });
 
   it('still refuses to cover a CHIP for it — a hidden marker is worse than a hidden name', () => {
-    // The selected desk's name would sit right on the chip above it. Rank buys priority over other
+    // The selected desk's card would sit right on the chip below it. Rank buys priority over other
     // labels, never over a marker.
-    const plan = planMarkerLabels([desk('WS-01', 0.5, 0.5), desk('WS-02', 0.5, 0.53, { rank: 0 })], opts);
-    expect(plan.get('WS-02')?.name).toBe(false);
+    const plan = planMarkerLabels([desk('WS-01', 0.5, 0.5, { rank: 0 }), desk('WS-02', 0.5, 0.53)], opts);
+    expect(plan.get('WS-01')?.name).toBe(false);
   });
 
   it('never drops the "Your desk" pill, even in a pile', () => {

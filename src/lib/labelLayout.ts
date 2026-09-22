@@ -48,7 +48,10 @@ export interface MarkerLabelInput {
 }
 
 export interface LabelPlacement {
+  /** The desk number line. For a normal marker it is the first line of the card BELOW the chip;
+      for the "Your desk" pill it is the pill itself, above. */
   name: boolean;
+  /** The "Holder · Department" line, in the same card as `name` — never on its own. */
   sub: boolean;
 }
 
@@ -163,23 +166,46 @@ export function planMarkerLabels(inputs: MarkerLabelInput[], opts: LabelLayoutOp
     const half = i.size / 2;
     const placement: LabelPlacement = { name: false, sub: false };
 
-    if (i.name) {
-      const h = i.pill ? PILL_HEIGHT : labelHeight(NAME_FONT);
-      const w = estimateLabelWidth(i.name, NAME_FONT) + (i.pill ? PILL_EXTRA : 0);
+    // The "Your desk" pill is the one thing that still sits ABOVE its chip — it is a marker of
+    // place, not a caption, and it draws regardless (see `must`).
+    if (i.pill && i.name) {
+      const h = PILL_HEIGHT;
+      const w = estimateLabelWidth(i.name, NAME_FONT) + PILL_EXTRA;
       const box = { x: cx - w / 2, y: cy - half - GAP - h, w, h };
       if (i.must || !grid.hits(box)) {
         grid.add(box);
         placement.name = true;
       }
+      out.set(i.id, placement);
+      continue;
     }
 
-    if (i.sub) {
-      const h = labelHeight(SUB_FONT);
-      const w = estimateLabelWidth(i.sub, SUB_FONT);
+    /*
+     * ONE box, below the chip, carrying both lines.
+     *
+     * They used to be two: the desk number above, the holder below. In a block of six desks the
+     * declutter would keep one desk number (from the top row) and one holder line (from the
+     * bottom row) and drop everything between, leaving "WS-07" floating over the block and
+     * "David Chen · Facilities" under it — two labels for two DIFFERENT desks, reading as a title
+     * and caption for the whole group. A label has to be unmistakably attached to its own marker,
+     * and the only way to guarantee that while dropping labels is to keep each one adjacent to
+     * its chip and indivisible.
+     *
+     * It also halves the boxes competing for space, so more desks keep a label than before.
+     */
+    if (i.name || i.sub) {
+      const lines = [i.name, i.sub].filter(Boolean) as string[];
+      const w = Math.max(
+        i.name ? estimateLabelWidth(i.name, NAME_FONT) : 0,
+        i.sub ? estimateLabelWidth(i.sub, SUB_FONT) : 0,
+      );
+      const h = lines.length === 2 ? labelHeight(NAME_FONT) + Math.round(SUB_FONT * 1.2) : labelHeight(NAME_FONT);
       const box = { x: cx - w / 2, y: cy + half + GAP, w, h };
       if (!grid.hits(box)) {
         grid.add(box);
-        placement.sub = true;
+        // Both lines live or neither does: half a label is the ambiguity this replaced.
+        placement.name = !!i.name;
+        placement.sub = !!i.sub;
       }
     }
 
