@@ -7,7 +7,8 @@ import type { Unit } from '../../lib/types';
 import { facilioRecordUrl } from '../../lib/facilioApi';
 import { Button } from '../primitives/Button';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
-import { SkeletonRows } from '../primitives/Skeleton';
+import { SkeletonBlock, SkeletonRows } from '../primitives/Skeleton';
+import { useDelayedFlag } from '../../hooks/useDelayedFlag';
 import { LocalAssign } from './LocalAssign';
 import { StateflowActions } from './StateflowActions';
 import card from './Card.module.css';
@@ -156,6 +157,27 @@ export function AssignPanel() {
 function Holder({ unitId }: { unitId: string }) {
   const { state } = useFloorplan();
   const contactId = state.assignments[unitId];
+  // A write is in flight against THIS record, so who holds it is precisely what is changing —
+  // the same rule the popover follows. Showing the outgoing holder until the write lands makes
+  // the panel look like it ignored the button you pressed.
+  const busy = state.busyUnitId === unitId;
+  const showShimmer = useDelayedFlag(busy, { key: unitId, sticky: false });
+
+  if (busy) {
+    return (
+      <div className={styles.assignedRow}>
+        {showShimmer ? (
+          <>
+            <SkeletonBlock width={28} height={28} />
+            <SkeletonBlock width={132} height={15} radius={4} />
+          </>
+        ) : (
+          <span style={{ display: 'inline-block', height: 28 }} />
+        )}
+      </div>
+    );
+  }
+
   if (!contactId) return null;
   return (
     <div className={styles.assignedRow}>

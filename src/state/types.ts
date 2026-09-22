@@ -131,6 +131,18 @@ export interface AppState {
   activeView: 'map' | 'settings' | 'bookings' | 'people';
   settingsTab: 'permissions' | 'modules' | 'bookings' | UnitType;
   moduleColors: Record<string, string>;
+  /**
+   * What the desk markers' colour MEANS. 'status' answers "what can I take"; 'department' answers
+   * "who sits where" — the question a plan coloured only by availability cannot answer at all.
+   */
+  colorBy: 'status' | 'department';
+  /** The org's own departments (the `department` module), for Settings to colour. */
+  departments: { id: string; name: string }[];
+  /**
+   * Department RECORD ID -> hex, from the app's `fp_department_color` table. Only the colours
+   * someone actually chose; everything else comes off the default wheel.
+   */
+  departmentColors: Record<string, string>;
   slotGranularity: number;
   /**
    * Which modules this org runs. A disabled module is hidden everywhere — canvas, legend, edit

@@ -68,13 +68,9 @@ export function PrintSheet() {
     <div className={styles.sheet}>
       <div className={styles.head}>
         <div className={styles.headLeft}>
-          <div className={styles.brandRow}>
-            <span className={styles.wordmark}>
-              facilio<span className={styles.wordmarkDot}>.</span>
-            </span>
-            <span className={styles.brandRule} />
-            <span className={styles.eyebrow}>Seat occupancy</span>
-          </div>
+          {/* No wordmark and no "Seat occupancy" eyebrow: this sheet is printed inside the
+              organisation that owns the floor, on their paper, and branding the vendor on it
+              tells the reader nothing they need. The floor's own name leads instead. */}
           <div className={styles.title}>{floorTitle}</div>
           {siteLine && <div className={styles.siteLine}>{siteLine}</div>}
         </div>
@@ -137,8 +133,6 @@ export function PrintSheet() {
 
       <div className={styles.foot}>
         <span className={styles.footNote}>Occupancy reflects assignments and confirmed bookings at the time of printing.</span>
-        <span className={styles.spacer} />
-        <span className={styles.sheetLine}>facilio Workplace · {floorTitle}</span>
       </div>
     </div>
   );

@@ -21,3 +21,14 @@ export function SkeletonRows({ rows = 6, avatar = false }: { rows?: number; avat
     </div>
   );
 }
+
+/**
+ * A single shimmer block, sized by the caller — for the places where ONE value is still being
+ * read and showing a stand-in would be showing the wrong answer. The popover's status pill is the
+ * case this exists for: the app can compute "Free" from what it already knows, but the record's
+ * own state is what the pill means, and flipping from one to the other after the read lands reads
+ * as the app changing its mind.
+ */
+export function SkeletonBlock({ width, height = 20, radius = 999 }: { width: number | string; height?: number; radius?: number }) {
+  return <span className={styles.block} style={{ width, height, borderRadius: radius }} aria-hidden />;
+}

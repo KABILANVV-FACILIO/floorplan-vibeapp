@@ -22,14 +22,14 @@ export function LocalAssign({ unit }: { unit: Unit }) {
   const busy = state.busyUnitId === unit.id;
 
   async function vacate() {
+    // Only the BUTTON's own spinner is local. Marking the record busy and announcing that it
+    // changed both live in `actions.vacate`, so every other way of vacating — the mobile sheet,
+    // a future surface — gets them too.
     setVacating(true);
-    actions.setUnitBusy(unit.id);
     try {
       await actions.vacate(unit.id);
-      actions.recordChanged();
     } finally {
       setVacating(false);
-      actions.setUnitBusy(null);
     }
   }
 

@@ -4,6 +4,8 @@ import { contactName, isAssignable, isBookable, moduleEnabled, unitById } from '
 import { fmtTime, tooltipPlacement, unitCenter } from '../../lib/geometry';
 import { unitStatus } from '../../lib/unitStatus';
 import { StatusPill } from '../primitives/StatusPill';
+import { SkeletonBlock } from '../primitives/Skeleton';
+import { useDelayedFlag } from '../../hooks/useDelayedFlag';
 import { Button } from '../primitives/Button';
 import { DESK_TYPES, isRoomLike, resolveMarkerDef, TYPE_META } from '../../lib/types';
 import { fetchUnitRecordInfo, resolveUnitRecord } from '../../lib/facilioApiDataSource';
@@ -11,6 +13,9 @@ import { StateflowActions } from '../details/StateflowActions';
 import { LocalAssign } from '../details/LocalAssign';
 import type { UnitRecordInfo } from '../../lib/facilioApiDataSource';
 import styles from './Tooltip.module.css';
+
+/** The longest the card will claim to be reading a record before showing what it already knows. */
+const RECORD_READ_TIMEOUT_MS = 12000;
 
 export function Tooltip() {
   const { state, actions } = useFloorplan();
@@ -58,18 +63,52 @@ export function Tooltip() {
     setRecord(null);
   }, [unitId, unitType]);
 
+  const [reading, setReading] = useState(false);
   useEffect(() => {
+    // Reset FIRST, on every path. Returning early here without clearing left the flag raised from
+    // the previous unit — a card that then rendered a loader with nothing in flight to end it.
+    setReading(false);
     if (!unitId || !unitType || !placeable) return;
     let live = true;
+    setReading(true);
+    // A hard stop, for the same reason the busy flag has one: `fetchUnitRecordInfo` swallows its
+    // own errors, so it always RESOLVES — but a request that never answers never resolves either,
+    // and a shimmer with no end is worse than the app's own approximate status.
+    const giveUp = window.setTimeout(() => {
+      if (live) setReading(false);
+    }, RECORD_READ_TIMEOUT_MS);
     void fetchUnitRecordInfo({ id: unitId, type: unitType }).then((info) => {
-      if (live) setRecord(info);
+      if (live) {
+        setRecord(info);
+        setReading(false);
+        clearTimeout(giveUp);
+      }
     });
     return () => {
       live = false;
+      clearTimeout(giveUp);
     };
     // `recordNonce` re-reads the record after ANY write to it — a transition fired here, or the
     // same one fired in the sidebar, which is showing the very record this card is about.
   }, [unitId, unitType, placeable, state.recordNonce]);
+
+  /*
+   * The record is either being READ or being CHANGED — either way the value on screen is not the
+   * answer, and showing one anyway is worse than showing none.
+   *
+   * The app can compute "Free" from what it already knows, so the pill used to render that and
+   * then flip to the record's own state ("Occupied", "Vacant") a moment later — the app appearing
+   * to change its mind about a desk you just clicked. The same is true while a transition is in
+   * flight: the state shown is the one being replaced.
+   *
+   * `useDelayedFlag` keeps a fast read from flashing a shimmer (nothing shows for the first
+   * 180ms, so a cached answer just appears). It lives ABOVE the early return below, because a
+   * hook that runs only for a visible card is a hook whose order changes between renders.
+   */
+  const recordPending =
+    (reading && !!unitId && !!unitType && !!resolveUnitRecord({ id: unitId, type: unitType })) ||
+    (!!unitId && state.busyUnitId === unitId);
+  const showShimmer = useDelayedFlag(recordPending, { key: unitId ?? '', sticky: false });
 
   if (!unit || !visible) return null;
 
@@ -158,7 +197,13 @@ export function Tooltip() {
         </div>
       ) : (
         <div className={styles.details}>
-          {holder && (
+          {recordPending && (
+            <div className={styles.holder}>
+              <div className={styles.eyebrow}>Assigned to</div>
+              {showShimmer ? <SkeletonBlock width={128} height={15} radius={4} /> : <span style={{ display: 'inline-block', height: 15 }} />}
+            </div>
+          )}
+          {!recordPending && holder && (
             <div className={styles.holder}>
               <div className={styles.eyebrow}>Assigned to</div>
               <div className={styles.holderName}>{holder}</div>
@@ -177,18 +222,31 @@ export function Tooltip() {
       {!isAmenity && (
       <>
       <div className={styles.statusRow}>
-        <StatusPill label={statusText} bg={status.bg} fg={status.fg} />
+        {recordPending ? (
+          // Space reserved either way, so the card does not jump when the answer lands.
+          showShimmer ? <SkeletonBlock width={104} height={22} /> : <span style={{ display: 'inline-block', height: 22 }} />
+        ) : (
+          <StatusPill label={statusText} bg={status.bg} fg={status.fg} />
+        )}
       </div>
 
       {/* The same buttons the sidebar shows, from the same place — this card and the panel are two
           views of ONE record, and a user who can vacate a desk in one must not find the other
           silent about it. The app's own controls stand in here exactly as they do there, and only
-          in Assign view, where assigning is what the card is for. */}
-      <StateflowActions
-        unit={unit}
-        showState={false}
-        fallback={state.mode === 'assign' && assignable ? <LocalAssign unit={unit} /> : null}
-      />
+          in Assign view, where assigning is what the card is for.
+
+          Booking view shows them ONLY for a record you can actually book. The org's flow offers
+          assignment transitions on every desk whatever tab is open, and a desk that can't be
+          booked answering "Re-assign" under a Booking heading is an action about a different
+          question — one this view cannot follow through on. Nothing is left unexplained: the
+          status pill above already reads "Not bookable", or names the person it belongs to. */}
+      {(state.mode !== 'book' || bookable) && (
+        <StateflowActions
+          unit={unit}
+          showState={false}
+          fallback={state.mode === 'assign' && assignable ? <LocalAssign unit={unit} /> : null}
+        />
+      )}
 
       {state.mode === 'book' && bookable && !booked && (
         <Button variant="primary" fullWidth style={{ marginTop: 10 }} onClick={() => actions.openBookingForm({ unitId: unit.id, date: state.date, start: state.start, end: state.end })}>

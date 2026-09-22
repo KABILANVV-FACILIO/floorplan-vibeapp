@@ -8,10 +8,11 @@ import type { AmenityIcon, Booking, FloorSearchHit, MarkerDef, ModuleKey, PlanId
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
-import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, saveFloorplanMarkers, vacateUnitReal } from '../lib/facilioApiDataSource';
+import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, saveFloorplanMarkers, vacateUnitReal } from '../lib/facilioApiDataSource';
 import { measureImageDataUrl } from '../lib/geoReference';
 import { listFloorplanFloorIds, loadFloorplanFile, persistFloorplanFile } from '../lib/floorplanFileStore';
 import { loadSettings, saveSettings, settingsFromState } from '../lib/settingsStore';
+import { loadDepartmentColors, saveDepartmentColor } from '../lib/departmentColorStore';
 import { pathForView, viewFromLocation } from '../lib/routes';
 import { buildInitialState, reducer } from './reducer';
 import type { Action } from './reducer';
@@ -924,6 +925,8 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     markAssigned: (unitId: string, contactId: string) => {
       const next = { ...state.assignments, [unitId]: contactId };
       dispatch({ type: 'ASSIGN', unitId, contactId, assignments: next });
+      // An org write just completed against this record — the same announcement `assign` makes.
+      dispatch({ type: 'RECORD_CHANGED' });
       void dataSource.saveUnits(state.floorId, state.units).catch(() => {});
     },
 
@@ -937,7 +940,20 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       const prevContactId = next[unitId];
       next[unitId] = contactId;
       dispatch({ type: 'ASSIGN', unitId, contactId, assignments: next });
-      await dataSource.assignUnit(unitId, contactId);
+      // The record is being written: its marker spins and both surfaces showing it stop reporting
+      // a holder they are about to replace. Dropped again below whatever the write does.
+      dispatch({ type: 'SET_UNIT_BUSY', id: unitId });
+      try {
+        await dataSource.assignUnit(unitId, contactId);
+      } finally {
+        dispatch({ type: 'SET_UNIT_BUSY', id: null });
+        // Who holds this desk just changed, so EVERY surface showing it re-reads — the popover's
+        // "Assigned to" comes from the record, not from this map, and would otherwise keep naming
+        // the person who held it before. Signalled HERE rather than at the call sites: a drag onto
+        // a marker, the mobile sheet and the people picker all land in this function, and three
+        // call sites each remembering to announce the same change is three chances to forget.
+        dispatch({ type: 'RECORD_CHANGED' });
+      }
       // Best-effort real assignment (Moves for desks, a plain field update for lockers/parking)
       // — never blocks or throws into the local assignment flow above, which is already the
       // source of truth for this app's own read-path.
@@ -957,7 +973,13 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       const next = { ...state.assignments };
       delete next[unitId];
       dispatch({ type: 'VACATE', unitId, assignments: next });
-      await dataSource.vacateUnit(unitId);
+      dispatch({ type: 'SET_UNIT_BUSY', id: unitId });
+      try {
+        await dataSource.vacateUnit(unitId);
+      } finally {
+        dispatch({ type: 'SET_UNIT_BUSY', id: null });
+        dispatch({ type: 'RECORD_CHANGED' });
+      }
       if (isFacilioApiConfigured && target && prevContactId) {
         vacateUnitReal(target, prevContactId).catch((err) => {
           // eslint-disable-next-line no-console
@@ -1185,6 +1207,29 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     openPeople: () => dispatch({ type: 'SET_ACTIVE_VIEW', view: 'people' }),
     setSettingsTab: (tab: AppState['settingsTab']) => dispatch({ type: 'SET_SETTINGS_TAB', tab }),
     setModuleColor: (key: string, hex: string) => dispatch({ type: 'SET_MODULE_COLOR', key, hex }),
+    /** Colour the desks by availability, or by the department on their record. */
+    setColorBy: (value: AppState['colorBy']) => dispatch({ type: 'SET_COLOR_BY', value }),
+    /**
+     * A department's colour is org data, not a browser preference: it goes to the app's own
+     * `fp_department_color` table keyed by the department's record id, so a rename in Facilio
+     * keeps the colour and anything else can read the scheme. Applied locally first so the plan
+     * recolours under the click rather than after the round trip.
+     */
+    setDepartmentColor: (departmentId: string, hex: string, departmentName = '') => {
+      dispatch({ type: 'SET_DEPARTMENT_COLOR', department: departmentId, hex });
+      // The whole scheme goes along because the file and browser tiers store it as one blob —
+      // only a database can write a single department's row (see lib/departmentColorStore).
+      const scheme = Object.fromEntries(
+        Object.entries({ ...state.departmentColors, [departmentId]: hex }).map(([id, color]) => [
+          id,
+          { name: id === departmentId ? departmentName : (state.departments.find((d) => d.id === id)?.name ?? ''), color },
+        ]),
+      );
+      void saveDepartmentColor(departmentId, departmentName, hex, scheme).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn('[departments] colour applied but not persisted', err);
+      });
+    },
     setModuleEnabled: (module: ModuleKey, enabled: boolean) => dispatch({ type: 'SET_MODULE_ENABLED', module, enabled }),
     /**
      * Fetches the asset catalog on first use of the Edit-mode asset picker. Idempotent: the guard
@@ -1271,12 +1316,43 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
   };
 }
 
+/**
+ * How long a record may show as "being written" before the app stops believing it. Long enough
+ * that a slow org write is never cut short, short enough that a hung one does not strand the UI.
+ */
+const BUSY_TIMEOUT_MS = 20000;
+
 export function FloorplanProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, undefined, buildInitialState);
   const canvasRectRef = useRef<DOMRect | null>(null);
   const loadedRef = useRef(false);
   const settingsLoadedRef = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  /**
+   * A record can be marked busy but never unmarked.
+   *
+   * Every writer clears the flag in a `finally`, which covers a request that FAILS — but not one
+   * that never answers at all. Neither the V3 client nor the vibe function call carries a timeout,
+   * so a hung connection leaves the promise pending forever, the `finally` unreached, and the
+   * marker spinning with its buttons disabled until the page is reloaded. A loader with no way out
+   * is worse than a failed action: the user cannot tell whether to wait or to retry.
+   *
+   * So the flag has a hard stop. This does NOT cancel the write — it cannot; the request may still
+   * land later — it stops the UI from claiming the work is still in progress, and says so in the
+   * console rather than silently.
+   */
+  useEffect(() => {
+    if (!state.busyUnitId) return;
+    const id = state.busyUnitId;
+    const timer = window.setTimeout(() => {
+      // eslint-disable-next-line no-console
+      console.warn(`[busy] ${id} was still marked busy after ${BUSY_TIMEOUT_MS}ms — clearing the indicator; the write may still be in flight`);
+      dispatch({ type: 'SET_UNIT_BUSY', id: null });
+    }, BUSY_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [state.busyUnitId]);
+
 
   // Path-route sync (see lib/routes.ts): state.activeView is the source of truth, pushed to
   // history (/bookings, /people, /settings — real files on the host via copy-route-pages) so
@@ -1326,7 +1402,15 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
     }, 500);
     return () => clearTimeout(saveTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.perms, state.moduleColors, state.slotGranularity, state.bookingModule, state.customMarkers, state.enabledModules]);
+  }, [
+    state.perms,
+    state.moduleColors,
+    state.colorBy,
+    state.slotGranularity,
+    state.bookingModule,
+    state.customMarkers,
+    state.enabledModules,
+  ]);
 
   useEffect(() => {
     if (loadedRef.current) return;
@@ -1339,6 +1423,17 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
       // to open on. Best-effort: the endpoint resolves the employee from the session and may not be
       // reachable for every token — absence just means the first floor, and the "My desk" button
       // stays hidden (unless mock assignments provide one).
+      // The department master list and the saved colour scheme: one read each, at boot. Both are
+      // small, both are org-wide, and Settings must be able to colour a department whose desks
+      // are all on a floor this session never opens.
+      void Promise.all([fetchDepartments().catch(() => []), loadDepartmentColors().catch(() => ({}))]).then(
+        ([departments, scheme]) => {
+          if (departments.length) dispatch({ type: 'DEPARTMENTS_LOADED', departments });
+          const colors = Object.fromEntries(Object.entries(scheme).map(([id, v]) => [id, v.color]));
+          if (Object.keys(colors).length) dispatch({ type: 'DEPARTMENT_COLORS_LOADED', colors });
+        },
+      );
+
       const [portfolio, employees, myDesk] = await Promise.all([
         dataSource.getPortfolio().catch(() => MOCK_PORTFOLIO),
         dataSource.getEmployees().catch(() => MOCK_EMPLOYEES),

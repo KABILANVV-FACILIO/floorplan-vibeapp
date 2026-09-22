@@ -50,9 +50,6 @@ export function AssignEmployeeModal({ unit, onClose }: { unit: Unit; onClose: ()
         // where the answer is written differs.
         await actions.assign(employeeId, unit.id);
       }
-      // Every surface showing this record re-reads it: its state moved with the write, and the
-      // sidebar and the popover are usually both open on it.
-      actions.recordChanged();
     } catch (err) {
       // Reported the way every other failure in this app is — a toast — rather than a banner
       // inside a dialog the user then has to dismiss themselves.

@@ -48,14 +48,21 @@ function setTypeDragImage(e: ReactDragEvent, unit: Unit) {
 export function SpacesList() {
   const { state, actions } = useFloorplan();
   const isEdit = state.mode === 'edit';
-  // Everything on the floor, in every mode: what is already on the plan, plus the org's records
-  // that have no marker yet. Edit mode used to list the unplaced pool ALONE, so a record vanished
-  // from this list the moment you placed it — including the one you had just selected on the plan,
-  // which left the sidebar with no trace of the desk the inspector was editing. The per-row
-  // "Unplaced" pill already distinguishes the two, so there is nothing to gain by hiding one.
+  // What is on the plan, plus — in EDIT MODE ONLY — the org's records that have no marker yet.
+  //
+  // The unplaced pool is a placement queue: a row you drag onto the plan, or arm and then click.
+  // Outside edit mode there is nothing to do with one, and the row said so by having no click
+  // handler at all — an inert line that still took a slot in the list, still counted in the
+  // chips, and still answered the search. On a floor with a long tail of unplaced records that is
+  // most of the sidebar, none of it actionable.
+  //
+  // Edit mode keeps BOTH: a record must not vanish from the list the moment you place it (that
+  // used to strand the inspector with no sidebar row for the desk it was editing), and the
+  // per-row "Unplaced" pill tells the two apart.
+  //
   // Disabled modules are filtered out before counting, so their chips read 0 and their rows
   // never appear.
-  const allUnits = [...state.units, ...state.unplacedUnits];
+  const allUnits = isEdit ? [...state.units, ...state.unplacedUnits] : state.units;
   const units = allUnits.filter((u) => moduleEnabled(state, u.type));
 
   const counts: Record<string, number> = { all: units.length };
@@ -188,9 +195,19 @@ function SpaceRow({ unit }: { unit: Unit }) {
       </div>
       {unplaced ? (
         placing ? (
-          <StatusPill label={traceable ? 'Trace it' : 'Click map'} bg="var(--blue-025)" fg="var(--blue-600)" />
+          <StatusPill
+            label={traceable ? 'Trace it' : 'Click map'}
+            tip={traceable ? 'Armed — trace its outline on the plan' : 'Armed — click the plan to place it'}
+            bg="var(--blue-025)"
+            fg="var(--blue-600)"
+          />
         ) : (
-          <StatusPill label="Unplaced" bg="var(--ink-050)" fg="var(--ink-600)" />
+          <StatusPill
+            label="Unplaced"
+            tip="This record exists in the org but has no position on the plan yet"
+            bg="var(--ink-050)"
+            fg="var(--ink-600)"
+          />
         )
       ) : (
         <StatusPill label={status.text} bg={status.bg} fg={status.fg} />

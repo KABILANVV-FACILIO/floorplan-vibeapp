@@ -118,6 +118,9 @@ export function buildInitialState(): AppState {
     activeView: viewFromLocation(window.location),
     settingsTab: 'permissions',
     moduleColors: {},
+    colorBy: 'status',
+    departments: [],
+    departmentColors: {},
     slotGranularity: 30,
     enabledModules: DEFAULT_ENABLED_MODULES,
 
@@ -214,6 +217,10 @@ export type Action =
   | { type: 'SET_FLOORS_WITH_PLANS'; floorIds: string[] }
   | { type: 'SET_SETTINGS_TAB'; tab: AppState['settingsTab'] }
   | { type: 'SET_MODULE_COLOR'; key: string; hex: string }
+  | { type: 'SET_COLOR_BY'; value: AppState['colorBy'] }
+  | { type: 'SET_DEPARTMENT_COLOR'; department: string; hex: string }
+  | { type: 'DEPARTMENTS_LOADED'; departments: { id: string; name: string }[] }
+  | { type: 'DEPARTMENT_COLORS_LOADED'; colors: Record<string, string> }
   | { type: 'SET_MODULE_ENABLED'; module: ModuleKey; enabled: boolean }
   | { type: 'SET_SLOT_GRANULARITY'; minutes: number }
   | { type: 'SHOW_TOAST'; message: string | null }
@@ -501,6 +508,7 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         perms: c.perms ?? state.perms,
         moduleColors: c.moduleColors ?? state.moduleColors,
+        colorBy: c.colorBy ?? state.colorBy,
         slotGranularity: c.slotGranularity ?? state.slotGranularity,
         bookingModule: c.bookingModule ?? state.bookingModule,
         customMarkers: c.customMarkers ?? state.customMarkers,
@@ -544,6 +552,14 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, settingsTab: action.tab };
     case 'SET_MODULE_COLOR':
       return { ...state, moduleColors: { ...state.moduleColors, [action.key]: action.hex } };
+    case 'SET_COLOR_BY':
+      return { ...state, colorBy: action.value };
+    case 'SET_DEPARTMENT_COLOR':
+      return { ...state, departmentColors: { ...state.departmentColors, [action.department]: action.hex } };
+    case 'DEPARTMENTS_LOADED':
+      return { ...state, departments: action.departments };
+    case 'DEPARTMENT_COLORS_LOADED':
+      return { ...state, departmentColors: action.colors };
     case 'SET_MODULE_ENABLED': {
       const enabledModules = { ...state.enabledModules, [action.module]: action.enabled };
       if (action.enabled) return { ...state, enabledModules };

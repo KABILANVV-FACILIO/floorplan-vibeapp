@@ -211,11 +211,31 @@ export interface Unit {
   assetId?: string;
   /** Rooms only — from the IWMS rooms module. true (or undefined) = bookable; false = assignable. */
   isReservable?: boolean;
+  /**
+   * Desks only — the `department` field on the org's own desk record. Read for the whole floor in
+   * `getUnits` (the desk rows are already fetched there), so the plan can be coloured by who sits
+   * where rather than only by what is free.
+   */
+  department?: string;
+  /**
+   * The department RECORD's id — what a colour is stored against, so renaming a department in
+   * Facilio keeps its colour. Falls back to a `name:`-prefixed stand-in where the record named a
+   * department without identifying it.
+   */
+  departmentId?: string;
 }
 
 export interface Employee {
   id: string;
   name: string;
+  /**
+   * The org's HRMS Employee ID — a custom field on `employee`, not a product one, so the read
+   * tries the usual spellings and keeps whichever answered (see `mapEmployee`).
+   */
+  hrmsEmployeeId?: string;
+  email?: string;
+  /** The person's department, distinct from the desk's — a desk can be lent to another team. */
+  department?: string;
 }
 
 export interface Booking {

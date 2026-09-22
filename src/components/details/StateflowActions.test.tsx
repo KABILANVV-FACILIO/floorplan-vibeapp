@@ -13,7 +13,6 @@ const executeStateTransition = vi.fn(async () => {});
 const fetchAvailableStates = vi.fn();
 const openPanel = vi.fn();
 const showToast = vi.fn();
-const markAssigned = vi.fn();
 const assign = vi.fn(async (_contactId: string, _unitId: string) => {});
 const refreshAssignments = vi.fn(async () => {});
 const invalidateUnitRecordInfo = vi.fn();
@@ -25,6 +24,11 @@ const assignEmployeeToRecord = vi.fn(async (_unit: unknown, _employeeId: string)
  * one landed (`recordNonce`). Both are written by one surface and read by every other.
  */
 const store = { employees: [{ id: '7', name: 'Niviya' }], busyUnitId: null as string | null, recordNonce: 0 };
+// Mirrors the real action: writing a holder onto the record announces the change itself, so
+// every surface showing that record re-reads. The picker no longer announces on its behalf.
+const markAssigned = vi.fn(() => {
+  store.recordNonce += 1;
+});
 const setUnitBusy = vi.fn((id: string | null) => {
   store.busyUnitId = id;
 });
@@ -145,10 +149,9 @@ describe('what a button does depends on the transition', () => {
     person.click();
 
     await waitFor(() => expect(assignEmployeeToRecord).toHaveBeenCalledWith(unit, '7'));
-    // Mirrored into app state, so the marker's initials and the sidebar update without a reload.
+    // Mirrored into app state, so the marker's initials and the sidebar update without a reload —
+    // and that write is itself the announcement, which is what makes this surface re-read.
     expect(markAssigned).toHaveBeenCalledWith(unit.id, '7');
-    // And announced to every surface showing the record, this one included.
-    await waitFor(() => expect(recordChanged).toHaveBeenCalled());
     await waitFor(() => expect(fetchAvailableStates).toHaveBeenCalledTimes(2));
     // The dialog closes once the write lands.
     await waitFor(() => expect(screen.queryByLabelText('Search people')).toBeNull());

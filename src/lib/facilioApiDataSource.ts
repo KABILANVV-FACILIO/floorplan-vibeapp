@@ -150,11 +150,8 @@ export class FacilioApiDataSource implements FloorplanDataSource {
     this.assertConfigured();
     const rows = await fetchAllPaged('employee');
     // eslint-disable-next-line no-console
-    console.info(`[facilio-api] getEmployees: ${rows.length} employees`);
-    return sortByName(rows).map((e: any) => ({
-      id: String(e.id),
-      name: e.name,
-    }));
+    console.info(`[facilio-api] getEmployees: ${rows.length} employees`, rows[0] ? `(fields seen: ${Object.keys(rows[0]).join(', ')})` : '');
+    return sortByName(rows).map(mapEmployee);
   }
 
   /**
@@ -278,6 +275,30 @@ export class FacilioApiDataSource implements FloorplanDataSource {
         .catch(() => [] as any[]);
     const [desks, lockers, stalls, spaces] = await Promise.all([rel('desks'), rel('lockers'), rel('parkingstall'), rel('space')]);
     const pointIds = new Set([...desks, ...lockers, ...stalls].map((r: any) => String(r.id)));
+
+    // The desk rows are already here for the unplaced pool, and they carry `department` — the
+    // field the plan needs to colour by who sits where. Stamp it onto the markers that were
+    // already built from the floorplan marker list, which never saw the record behind them.
+    // `department` is a LOOKUP, so the row carries the whole related record: its id is what the
+    // colour is stored against (a department can be renamed and must keep its colour), and its
+    // name is what a person reads.
+    const deptById = new Map<string, { id: string; name: string }>();
+    for (const r of desks as any[]) {
+      const d = r.department;
+      if (!d) continue;
+      const name = typeof d === 'string' ? d : (d.displayName ?? d.name ?? null);
+      const id = typeof d === 'object' && d.id != null ? String(d.id) : null;
+      if (name) deptById.set(String(r.id), { id: id ?? departmentFallbackId(String(name)), name: String(name) });
+    }
+    if (deptById.size) {
+      for (const u of units) {
+        const dept = deptById.get(u.id);
+        if (dept) {
+          u.department = dept.name;
+          u.departmentId = dept.id;
+        }
+      }
+    }
     const rooms = spaces.filter((r: any) => !pointIds.has(String(r.id)) && (r.spaceTypeEnum ?? 'SPACE') === 'SPACE');
 
     let unmatchedMarkers = 0;
@@ -289,7 +310,13 @@ export class FacilioApiDataSource implements FloorplanDataSource {
           unmatchedMarkers++;
           continue;
         }
-        units.push(toUnplacedUnit(r, type, floorId));
+        const unit = toUnplacedUnit(r, type, floorId);
+        const dept = deptById.get(id);
+        if (dept) {
+          unit.department = dept.name;
+          unit.departmentId = dept.id;
+        }
+        units.push(unit);
       }
     };
     addUnplaced(desks, 'workstation');
@@ -497,6 +524,112 @@ let floorIndex: Promise<FloorSearchHit[]> | null = null;
  * (a repeated first id means the same page came back — stop, don't spin) and against one that
  * ignores `perPage` (the short-page check still terminates; it just costs more round trips).
  */
+/**
+ * SERVER-SIDE search, the way the org's own lists do it: a V3 `filters` payload rather than
+ * pulling every row down and matching in the browser.
+ *
+ * It matters beyond tidiness. The in-memory path can only match what was fetched — the employee
+ * picker holds the roster, but the desk search only ever held the floor you had open, so
+ * searching a desk number from another floor found nothing. A filter asks the org.
+ *
+ * The operator id is 5, read off the backend rather than guessed: `StringOperators.CONTAINS(5,
+ * "contains")` in facilio-framework (com/facilio/db/criteria/operators/StringOperators.java:85).
+ * Operator codes share ONE flat namespace across every operator type — the same file notes "Max
+ * operator code is 141" — so 5 is the id the API expects, with no per-type offset. Nothing else
+ * in that package claims 5.
+ *
+ * This is why the floor search in this file avoided server-side text search: the id could not be
+ * confirmed at the time. It can now. The fallback below stays anyway — an org whose field names
+ * differ still degrades to matching what is already loaded rather than reporting "nobody matches".
+ */
+const CONTAINS = 5;
+
+function containsFilter(fields: string[], query: string): string {
+  return JSON.stringify(Object.fromEntries(fields.map((f) => [f, { operatorId: CONTAINS, value: [query] }])));
+}
+
+/**
+ * Employees matching a query on any of the identifiers a person is actually looked up by: staff
+ * number, name, email. V3 ANDs the fields in one `filters` object, so each is asked separately
+ * and the results are merged — a person found by email must not have to match the name too.
+ */
+export async function searchEmployees(query: string, limit = 50): Promise<Employee[] | null> {
+  if (!isFacilioApiConfigured) return null;
+  const q = query.trim();
+  if (!q) return [];
+  const fields = ['name', 'email', ...HRMS_ID_KEYS.slice(0, 3)];
+  const results = await Promise.all(
+    fields.map((f) =>
+      facilioApi
+        .fetchAll('employee', { filters: containsFilter([f], q), perPage: limit })
+        .then((r) => (r.error ? [] : (r.list ?? [])))
+        .catch(() => []),
+    ),
+  );
+  const merged = new Map<string, any>();
+  for (const rows of results) for (const r of rows) merged.set(String(r.id), r);
+  // Every field failed — the operator or the field names are wrong for this org, so the caller
+  // falls back rather than showing an empty list that looks like "nobody matches".
+  if (merged.size === 0 && results.every((r) => r.length === 0)) return null;
+  return sortByName([...merged.values()]).map(mapEmployee).slice(0, limit);
+}
+
+/**
+ * Desks matching a query across the whole org rather than the open floor — by desk name, or by
+ * the department on the record.
+ */
+export async function searchDesks(query: string, limit = 50): Promise<{ id: string; label: string; department?: string }[] | null> {
+  if (!isFacilioApiConfigured) return null;
+  const q = query.trim();
+  if (!q) return [];
+  const res = await facilioApi
+    .fetchAll('desks', { filters: containsFilter(['name'], q), perPage: limit })
+    .catch(() => null);
+  if (!res || res.error || !res.list) return null;
+  return res.list.map((r: any) => ({
+    id: String(r.id),
+    label: String(r.name ?? ''),
+    department: typeof r.department === 'string' ? r.department : (r.department?.displayName ?? r.department?.name ?? undefined),
+  }));
+}
+
+/**
+ * The HRMS Employee ID — the number the org's HR system knows a person by, and what people here
+ * search on.
+ *
+ * It is a CUSTOM field: the `employee` module ships `name`, `email`, `phone`, `mobile`, `language`,
+ * `timezone` and `currency` and nothing resembling a staff number (V3PeopleContext in bmsconsole),
+ * so this name belongs to the org rather than the product — another org would call it something
+ * else entirely.
+ *
+ * `hrmsEmployeeId` leads rather than being the only answer: a custom field's API name is usually
+ * its label camel-cased but not guaranteed to be, and each alternate costs one property lookup.
+ * `getEmployees` logs the field names a real record actually carries, which settles it if this
+ * list ever misses.
+ */
+const HRMS_ID_KEYS = ['hrmsEmployeeId', 'hrmsEmployeeID', 'hrmsEmpId', 'hrmsId', 'employeeNumber', 'employeeId', 'empId'];
+
+function firstString(row: any, keys: string[]): string | undefined {
+  for (const k of keys) {
+    const v = row?.[k];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+    if (typeof v === 'number') return String(v);
+  }
+  return undefined;
+}
+
+/** One employee row -> the app's Employee, with the searchable identifiers the org exposes. */
+export function mapEmployee(e: any): Employee {
+  const dept = e?.department;
+  return {
+    id: String(e.id),
+    name: e.name,
+    hrmsEmployeeId: firstString(e, HRMS_ID_KEYS),
+    email: firstString(e, ['email', 'emailId', 'primaryEmail']),
+    department: typeof dept === 'string' ? dept : (dept?.displayName ?? dept?.name ?? undefined),
+  };
+}
+
 async function fetchAllPaged(moduleName: string, perPage = 200): Promise<any[]> {
   const out: any[] = [];
   let lastFirstId: unknown;
@@ -1183,6 +1316,34 @@ const RECORD_FIELDS: Record<string, { name: string; label: string; enum?: boolea
     { name: 'reservable', label: 'Reservable' },
   ],
 };
+
+/**
+ * The org's OWN departments, from the `department` module — the master list, not the set that
+ * happens to appear on the floor currently loaded. Settings colours departments the org has, so
+ * a team whose desks are all on another floor still gets a colour, and the list does not change
+ * shape as you walk the building.
+ *
+ * Returns an empty list when the API isn't configured (the local tier), and the caller falls back
+ * to the departments actually seen on the plan.
+ */
+export async function fetchDepartments(): Promise<{ id: string; name: string }[]> {
+  if (!isFacilioApiConfigured) return [];
+  const res = await facilioApi.fetchAll('department', { perPage: 500 }).catch(() => null);
+  const rows = (res && !res.error ? res.list : null) ?? [];
+  return rows
+    .map((r: any) => ({ id: String(r.id), name: String(r.name ?? r.displayName ?? '').trim() }))
+    .filter((d: { id: string; name: string }) => d.name)
+    .sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name));
+}
+
+/**
+ * A stand-in id for a department the record named but did not identify — the local tier, or a
+ * lookup that answered with a bare string. Prefixed so it can never be mistaken for a real
+ * record id, and derived from the name so it is stable.
+ */
+export function departmentFallbackId(name: string): string {
+  return 'name:' + name.trim().toLowerCase().replace(/\s+/g, ' ');
+}
 
 /** On the space base module, so every type above can carry them. */
 const COMMON_RECORD_FIELDS: { name: string; label: string; enum?: boolean }[] = [{ name: 'approvalStatus', label: 'Approval' }];

@@ -51,32 +51,6 @@
   flex: 1;
   min-width: 0;
 }
-.brandRow {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-/* The wordmark's own ink — deliberately darker than --ink-900, and the one literal the design
-   introduces that the token set has no name for. */
-.wordmark {
-  font: 800 17px/1 var(--font-sans);
-  color: #1b1b3a;
-  letter-spacing: -0.02em;
-}
-.wordmarkDot {
-  color: var(--brand-pink);
-}
-.brandRule {
-  width: 1px;
-  height: 11px;
-  background: var(--ink-200);
-}
-.eyebrow {
-  font: 500 10px/1 var(--font-sans);
-  letter-spacing: 0.11em;
-  text-transform: uppercase;
-  color: var(--ink-600);
-}
 .title {
   font: 700 27px/1.12 var(--font-sans);
   letter-spacing: -0.015em;
@@ -216,8 +190,7 @@
   border-top: 1px solid var(--ink-100);
   padding-top: 9px;
 }
-.footNote,
-.sheetLine {
+.footNote {
   font: 400 10px/1.3 var(--font-sans);
   color: var(--ink-600);
 }

@@ -73,3 +73,24 @@
   border-radius: 9px;
   background: #eaeff7;
 }
+
+/* Standalone shimmer, same sweep as the rows above. */
+.block {
+  position: relative;
+  display: inline-block;
+  overflow: hidden;
+  background: var(--ink-100);
+}
+.block::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7), transparent);
+  animation: skSweep 1.15s infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .block::after {
+    animation: none;
+  }
+}
