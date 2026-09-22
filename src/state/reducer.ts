@@ -168,6 +168,7 @@ export type Action =
   | { type: 'SET_SPACE_FILTER'; filter: AppState['spaceFilter'] }
   | { type: 'SET_SPACE_SEARCH'; value: string }
   | { type: 'PORTFOLIO_LOADED'; portfolio: Site[]; employees: AppState['employees'] }
+  | { type: 'EMPLOYEES_LOADED'; employees: AppState['employees'] }
   | { type: 'TREE_LOADING'; id: string; loading: boolean }
   | { type: 'BUILDINGS_LOADED'; siteId: string; buildings: Building[] }
   | { type: 'FLOORS_LOADED'; buildingId: string; floors: Floor[] }
@@ -348,6 +349,10 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, spaceSearch: action.value };
     case 'PORTFOLIO_LOADED':
       return { ...state, portfolio: action.portfolio, employees: action.employees };
+    case 'EMPLOYEES_LOADED':
+      // The roster on its own — Refresh re-reads it without disturbing the portfolio tree, whose
+      // buildings and floors are loaded lazily as they are expanded.
+      return { ...state, employees: action.employees };
     case 'TREE_LOADING': {
       const treeLoading = { ...state.treeLoading };
       if (action.loading) treeLoading[action.id] = true;

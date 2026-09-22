@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { initials, visibleUnits } from '../../state/selectors';
-import { facilioRecordUrl, isFacilioApiConfigured } from '../../lib/facilioApi';
-import { searchEmployees } from '../../lib/facilioApiDataSource';
-import type { Employee } from '../../lib/types';
+import { facilioRecordUrl } from '../../lib/facilioApi';
+import { useLivePeople } from '../../hooks/useLivePeople';
 import styles from './PeopleView.module.css';
 
 /** Simple directory of employees. Assigned desks are derived from `state.assignments`. */
@@ -23,42 +22,10 @@ export function PeopleView() {
     return map;
   }, [state.assignments, state.units, state.enabledModules]);
 
-  /**
-   * Matching happens in two places on purpose. Locally, against everything the roster carries —
-   * HRMS Employee ID, name, email, department — so typing is answered on the keystroke. And at the
-   * ORG, because the roster in memory is only what was loaded, and a person the search can't see
-   * is indistinguishable from a person who doesn't exist.
-   *
-   * The server's answer replaces the local one when it arrives; a failed or unconfigured call
-   * leaves the local match standing rather than emptying the list.
-   */
-  const [remote, setRemote] = useState<Employee[] | null>(null);
-  useEffect(() => {
-    const q = search.trim();
-    setRemote(null);
-    if (!q || !isFacilioApiConfigured) return;
-    let live = true;
-    const t = setTimeout(() => {
-      void searchEmployees(q).then((rows) => {
-        if (live && rows) setRemote(rows);
-      });
-    }, 250);
-    return () => {
-      live = false;
-      clearTimeout(t);
-    };
-  }, [search]);
-
-  const q = search.trim().toLowerCase();
-  const localMatches = state.employees.filter(
-    (c) =>
-      !q ||
-      c.name.toLowerCase().includes(q) ||
-      (c.hrmsEmployeeId ?? '').toLowerCase().includes(q) ||
-      (c.email ?? '').toLowerCase().includes(q) ||
-      (c.department ?? '').toLowerCase().includes(q),
-  );
-  const people = (remote ?? localMatches).slice().sort((a, b) => a.name.localeCompare(b.name));
+  // The org's own list, re-read each time this page opens and filtered at the org as you type —
+  // the roster in state is only the fallback until it answers (see useLivePeople).
+  const { people: live } = useLivePeople(search, state.employees);
+  const people = live.slice().sort((a, b) => a.name.localeCompare(b.name));
 
   return (
     <div className={styles.page}>
@@ -66,7 +33,7 @@ export function PeopleView() {
         <div className={styles.head}>
           <div>
             <h1 className={styles.h1}>People</h1>
-            <p className={styles.sub}>{state.employees.length} people in this workspace</p>
+            <p className={styles.sub}>{people.length} people</p>
           </div>
           <input
             className={styles.search}

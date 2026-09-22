@@ -115,6 +115,23 @@ export class FacilioApiDataSource implements FloorplanDataSource {
     this.assertConfigured();
     const q = query.trim().toLowerCase();
     if (!q) return [];
+
+    // ASK THE ORG first. This used to go straight to the in-memory index below because the
+    // contains operator's id could not be confirmed; it can now (5 — see CONTAINS), so the
+    // question goes to the server, where the answer actually lives. A floor added since this tab
+    // opened is findable, and nothing has to be pulled down to look for it.
+    const live = await facilioApi
+      .fetchAll('floor', { filters: containsFilter(['name'], query.trim()), perPage: 50 })
+      .then((r) => (r.error ? null : r.list))
+      .catch(() => null);
+    if (live && live.length) {
+      const hits = await hydrateFloorHits(live);
+      if (hits.length) return hits;
+    }
+
+    // The index remains the fallback: an org whose floors are named only inside their building
+    // ("3" under "Building A") answers nothing useful to a name filter, and matching locally on
+    // the building and site names still finds it.
     if (!floorIndex) {
       floorIndex = Promise.all([fetchAllPaged('floor'), fetchAllPaged('building'), fetchAllPaged('site')]).then(([floors, buildings, sites]) => {
         const bName = new Map(buildings.map((b: any) => [String(b.id), String(b.name ?? '')]));
@@ -520,6 +537,22 @@ function safeJson<T>(raw: unknown): T | null {
 let floorIndex: Promise<FloorSearchHit[]> | null = null;
 
 /**
+ * Floor rows -> search hits, naming each floor's building and site. The rows carry their parents
+ * as lookups, so this is a shape change rather than another round trip; a lookup that answered
+ * with only an id leaves the name blank rather than inventing one.
+ */
+async function hydrateFloorHits(rows: any[]): Promise<FloorSearchHit[]> {
+  return rows.map((f: any) => ({
+    floorId: String(f.id),
+    floorName: String(f.name ?? ''),
+    buildingId: String(lookupId(f, 'building') ?? ''),
+    buildingName: String(f.building?.name ?? f.building?.displayName ?? ''),
+    siteId: String(lookupId(f, 'site') ?? ''),
+    siteName: String(f.site?.name ?? f.site?.displayName ?? ''),
+  }));
+}
+
+/**
  * Every record of a module via `fetchAll`, paged. Guards against a server that ignores `page`
  * (a repeated first id means the same page came back — stop, don't spin) and against one that
  * ignores `perPage` (the short-page check still terminates; it just costs more round trips).
@@ -553,6 +586,21 @@ function containsFilter(fields: string[], query: string): string {
  * number, name, email. V3 ANDs the fields in one `filters` object, so each is asked separately
  * and the results are merged — a person found by email must not have to match the name too.
  */
+/**
+ * The roster, read now rather than remembered from boot.
+ *
+ * `state.employees` is fetched once when the app starts and never again, so a person added in
+ * Facilio since this tab opened is invisible to every picker — and, once search went to the API,
+ * findable by search yet missing from the list beside it. Surfaces that show people call this on
+ * open instead; it is one paged read, and it answers with what the org has right now.
+ */
+export async function fetchEmployees(limit = 200): Promise<Employee[] | null> {
+  if (!isFacilioApiConfigured) return null;
+  const res = await facilioApi.fetchAll('employee', { perPage: limit }).catch(() => null);
+  if (!res || res.error || !res.list) return null;
+  return sortByName(res.list).map(mapEmployee);
+}
+
 export async function searchEmployees(query: string, limit = 50): Promise<Employee[] | null> {
   if (!isFacilioApiConfigured) return null;
   const q = query.trim();

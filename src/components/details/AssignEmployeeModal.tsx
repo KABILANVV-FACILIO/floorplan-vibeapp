@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useLivePeople } from '../../hooks/useLivePeople';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { assignEmployeeToRecord, resolveUnitRecord } from '../../lib/facilioApiDataSource';
 import { initials } from '../../state/selectors';
@@ -28,11 +29,10 @@ export function AssignEmployeeModal({ unit, onClose }: { unit: Unit; onClose: ()
   const [query, setQuery] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const people = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const list = q ? state.employees.filter((e) => e.name.toLowerCase().includes(q)) : state.employees;
-    return [...list].sort((a, b) => a.name.localeCompare(b.name));
-  }, [state.employees, query]);
+  // Read from the org when the dialog opens, and filtered at the org while typing: this is the
+  // one place a person is chosen, so it must not offer a roster that stopped updating at boot.
+  const { people: live, loading } = useLivePeople(query, state.employees);
+  const people = useMemo(() => [...live].sort((a, b) => a.name.localeCompare(b.name)), [live]);
 
   async function pick(employeeId: string, name: string) {
     setBusyId(employeeId);
@@ -73,7 +73,7 @@ export function AssignEmployeeModal({ unit, onClose }: { unit: Unit; onClose: ()
           className={styles.search}
           value={query}
           autoFocus
-          placeholder={`Search ${state.employees.length} people`}
+          placeholder={loading ? 'Loading people…' : `Search ${people.length} people`}
           onChange={(e) => setQuery(e.target.value)}
           aria-label="Search people"
         />
@@ -87,7 +87,7 @@ export function AssignEmployeeModal({ unit, onClose }: { unit: Unit; onClose: ()
           ))}
           {people.length === 0 && (
             <div className={styles.empty}>
-              {state.employees.length === 0 ? 'No people loaded for this org yet.' : `Nobody matches “${query.trim()}”.`}
+              {loading ? 'Loading people…' : people.length === 0 && !query.trim() ? 'No people in this org yet.' : `Nobody matches “${query.trim()}”.`}
             </div>
           )}
         </div>

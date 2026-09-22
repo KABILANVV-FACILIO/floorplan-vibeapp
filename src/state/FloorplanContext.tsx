@@ -496,7 +496,20 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       dispatch({ type: 'SET_REFRESHING', value: true });
       try {
         invalidateOrgCaches();
-        await loadFloor(state.floorId);
+        // The floor AND the org-level lists behind it. Employees, departments and the colour
+        // scheme are read once at boot and never again, so without this a refresh re-read the
+        // desks but still resolved their holders against a roster from whenever the tab opened —
+        // and a department added since would have no colour and no name anywhere.
+        const [, employees, departments, scheme] = await Promise.all([
+          loadFloor(state.floorId),
+          dataSource.getEmployees().catch(() => null),
+          fetchDepartments().catch(() => []),
+          loadDepartmentColors().catch(() => ({})),
+        ]);
+        if (employees?.length) dispatch({ type: 'EMPLOYEES_LOADED', employees });
+        if (departments.length) dispatch({ type: 'DEPARTMENTS_LOADED', departments });
+        const colors = Object.fromEntries(Object.entries(scheme).map(([id, v]) => [id, v.color]));
+        if (Object.keys(colors).length) dispatch({ type: 'DEPARTMENT_COLORS_LOADED', colors });
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn('[refresh] could not re-read the floor', err);
