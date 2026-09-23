@@ -582,10 +582,25 @@ function containsFilter(fields: string[], query: string): string {
 }
 
 /**
- * Employees matching a query on any of the identifiers a person is actually looked up by: staff
- * number, name, email. V3 ANDs the fields in one `filters` object, so each is asked separately
- * and the results are merged — a person found by email must not have to match the name too.
+ * One `filters` payload that matches the query on ANY of the fields.
+ *
+ * V3 ANDs the top-level keys of `filters`, so `{name:…, email:…}` would demand a match on both.
+ * The OR goes inside the first field instead, as `orFilters`: the backend adds each entry's
+ * condition to the same group as the field it hangs off (FilterUtil.setConditions, "To have or
+ * condition for different fields"), giving `name ∋ q OR email ∋ q OR hrmsEmployeeId ∋ q` in one
+ * request. Facilio's own mobile client searches line items this way.
+ *
+ * Each entry carries its own operator and value rather than inheriting them: the backend reads
+ * `operatorId` first when it is present, so nothing depends on how it fills the gaps.
  */
+function containsAnyFilter(fields: string[], query: string): string {
+  const [first, ...rest] = fields;
+  const clause = { operatorId: CONTAINS, value: [query] };
+  return JSON.stringify({
+    [first]: rest.length ? { ...clause, orFilters: rest.map((field) => ({ field, ...clause })) } : clause,
+  });
+}
+
 /**
  * The roster, read now rather than remembered from boot.
  *
@@ -601,25 +616,24 @@ export async function fetchEmployees(limit = 200): Promise<Employee[] | null> {
   return sortByName(res.list).map(mapEmployee);
 }
 
+/**
+ * Employees matching a query on any of the identifiers a person is actually looked up by: name,
+ * email, HRMS Employee ID — in ONE request (see containsAnyFilter).
+ */
 export async function searchEmployees(query: string, limit = 50): Promise<Employee[] | null> {
   if (!isFacilioApiConfigured) return null;
   const q = query.trim();
   if (!q) return [];
-  const fields = ['name', 'email', ...HRMS_ID_KEYS.slice(0, 3)];
-  const results = await Promise.all(
-    fields.map((f) =>
-      facilioApi
-        .fetchAll('employee', { filters: containsFilter([f], q), perPage: limit })
-        .then((r) => (r.error ? [] : (r.list ?? [])))
-        .catch(() => []),
-    ),
-  );
-  const merged = new Map<string, any>();
-  for (const rows of results) for (const r of rows) merged.set(String(r.id), r);
-  // Every field failed — the operator or the field names are wrong for this org, so the caller
-  // falls back rather than showing an empty list that looks like "nobody matches".
-  if (merged.size === 0 && results.every((r) => r.length === 0)) return null;
-  return sortByName([...merged.values()]).map(mapEmployee).slice(0, limit);
+  // `hrmsEmployeeId` is the org's confirmed field name, so it is the only id field sent. The
+  // alternates in HRMS_ID_KEYS stay for READING a record (a missing property costs nothing), but
+  // one unknown field in the payload fails the whole request.
+  const res = await facilioApi
+    .fetchAll('employee', { filters: containsAnyFilter(['name', 'email', 'hrmsEmployeeId'], q), perPage: limit })
+    .catch(() => null);
+  // A failed request, not an empty answer: the caller falls back to matching what is loaded
+  // rather than showing a list that looks like "nobody matches".
+  if (!res || res.error || !res.list) return null;
+  return sortByName(res.list).map(mapEmployee);
 }
 
 /**

@@ -9,6 +9,7 @@ import { Button } from '../primitives/Button';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
 import { SkeletonBlock, SkeletonRows } from '../primitives/Skeleton';
 import { useDelayedFlag } from '../../hooks/useDelayedFlag';
+import { useLivePeople } from '../../hooks/useLivePeople';
 import { LocalAssign } from './LocalAssign';
 import { StateflowActions } from './StateflowActions';
 import card from './Card.module.css';
@@ -20,8 +21,11 @@ export function AssignPanel() {
   const [dragId, setDragId] = useState<string | null>(null);
   const dragGhostRef = useRef<HTMLDivElement | null>(null);
 
-  const q = state.contactSearch.trim().toLowerCase();
-  const contacts = state.employees.filter((c) => !q || c.name.toLowerCase().includes(q));
+  // The org's own list, filtered AT THE ORG as you type — the same read the People page and the
+  // assign picker make. This panel used to match `state.employees` in the browser, so typing here
+  // sent nothing to the API: a person outside the roster loaded at boot was unfindable from the
+  // one list that sits beside the plan.
+  const { people: contacts } = useLivePeople(state.contactSearch, state.employees);
 
   // A disabled module leaves no trace anywhere, so a holding of one is not listed against the
   // person either — it would name a unit the rest of the app has stopped showing.
@@ -112,7 +116,7 @@ export function AssignPanel() {
           <h3 className={card.cardTitle}>People</h3>
         </div>
         <div className={styles.peopleSearchWrap}>
-          <input className={card.input} placeholder="Search people" value={state.contactSearch} onChange={(e) => actions.setContactSearch(e.target.value)} />
+          <input className={card.input} placeholder="Search by name, HRMS ID or email" value={state.contactSearch} onChange={(e) => actions.setContactSearch(e.target.value)} />
           <p className={styles.dragHint}>Drag a person onto a desk, locker, or parking stall to assign it.</p>
         </div>
         <div className={styles.peopleList}>
