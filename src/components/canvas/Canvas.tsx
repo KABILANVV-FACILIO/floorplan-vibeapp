@@ -11,7 +11,7 @@ import { Legend } from './Legend';
 import { ZoomControls } from './ZoomControls';
 import { Tooltip } from './Tooltip';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
-import { contactName, myAssignedUnit, visibleUnits } from '../../state/selectors';
+import { markerLabelInputs, myAssignedUnit, planMarkers, planRooms, visibleUnits } from '../../state/selectors';
 import { planMarkerLabels } from '../../lib/labelLayout';
 import { floorImageKey, isRoomLike, isZoneTool, unitOnPlan } from '../../lib/types';
 import type { PolyGeom, Unit, UnitGeom } from '../../lib/types';
@@ -488,18 +488,9 @@ export function Canvas() {
   // (listed in the sidebar, not drawn) — RoomPolygon would crash on them.
   // `visibleUnits` drops anything whose module is switched off, so a disabled module leaves
   // nothing on the plan — not an empty outline, not a hit target.
-  const drawable = visibleUnits(state);
-  // Zones are scoped to the plan they were traced over, exactly like markers — their polygon is in
-  // that image's coordinates, so drawing them on every plan put a room on floorplans it was never
-  // on.
-  const rooms = drawable
-    .filter((u) => isRoomLike(u.type) && u.geom.kind === 'poly' && unitOnPlan(u, state.planId))
-    .map((u) => ({ ...u, geom: previewedGeom(u) }));
-  const markers = drawable
-    // amenities show on every plan type; desks/lockers/parking only on theirs. `unplaced` units
-    // (org records with no plan position, e.g. connector spaces) are sidebar-only, never drawn.
-    .filter((u) => !isRoomLike(u.type) && !u.unplaced && (u.type === 'amenity' || unitOnPlan(u, state.planId)))
-    .map((u) => ({ ...u, geom: previewedGeom(u) }));
+  // What the plan draws — the same rule the print sheet uses (see planRooms / planMarkers).
+  const rooms = planRooms(state).map((u) => ({ ...u, geom: previewedGeom(u) }));
+  const markers = planMarkers(state).map((u) => ({ ...u, geom: previewedGeom(u) }));
 
   // Which of those markers may show a label, and which would land on a neighbour. Labels keep a
   // constant screen size while the gaps between markers shrink with the zoom, so on a dense floor
@@ -508,29 +499,7 @@ export function Canvas() {
   const mineId = myAssignedUnit(state)?.id ?? null;
   const labelsOn = state.mode === 'assign' || state.mode === 'book';
   const labelPlan = useMemo(() => {
-    const inputs = markers
-      .filter((m) => labelsOn || m.type === 'amenity')
-      .map((m) => {
-        const g = m.geom as PolyGeom | { kind: 'point'; x: number; y: number };
-        const mine = m.id === mineId;
-        const holderId = state.mode === 'assign' ? state.assignments[m.id] : undefined;
-        const holderName = holderId ? contactName(state, holderId) : null;
-        // The label below now carries "Holder · Department", so the layout has to measure THAT —
-        // measuring the bare name would reserve a box the real label overflows.
-        const holder = holderName ? (m.department ? `${holderName} · ${m.department}` : holderName) : null;
-        return {
-          id: m.id,
-          x: 'x' in g ? g.x : 0,
-          y: 'y' in g ? g.y : 0,
-          size: 24,
-          // "Your desk" replaces the name label rather than stacking above it.
-          name: mine ? 'Your desk' : m.label,
-          pill: mine,
-          must: mine,
-          sub: holder,
-          rank: m.id === state.selected ? 0 : mine ? 1 : 2,
-        };
-      });
+    const inputs = markerLabelInputs(state, markers);
     return planMarkerLabels(inputs, { planW: IMG_W, planH: IMG_H, zoom: state.view.z });
     // Deliberately NOT `markers`: that array is rebuilt on every render, so depending on it would
     // re-run the whole layout on every pan frame. These are what `markers` is actually built from,
@@ -699,7 +668,7 @@ export function Canvas() {
   );
 }
 
-function RoomLabel({ unit }: { unit: Unit }) {
+export function RoomLabel({ unit }: { unit: Unit }) {
   const { state } = useFloorplan();
   if (unit.geom.kind !== 'poly') return null;
   const geom = unit.geom as PolyGeom;

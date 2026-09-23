@@ -1,4 +1,5 @@
-import { isModuleEnabled, isRoomLike } from '../lib/types';
+import { isModuleEnabled, isRoomLike, unitOnPlan } from '../lib/types';
+import type { MarkerLabelInput } from '../lib/labelLayout';
 import type { Booking, Employee, Unit, UnitType } from '../lib/types';
 import type { AppState } from './types';
 
@@ -97,4 +98,54 @@ export function floorMeta(state: AppState, floorId: string) {
 export function nextLabel(state: AppState, type: Unit['type'], prefix: string): string {
   const count = state.units.filter((u) => u.type === type).length;
   return `${prefix}-${String(count + 1).padStart(2, '0')}`;
+}
+
+/**
+ * What the plan draws — shared by the canvas and the print sheet so paper and screen cannot
+ * disagree about what is on the floor.
+ *
+ * Rooms: traced polygons, on the plan type they were traced over (their outline is in that
+ * image's coordinates). Markers: everything else that has a position — amenities on every plan
+ * type, desks/lockers/parking only on theirs, and never an `unplaced` record, whose geometry is a
+ * 0,0 placeholder.
+ */
+export function planRooms(state: AppState): Unit[] {
+  return visibleUnits(state).filter((u) => isRoomLike(u.type) && u.geom.kind === 'poly' && unitOnPlan(u, state.planId));
+}
+
+export function planMarkers(state: AppState): Unit[] {
+  return visibleUnits(state).filter((u) => !isRoomLike(u.type) && !u.unplaced && (u.type === 'amenity' || unitOnPlan(u, state.planId)));
+}
+
+/**
+ * The label each marker WANTS, before `planMarkerLabels` decides which ones fit: its name above
+ * (or the "Your desk" pill in its place), and "Holder · Department" below. Shared with the print
+ * sheet so a label reads the same on paper as on screen.
+ */
+export function markerLabelInputs(state: AppState, markers: Unit[]): MarkerLabelInput[] {
+  const mineId = myAssignedUnit(state)?.id ?? null;
+  const labelsOn = state.mode === 'assign' || state.mode === 'book';
+  return markers
+    .filter((m) => labelsOn || m.type === 'amenity')
+    .map((m) => {
+      const g = m.geom as { x?: number; y?: number };
+      const mine = m.id === mineId;
+      const holderId = state.mode === 'assign' ? state.assignments[m.id] : undefined;
+      const holderName = holderId ? contactName(state, holderId) : null;
+      // The label below carries "Holder · Department", so the layout measures THAT — measuring
+      // the bare name would reserve a box the real label overflows.
+      const holder = holderName ? (m.department ? `${holderName} · ${m.department}` : holderName) : null;
+      return {
+        id: m.id,
+        x: g.x ?? 0,
+        y: g.y ?? 0,
+        size: 24,
+        // "Your desk" replaces the name label rather than stacking above it.
+        name: mine ? 'Your desk' : m.label,
+        pill: mine,
+        must: mine,
+        sub: holder,
+        rank: m.id === state.selected ? 0 : mine ? 1 : 2,
+      };
+    });
 }

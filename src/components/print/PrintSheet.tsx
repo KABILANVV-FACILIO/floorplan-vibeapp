@@ -1,10 +1,27 @@
+import { useEffect, useMemo, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { useFloorplan } from '../../state/FloorplanContext';
-import { bookedUnitIds, floorMeta, visibleUnits } from '../../state/selectors';
-import { unitCenter } from '../../lib/geometry';
+import { bookedUnitIds, floorMeta, markerLabelInputs, planMarkers, planRooms, visibleUnits } from '../../state/selectors';
 import { floorImageKey, unitOnPlan } from '../../lib/types';
 import type { Unit, UnitType } from '../../lib/types';
 import { orgNow } from '../../lib/orgTime';
+import { IMG_H, IMG_W } from '../../lib/mockData';
+import { planMarkerLabels } from '../../lib/labelLayout';
+import { FloorplanBackground } from '../canvas/FloorplanBackground';
+import { RoomPolygon } from '../canvas/RoomPolygon';
+import { RoomLabel } from '../canvas/Canvas';
+import { Marker } from '../canvas/Marker';
+import { legendItems } from '../canvas/Legend';
 import styles from './PrintSheet.module.css';
+
+/**
+ * The plan frame's printed height, and the zoom it implies. Fixed in physical units because the
+ * sheet is `display: none` on screen and cannot be measured before it prints — and the zoom has
+ * to be known exactly, since it decides which labels fit (see planMarkerLabels). 5.4in is what
+ * letter landscape leaves once the title block, legend and footer are counted.
+ */
+const PRINT_PLAN_HEIGHT_IN = 5.4;
+const PRINT_ZOOM = (PRINT_PLAN_HEIGHT_IN * 96) / IMG_H;
 
 /**
  * The floor plan print sheet — a port of `Floorplan Print.dc.html` from the Claude Design project
@@ -25,6 +42,13 @@ import styles from './PrintSheet.module.css';
  *
  * Rendered always, shown only on paper (see the module CSS), so the browser's print preview is
  * the preview and Cmd+P produces the sheet without going near the toolbar button.
+ *
+ * THE PLAN is drawn the way the viewer draws it, by the viewer's own components — the real image,
+ * room outlines, the same marker chips and the same labels — rather than a washed-out picture with
+ * a dot per unit. The design this was ported from drew it as a separate, simpler picture, and the
+ * result was a sheet that did not look like the floor anyone had just been looking at. It is the
+ * whole floor fitted to the page: the plane at its native 1492×1054, scaled down exactly the way
+ * the viewer scales it, so every chip and label lands where it does on screen.
  */
 
 /** The modules the sheet reports, in the design's order. Amenities carry no occupancy. */
@@ -40,10 +64,26 @@ export function PrintSheet() {
   const meta = floorMeta(state, state.floorId);
   const booked = bookedUnitIds(state);
 
-  // The same set the canvas draws: module switched on, on this plan type, actually placed.
+  // What the occupancy figures count: the plan's own units, less amenities, which hold no one.
   const units = visibleUnits(state).filter(
     (u) => u.type !== 'amenity' && !u.unplaced && unitOnPlan(u, state.planId) && (u.geom.kind === 'point' || u.geom.pts.length > 0),
   );
+
+  // The plan is built only while printing. Every Marker reads the whole shared app state, so a
+  // permanently mounted second copy would re-render on every pan and zoom frame of the viewer for
+  // a page nobody is printing. `beforeprint` fires for Cmd+P as well as the toolbar button, and
+  // flushSync makes the plan exist before the browser lays the page out.
+  const [printing, setPrinting] = useState(false);
+  useEffect(() => {
+    const before = () => flushSync(() => setPrinting(true));
+    const after = () => setPrinting(false);
+    window.addEventListener('beforeprint', before);
+    window.addEventListener('afterprint', after);
+    return () => {
+      window.removeEventListener('beforeprint', before);
+      window.removeEventListener('afterprint', after);
+    };
+  }, []);
   const isOccupied = (u: Unit) => !!state.assignments[u.id] || booked.has(u.id);
 
   const total = units.length;
@@ -94,14 +134,13 @@ export function PrintSheet() {
       </div>
 
       <div className={styles.legend}>
-        <span className={styles.legendItem}>
-          <span className={styles.legendDot} style={{ background: 'var(--blue-500)' }} />
-          Occupied
-        </span>
-        <span className={styles.legendItem}>
-          <span className={styles.legendDot} style={{ background: 'var(--success-500)' }} />
-          Available
-        </span>
+        {/* The viewer's own key — the colours on this plan mean what they meant on screen. */}
+        {legendItems(state).map((it) => (
+          <span key={it.label} className={styles.legendItem}>
+            <span className={styles.legendDot} style={{ background: it.color }} />
+            {it.label}
+          </span>
+        ))}
         <span className={styles.spacer} />
         <span className={styles.totalLine}>
           {occupied} of {total} units occupied
@@ -109,26 +148,7 @@ export function PrintSheet() {
       </div>
 
       <div className={styles.planWrap}>
-        <div className={styles.plan}>
-          {planImage && <img className={styles.planImg} src={planImage} alt="" />}
-          {units.map((u) => {
-            // A room is a polygon on screen; on the sheet it is a dot at its centre, like the
-            // design drew it — a traced outline at this scale reads as noise.
-            const { cx, cy } = unitCenter(u);
-            return (
-              <div
-                key={u.id}
-                className={styles.seat}
-                style={{
-                  left: `${cx * 100}%`,
-                  top: `${cy * 100}%`,
-                  borderRadius: u.type === 'parking' ? '3px' : '999px',
-                  background: isOccupied(u) ? 'var(--blue-500)' : 'var(--success-500)',
-                }}
-              />
-            );
-          })}
-        </div>
+        <div className={styles.plan}>{printing && <PrintPlan />}</div>
       </div>
 
       <div className={styles.foot}>
@@ -137,3 +157,39 @@ export function PrintSheet() {
     </div>
   );
 }
+
+/**
+ * The floor as the viewer draws it, at the print zoom. Same components, same rules, same label
+ * layout — only the zoom is fixed (PRINT_ZOOM) instead of wherever the user left it.
+ */
+function PrintPlan() {
+  const { state } = useFloorplan();
+  const rooms = planRooms(state);
+  const markers = planMarkers(state);
+  const labelPlan = useMemo(
+    () => planMarkerLabels(markerLabelInputs(state, markers), { planW: IMG_W, planH: IMG_H, zoom: PRINT_ZOOM }),
+    // Built once per print, from the state at that moment.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+  const invZ = 1 / PRINT_ZOOM;
+
+  return (
+    <div
+      className={styles.plane}
+      style={{ width: IMG_W, height: IMG_H, transform: `scale(${PRINT_ZOOM})`, ['--inv' as string]: invZ }}
+    >
+      <FloorplanBackground imageUrl={state.floorImages[floorImageKey(state.floorId, state.planId)]} />
+      {rooms.map((r) => (
+        <RoomPolygon key={r.id} unit={r} />
+      ))}
+      {rooms.map((r) => (
+        <RoomLabel key={`l-${r.id}`} unit={r} />
+      ))}
+      {markers.map((m) => (
+        <Marker key={m.id} unit={m} invZ={invZ} labels={labelPlan.get(m.id)} />
+      ))}
+    </div>
+  );
+}
+

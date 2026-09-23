@@ -148,37 +148,31 @@
   color: var(--ink-600);
 }
 
-/* ---- the plan ----------------------------------------------------------- */
+/* ---- the plan -----------------------------------------------------------
+ * The viewer's own plane, at its native 1492×1054, scaled into a frame of fixed physical height
+ * (PRINT_PLAN_HEIGHT_IN in PrintSheet.tsx — the two must agree, since the zoom the labels were
+ * laid out for is derived from it). The frame clips whatever the scaled plane's layout box still
+ * occupies at full size.
+ */
 .planWrap {
-  flex: 1;
-  min-height: 0;
+  flex: none;
   display: flex;
   justify-content: center;
 }
 .plan {
   position: relative;
-  height: 100%;
-  max-width: 100%;
+  height: 5.4in;
   aspect-ratio: 1492 / 1054;
   border: 1px solid var(--ink-200);
   border-radius: 8px;
   overflow: hidden;
   background: #fff;
 }
-/* Washed out so the occupancy dots are the only saturated thing on the page. */
-.planImg {
+.plane {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  filter: grayscale(1) contrast(0.55) brightness(1.16);
-}
-.seat {
-  position: absolute;
-  width: 11px;
-  height: 11px;
-  transform: translate(-50%, -50%);
-  box-shadow: 0 0 0 2px #fff;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
 }
 
 /* ---- footer ------------------------------------------------------------- */

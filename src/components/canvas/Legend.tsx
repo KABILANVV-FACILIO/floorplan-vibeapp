@@ -4,10 +4,14 @@ import { AMENITY_META, isRoomLike, TYPE_META } from '../../lib/types';
 import { enabledTypes } from '../../state/selectors';
 import { departmentColor, departmentsIn } from '../../lib/departmentColors';
 import type { AmenityIcon } from '../../lib/types';
+import type { AppState } from '../../state/types';
 
-export function Legend() {
-  const { state } = useFloorplan();
-
+/**
+ * What the marker colours on the plan MEAN right now — shared with the print sheet, so the key on
+ * paper describes the markers on paper. A printed "Occupied / Available" beside markers drawn in
+ * Free/Assigned, department or booking colours would be a key to a different drawing.
+ */
+export function legendItems(state: AppState): { label: string; color: string }[] {
   let items: { label: string; color: string }[];
   if (state.mode === 'edit') {
     // Derived from the enabled modules rather than a fixed list, so the legend never advertises
@@ -47,6 +51,13 @@ export function Legend() {
   for (const icon of presentAmenities) {
     items.push({ label: AMENITY_META[icon].name, color: AMENITY_META[icon].color });
   }
+
+  return items;
+}
+
+export function Legend() {
+  const { state } = useFloorplan();
+  const items = legendItems(state);
 
   return (
     <div style={{ position: 'absolute', left: 12, bottom: 12, display: 'flex', gap: 6, flexWrap: 'wrap', maxWidth: '70%' }}>
