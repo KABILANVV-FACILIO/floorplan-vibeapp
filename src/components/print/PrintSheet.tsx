@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import type { Ref } from 'react';
 import { flushSync } from 'react-dom';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { bookedUnitIds, floorMeta, markerLabelInputs, planMarkers, planRooms, visibleUnits } from '../../state/selectors';
@@ -40,8 +41,9 @@ const PRINT_ZOOM = (PRINT_PLAN_HEIGHT_IN * 96) / IMG_H;
  *     the enabled modules, on this plan, with a position — so the paper and the screen cannot
  *     disagree about what is on the floor.
  *
- * Rendered always, shown only on paper (see the module CSS), so the browser's print preview is
- * the preview and Cmd+P produces the sheet without going near the toolbar button.
+ * Rendered always, shown only on paper (see the module CSS), so Cmd+P produces the sheet without
+ * going near the toolbar button. The toolbar button opens the print viewer instead, which draws
+ * the same page on screen (`preview`) with Print and Download PDF beside it.
  *
  * THE PLAN is drawn the way the viewer draws it, by the viewer's own components — the real image,
  * room outlines, the same marker chips and the same labels — rather than a washed-out picture with
@@ -59,7 +61,7 @@ const CARD_TYPES: { type: UnitType; name: string }[] = [
   { type: 'parking', name: 'Parking' },
 ];
 
-export function PrintSheet() {
+export function PrintSheet({ preview = false, pageRef }: { preview?: boolean; pageRef?: Ref<HTMLDivElement> } = {}) {
   const { state } = useFloorplan();
   const meta = floorMeta(state, state.floorId);
   const booked = bookedUnitIds(state);
@@ -102,10 +104,12 @@ export function PrintSheet() {
     undefined,
     { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' },
   );
-  const planImage = state.floorImages[floorImageKey(state.floorId, state.planId)];
+  // The viewer draws the page on screen and needs the plan in it from the start; the paper copy
+  // waits for `beforeprint` (above).
+  const showPlan = preview || printing;
 
-  return (
-    <div className={styles.sheet}>
+  const page = (
+    <div ref={pageRef} className={styles.page}>
       <div className={styles.head}>
         <div className={styles.headLeft}>
           {/* No wordmark and no "Seat occupancy" eyebrow: this sheet is printed inside the
@@ -148,7 +152,7 @@ export function PrintSheet() {
       </div>
 
       <div className={styles.planWrap}>
-        <div className={styles.plan}>{printing && <PrintPlan />}</div>
+        <div className={styles.plan}>{showPlan && <PrintPlan />}</div>
       </div>
 
       <div className={styles.foot}>
@@ -156,6 +160,14 @@ export function PrintSheet() {
       </div>
     </div>
   );
+
+  return preview ? page : <div className={styles.sheet}>{page}</div>;
+}
+
+/** What a downloaded sheet is called: the floor and the day it was drawn, safe as a file name. */
+export function printFileName(floorTitle: string, dateISO: string): string {
+  const safe = floorTitle.replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim() || 'Floor plan';
+  return `${safe} ${dateISO}.pdf`;
 }
 
 /**

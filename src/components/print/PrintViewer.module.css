@@ -1,0 +1,30 @@
+/* The grey desk the page sits on, sized so header + page + footer fit the dialog's 88vh. */
+.area {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: min(calc(8.5in + 48px), calc(88vh - 140px));
+  min-height: 240px;
+  background: var(--ink-050);
+  overflow: hidden;
+}
+
+.frame {
+  position: relative;
+  flex: none;
+}
+
+.paper {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  box-shadow: var(--shadow-md);
+}
+
+.error {
+  flex: 1;
+  min-width: 0;
+  font: 400 12px/1.4 var(--font-sans);
+  color: var(--danger-600);
+}

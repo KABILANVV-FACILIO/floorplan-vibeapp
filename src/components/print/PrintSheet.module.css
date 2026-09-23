@@ -7,10 +7,27 @@
  * app's own variable rather than the literal hex the design file wrote. The two exceptions are
  * noted where they appear.
  *
- * Screen: nothing. This exists for paper, so the browser's own print preview is the preview.
+ * `.page` is the page itself, and it is styled ONCE for both places it appears: on paper (inside
+ * the print-only `.sheet`), and on screen in the print viewer, where it is drawn at its physical
+ * size. One set of rules is what keeps the preview honest — it cannot drift from what prints.
  */
 .sheet {
   display: none;
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-sizing: border-box;
+  /* Letter landscape. On paper the page fills the sheet instead (below), which is the same size. */
+  width: 11in;
+  height: 8.5in;
+  padding: 30px 34px 20px;
+  font-family: var(--font-sans);
+  color: var(--ink-900);
+  background: #fff;
+  overflow: hidden;
 }
 
 @media print {
@@ -20,17 +37,11 @@
   }
 
   .sheet {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    box-sizing: border-box;
+    display: block;
+  }
+  .page {
     width: 100%;
     height: 100vh;
-    padding: 30px 34px 20px;
-    font-family: var(--font-sans);
-    color: var(--ink-900);
-    background: #fff;
-    overflow: hidden;
   }
 }
 
@@ -161,6 +172,9 @@
 }
 .plan {
   position: relative;
+  /* The markers in here are the viewer's own buttons. On a page they are a picture: a click in
+     the preview must not select a desk on the plan behind it. */
+  pointer-events: none;
   height: 5.4in;
   aspect-ratio: 1492 / 1054;
   border: 1px solid var(--ink-200);
