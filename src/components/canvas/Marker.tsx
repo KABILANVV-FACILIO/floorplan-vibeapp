@@ -5,6 +5,7 @@ import { markerStyle, unitStatus } from '../../lib/unitStatus';
 import { isRoomLike } from '../../lib/types';
 import type { PointGeom, Unit } from '../../lib/types';
 import type { LabelPlacement } from '../../lib/labelLayout';
+import { NAME_MAX_PX, SUB_MAX_PX } from '../../lib/labelLayout';
 import { MARKER_ICONS as ICONS } from './markerIcons';
 import styles from './Marker.module.css';
 
@@ -85,7 +86,6 @@ export function Marker({
     if (contactId) actions.assign(contactId, unit.id);
   }
 
-  const title = `${unit.label}${unit.room ? ' · ' + unit.room : ''} — ${status.text}`;
 
   // Under-marker label. Assign view: desk name on top, assignee (if any)
   // underneath. Book view: the space name. Amenities: their name, always.
@@ -95,9 +95,33 @@ export function Marker({
   // it off a colour alone means holding a legend in your head.
   const holder = state.mode === 'assign' && contactId ? contactName(state, contactId) : null;
   const assignedName = holder ? (unit.department ? `${holder} · ${unit.department}` : holder) : null;
+  // The chip's tooltip carries everything in FULL — the labels beside it are capped and may end
+  // in "…", and they take no pointer events, so this is where a truncated name is readable.
+  // The status already names the holder in Assign view ("Assigned · Amrithya"), so only the
+  // department is added — appending the whole holder line repeated the name.
+  const title = `${unit.label}${unit.room ? ' · ' + unit.room : ''} — ${status.text}${holder && unit.department ? ` · ${unit.department}` : ''}`;
   // The zoom threshold this used to carry (`invZ <= 1.9`) dropped every label past one zoom level
   // whether or not there was room for it, and kept every label before it whether or not there was.
   // Room is what actually matters, and only the canvas can judge it.
+  // Common to both label boxes. `display: block` is what lets `max-width` + `text-overflow`
+  // actually clip; an inline box ignores both.
+  const labelBase = {
+    position: 'absolute',
+    left: `${geom.x * 100}%`,
+    top: `${geom.y * 100}%`,
+    transformOrigin: '0 0',
+    pointerEvents: 'none',
+    zIndex: 1,
+    display: 'block',
+    boxSizing: 'border-box',
+    background: 'rgba(255,255,255,0.92)',
+    border: '1px solid var(--ink-100)',
+    padding: '2px 5px',
+    borderRadius: 3,
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  } as const;
   const showName = !!labels?.name;
   const showSub = !!labels?.sub;
 
@@ -162,37 +186,40 @@ export function Marker({
         ))}
       </div>
       {/*
-        ONE card under the chip: the desk number, and under it who holds it and their department.
-        These used to be two labels — number above, holder below — which the declutter could split
-        apart: in a block of six desks you got one number floating over the group and one holder
-        line under it, belonging to two DIFFERENT desks and reading as a caption for the block.
-        Kept together and kept adjacent, a label can only be read as belonging to its own marker.
+        The desk's name ABOVE its chip, and who holds it with their department BELOW.
 
-        Hidden entirely when the "Your desk" pill already marks this chip: that pill names the one
-        desk the reader was looking for, and stacking a second label under it is noise.
+        The two are separate boxes but never separate decisions: `planMarkerLabels` places them as
+        a pair, so a desk shows both or neither. That is what stops the old failure where a block of
+        desks kept one desk's name on top and a different desk's holder underneath, reading as a
+        caption for the whole group.
+
+        Each box is capped (NAME_MAX_PX / SUB_MAX_PX, the same numbers the layout measured) and ends
+        in "…" when the text runs longer; the chip's tooltip has the full text.
       */}
       {showName && !isMine && (
         <div
           style={{
-            position: 'absolute',
-            left: `${geom.x * 100}%`,
-            top: `${geom.y * 100}%`,
-            transform: `scale(${invZ}) translate(-50%, ${Math.round(style.size / 2 + 4)}px)`,
-            transformOrigin: '0 0',
-            pointerEvents: 'none',
-            zIndex: 1,
-            background: 'rgba(255,255,255,0.92)',
-            border: '1px solid var(--ink-100)',
-            padding: '2px 5px',
-            borderRadius: 3,
-            whiteSpace: 'nowrap',
-            textAlign: 'center',
+            ...labelBase,
+            transform: `scale(${invZ}) translate(-50%, calc(-100% - ${Math.round(style.size / 2 + 4)}px))`,
+            maxWidth: NAME_MAX_PX,
+            font: '600 8.5px/1.15 var(--font-sans)',
+            color: 'var(--ink-800)',
           }}
         >
-          <div style={{ font: '600 8.5px/1.15 var(--font-sans)', color: 'var(--ink-800)' }}>{unit.label}</div>
-          {showSub && assignedName && (
-            <div style={{ font: '500 8px/1.2 var(--font-sans)', color: 'var(--ink-500)' }}>{assignedName}</div>
-          )}
+          {unit.label}
+        </div>
+      )}
+      {showSub && assignedName && (
+        <div
+          style={{
+            ...labelBase,
+            transform: `scale(${invZ}) translate(-50%, ${Math.round(style.size / 2 + 4)}px)`,
+            maxWidth: SUB_MAX_PX,
+            font: '500 8px/1.2 var(--font-sans)',
+            color: 'var(--ink-500)',
+          }}
+        >
+          {assignedName}
         </div>
       )}
     </>

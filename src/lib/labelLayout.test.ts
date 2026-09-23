@@ -23,11 +23,35 @@ describe('a label is drawn only where it fits', () => {
   });
 
   it('drops the label that would land on a neighbouring chip', () => {
-    // 30 plan px apart vertically. The card sits BELOW its chip, so the upper desk's card wants
-    // the space the lower desk's chip occupies — the upper one yields, the lower one keeps its.
+    // 30 plan px apart vertically. The name sits ABOVE its chip, so the lower desk's name wants the
+    // space the upper desk's chip occupies — the lower one yields, the upper one keeps its.
     const plan = planMarkerLabels([desk('WS-01', 0.5, 0.5), desk('WS-02', 0.5, 0.53)], opts);
-    expect(plan.get('WS-01')?.name).toBe(false);
-    expect(plan.get('WS-02')?.name).toBe(true);
+    expect(plan.get('WS-01')?.name).toBe(true);
+    expect(plan.get('WS-02')?.name).toBe(false);
+  });
+
+  it('gives a free desk its name alone, with nothing to pair it with', () => {
+    const plan = planMarkerLabels([desk('WS-01', 0.5, 0.5)], opts);
+    expect(plan.get('WS-01')).toEqual({ name: true, sub: false });
+  });
+
+  it('drops the name too when only the holder line would collide', () => {
+    // The two boxes are one decision: a desk whose holder line lands on the chip below must not
+    // keep its name alone above, where it would read as belonging to whatever is nearby.
+    const plan = planMarkerLabels([desk('WS-01', 0.5, 0.5, { sub: 'Amrithya · Project Implementation' }), desk('WS-02', 0.5, 0.53)], opts);
+    expect(plan.get('WS-01')).toEqual({ name: false, sub: false });
+  });
+
+  it('measures a long label at its capped width, so a dense row keeps more of them', () => {
+    // Same two desks side by side, 130 screen px apart. At full width these holder lines would
+    // overlap; capped (with an ellipsis in the markup) they fit.
+    const long = 'Amrithya Ramaswamy Venkataraman · Project Implementation';
+    const plan = planMarkerLabels(
+      [desk('WS-01', 0.5, 0.5, { sub: long }), desk('WS-02', 0.63, 0.5, { sub: long })],
+      opts,
+    );
+    expect(plan.get('WS-01')?.sub).toBe(true);
+    expect(plan.get('WS-02')?.sub).toBe(true);
   });
 
   it('keeps the desk number and the holder together, or drops both', () => {
@@ -44,7 +68,7 @@ describe('a label is drawn only where it fits', () => {
     }
   });
 
-  it('drops the whole card when it would land on the chip below it', () => {
+  it('drops both lines when the holder would land on the chip below it', () => {
     const plan = planMarkerLabels([desk('WS-01', 0.5, 0.5, { sub: 'Sofia Rossi' }), desk('WS-02', 0.5, 0.53)], opts);
     expect(plan.get('WS-01')).toEqual({ name: false, sub: false });
   });
@@ -74,10 +98,19 @@ describe('when something has to go, the important label stays', () => {
   });
 
   it('still refuses to cover a CHIP for it — a hidden marker is worse than a hidden name', () => {
-    // The selected desk's card would sit right on the chip below it. Rank buys priority over other
+    // The selected desk's name would sit right on the chip above it. Rank buys priority over other
     // labels, never over a marker.
-    const plan = planMarkerLabels([desk('WS-01', 0.5, 0.5, { rank: 0 }), desk('WS-02', 0.5, 0.53)], opts);
-    expect(plan.get('WS-01')?.name).toBe(false);
+    const plan = planMarkerLabels([desk('WS-01', 0.5, 0.5), desk('WS-02', 0.5, 0.53, { rank: 0 })], opts);
+    expect(plan.get('WS-02')?.name).toBe(false);
+  });
+
+  it('keeps the "Your desk" holder line optional — the pill is forced, its caption is not', () => {
+    const crowd = [desk('WS-02', 0.5, 0.53)];
+    const mine = desk('WS-01', 0.5, 0.5, { name: 'Your desk', pill: true, must: true, rank: 1, sub: 'Amrithya · Finance' });
+    const plan = planMarkerLabels([...crowd, mine], opts);
+    expect(plan.get('WS-01')?.name).toBe(true);
+    // Its holder line would land on WS-02's chip, so it yields like any other label.
+    expect(plan.get('WS-01')?.sub).toBe(false);
   });
 
   it('never drops the "Your desk" pill, even in a pile', () => {
