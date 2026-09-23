@@ -188,13 +188,14 @@ export function Marker({
       {/*
         The desk's name ABOVE its chip, and who holds it with their department BELOW.
 
-        The two are separate boxes but never separate decisions: `planMarkerLabels` places them as
-        a pair, so a desk shows both or neither. That is what stops the old failure where a block of
-        desks kept one desk's name on top and a different desk's holder underneath, reading as a
-        caption for the whole group.
+        The two are separate boxes but never separate decisions: `planMarkerLabels` never draws a
+        holder line without its own desk's name above it. That is what stops the old failure where
+        a block of desks kept one desk's name on top and a different desk's holder underneath,
+        reading as a caption for the whole group.
 
-        Each box is capped (NAME_MAX_PX / SUB_MAX_PX, the same numbers the layout measured) and ends
-        in "…" when the text runs longer; the chip's tooltip has the full text.
+        Each box is capped — the name at NAME_MAX_PX, the holder at the width the layout reserved
+        for it (`subWidth`, narrower than SUB_MAX_PX where that is what fitted beside a neighbour) —
+        and ends in "…" when the text runs longer; the chip's tooltip has the full text.
       */}
       {showName && !isMine && (
         <div
@@ -214,7 +215,7 @@ export function Marker({
           style={{
             ...labelBase,
             transform: `scale(${invZ}) translate(-50%, ${Math.round(style.size / 2 + 4)}px)`,
-            maxWidth: SUB_MAX_PX,
+            maxWidth: labels?.subWidth ?? SUB_MAX_PX,
             font: '500 8px/1.2 var(--font-sans)',
             color: 'var(--ink-500)',
           }}

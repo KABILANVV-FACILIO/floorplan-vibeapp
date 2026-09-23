@@ -50,8 +50,14 @@ export interface MarkerLabelInput {
 export interface LabelPlacement {
   /** The desk's name, ABOVE its chip — or the "Your desk" pill, which takes that place. */
   name: boolean;
-  /** "Holder · Department", BELOW the chip. Kept or dropped together with `name`. */
+  /** "Holder · Department", BELOW the chip. Never drawn without `name`. */
   sub: boolean;
+  /**
+   * How wide the holder line may run, in px, when it is drawn. Usually SUB_MAX_PX or the text's
+   * own width; narrower when that is what it took to fit beside a neighbour's. The markup caps
+   * the line at exactly this, so what is drawn is what was reserved.
+   */
+  subWidth?: number;
 }
 
 export interface LabelLayoutOptions {
@@ -100,6 +106,14 @@ const SUB_FONT = 8;
  */
 export const NAME_MAX_PX = 96;
 export const SUB_MAX_PX = 120;
+/**
+ * Where a holder line stops narrowing to make room. Below this the ellipsis leaves too little of
+ * the name to recognise ("Amrithya · P…" still reads; "Amr…" does not), and the desk shows its
+ * name alone instead.
+ */
+const SUB_MIN_PX = 68;
+/** The narrower widths tried, widest first, when the holder line does not fit at its own. */
+const SUB_NARROWER_PX = [100, 84, SUB_MIN_PX];
 /** The "Your desk" pill carries an icon and more generous padding than a plain name label. */
 const PILL_EXTRA = 26;
 const PILL_HEIGHT = 20;
@@ -174,19 +188,22 @@ export function planMarkerLabels(inputs: MarkerLabelInput[], opts: LabelLayoutOp
     const placement: LabelPlacement = { name: false, sub: false };
 
     /*
-     * The desk's name ABOVE its chip, and who holds it (with their department) BELOW — two boxes,
-     * placed as ONE decision.
+     * The desk's name ABOVE its chip, and who holds it (with their department) BELOW.
      *
-     * Placing them independently is what once produced a block of six desks captioned by "WS-07"
-     * over the top and "David Chen · Facilities" underneath: the declutter kept one desk's name and
-     * a different desk's holder and dropped everything between, and the two survivors read as a
-     * title and caption for the whole group. So both boxes are measured first and tested against
-     * everything already placed, and only if BOTH fit are both kept. A desk shows its name and its
-     * holder together, or neither — never half of one desk beside half of another.
+     * The name decides. If it does not fit, the desk shows neither line: a holder line on its own
+     * under a chip is what once left a block of desks captioned by one desk's number above and a
+     * different desk's holder below, the two survivors reading as a title and caption for the
+     * whole group. So a holder line is never drawn without its own desk's name above it.
      *
-     * Each box is measured at its capped width (see NAME_MAX_PX / SUB_MAX_PX), because that is the
-     * width the markup actually draws: measuring the full text would reserve room the ellipsis
-     * never uses, and drop labels in a dense block for no reason.
+     * The holder line then takes the widest width that fits — its own (capped at SUB_MAX_PX),
+     * then narrower, down to SUB_MIN_PX, ending in "…". In a row of desks a little closer than
+     * two full holder lines, the second desk used to lose BOTH lines because its holder overlapped
+     * its neighbour's by a few px; now it keeps its name and a shorter holder. Only when not even
+     * the narrowest fits does the desk show its name alone — which is how a free desk reads, and
+     * cannot be mistaken for anyone else's caption. The full text is on the chip's tooltip.
+     *
+     * Widths are the capped ones the markup actually draws: measuring the full text would reserve
+     * room the ellipsis never uses, and drop labels in a dense block for no reason.
      */
     const nameBox = i.name
       ? (() => {
@@ -197,32 +214,26 @@ export function planMarkerLabels(inputs: MarkerLabelInput[], opts: LabelLayoutOp
           return { x: cx - w / 2, y: cy - half - GAP - h, w, h };
         })()
       : null;
-    const subBox = i.sub
-      ? (() => {
-          const h = labelHeight(SUB_FONT);
-          const w = Math.min(estimateLabelWidth(i.sub, SUB_FONT), SUB_MAX_PX);
-          return { x: cx - w / 2, y: cy + half + GAP, w, h };
-        })()
-      : null;
 
-    if (i.must && nameBox) {
-      // The "Your desk" pill draws whatever it lands on — it is the answer to "where do I sit".
-      // Its holder line below is ordinary: it shows only if it fits, and must not be forced.
+    // The "Your desk" pill draws whatever it lands on — it is the answer to "where do I sit".
+    // Everything else needs its name to fit.
+    const nameFits = !!nameBox && (i.must || !grid.hits(nameBox));
+    if (nameFits && nameBox) {
       grid.add(nameBox);
       placement.name = true;
-      if (subBox && !grid.hits(subBox)) {
-        grid.add(subBox);
-        placement.sub = true;
-      }
-    } else {
-      const fits = (!nameBox || !grid.hits(nameBox)) && (!subBox || !grid.hits(subBox));
-      // Checked together BEFORE either is added, so the two boxes of one desk can never block
-      // each other — and never be kept one without the other.
-      if (fits) {
-        if (nameBox) grid.add(nameBox);
-        if (subBox) grid.add(subBox);
-        placement.name = !!nameBox;
-        placement.sub = !!subBox;
+
+      if (i.sub) {
+        const own = Math.min(estimateLabelWidth(i.sub, SUB_FONT), SUB_MAX_PX);
+        const widths = [own, ...SUB_NARROWER_PX.filter((w) => w < own)];
+        const h = labelHeight(SUB_FONT);
+        for (const w of widths) {
+          const subBox = { x: cx - w / 2, y: cy + half + GAP, w, h };
+          if (grid.hits(subBox)) continue;
+          grid.add(subBox);
+          placement.sub = true;
+          placement.subWidth = w;
+          break;
+        }
       }
     }
 

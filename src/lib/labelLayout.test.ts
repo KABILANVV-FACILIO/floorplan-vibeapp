@@ -18,8 +18,8 @@ function desk(id: string, x: number, y: number, over: Partial<MarkerLabelInput> 
 describe('a label is drawn only where it fits', () => {
   it('keeps both labels for markers that are far apart', () => {
     const plan = planMarkerLabels([desk('WS-01', 0.1, 0.1, { sub: 'Amrithya' }), desk('WS-02', 0.6, 0.6, { sub: 'Jonas Weber' })], opts);
-    expect(plan.get('WS-01')).toEqual({ name: true, sub: true });
-    expect(plan.get('WS-02')).toEqual({ name: true, sub: true });
+    expect(plan.get('WS-01')).toMatchObject({ name: true, sub: true });
+    expect(plan.get('WS-02')).toMatchObject({ name: true, sub: true });
   });
 
   it('drops the label that would land on a neighbouring chip', () => {
@@ -35,11 +35,34 @@ describe('a label is drawn only where it fits', () => {
     expect(plan.get('WS-01')).toEqual({ name: true, sub: false });
   });
 
-  it('drops the name too when only the holder line would collide', () => {
-    // The two boxes are one decision: a desk whose holder line lands on the chip below must not
-    // keep its name alone above, where it would read as belonging to whatever is nearby.
+  it('keeps the name when only the holder line would collide', () => {
+    // The holder line would land on the chip below at any width. The desk still shows its name —
+    // directly above its own chip, the way a free desk reads — rather than nothing at all.
     const plan = planMarkerLabels([desk('WS-01', 0.5, 0.5, { sub: 'Amrithya · Project Implementation' }), desk('WS-02', 0.5, 0.53)], opts);
-    expect(plan.get('WS-01')).toEqual({ name: false, sub: false });
+    expect(plan.get('WS-01')).toEqual({ name: true, sub: false });
+  });
+
+  it('narrows a holder line to fit beside its neighbour, rather than dropping the desk', () => {
+    // Two assigned desks 110 screen px apart: two full 120px holder lines overlap by 10px. The
+    // second desk used to lose its name AND its holder for it; now its holder line is shorter.
+    const long = 'Amrithya · Project Implementation';
+    const plan = planMarkerLabels([desk('WS-01', 0.5, 0.5, { sub: long }), desk('WS-02', 0.61, 0.5, { sub: long })], opts);
+    expect(plan.get('WS-01')).toEqual({ name: true, sub: true, subWidth: 120 });
+    const second = plan.get('WS-02')!;
+    expect(second).toMatchObject({ name: true, sub: true });
+    expect(second.subWidth).toBeLessThan(120);
+    expect(second.subWidth).toBeGreaterThanOrEqual(68);
+    // The two holder lines, at the widths reserved, do not touch.
+    const right1 = 500 + 120 / 2;
+    const left2 = 610 - second.subWidth! / 2;
+    expect(left2).toBeGreaterThan(right1);
+  });
+
+  it('never narrows a holder line past legibility — the desk keeps its name alone', () => {
+    // 70 px apart: even the narrowest holder line (68px) would overlap the neighbour's.
+    const long = 'Amrithya · Project Implementation';
+    const plan = planMarkerLabels([desk('WS-01', 0.5, 0.5, { sub: long }), desk('WS-02', 0.57, 0.5, { sub: long })], opts);
+    expect(plan.get('WS-02')).toEqual({ name: true, sub: false });
   });
 
   it('measures a long label at its capped width, so a dense row keeps more of them', () => {
@@ -54,23 +77,22 @@ describe('a label is drawn only where it fits', () => {
     expect(plan.get('WS-02')?.sub).toBe(true);
   });
 
-  it('keeps the desk number and the holder together, or drops both', () => {
+  it('never draws a holder line without its own desk name above it', () => {
     // The bug this replaced: the declutter kept one desk's number and another desk's holder line,
     // leaving "WS-07" over a block of six and "David Chen · Facilities" under it — a title and a
-    // caption for two different desks. Half a label is worse than none.
+    // caption for two different desks.
     const plan = planMarkerLabels(
-      [desk('WS-01', 0.5, 0.5, { sub: 'David Chen · Facilities' }), desk('WS-02', 0.5, 0.53, { sub: 'Amrithya · Finance' })],
+      [
+        desk('WS-01', 0.5, 0.5, { sub: 'David Chen · Facilities' }),
+        desk('WS-02', 0.5, 0.53, { sub: 'Amrithya · Finance' }),
+        desk('WS-03', 0.52, 0.515, { sub: 'Sofia Rossi · Operations' }),
+      ],
       opts,
     );
-    for (const id of ['WS-01', 'WS-02']) {
+    for (const id of ['WS-01', 'WS-02', 'WS-03']) {
       const p = plan.get(id)!;
-      expect(p.name).toBe(p.sub);
+      if (p.sub) expect(p.name).toBe(true);
     }
-  });
-
-  it('drops both lines when the holder would land on the chip below it', () => {
-    const plan = planMarkerLabels([desk('WS-01', 0.5, 0.5, { sub: 'Sofia Rossi' }), desk('WS-02', 0.5, 0.53)], opts);
-    expect(plan.get('WS-01')).toEqual({ name: false, sub: false });
   });
 
   it('never lets two labels share the same space', () => {
