@@ -182,7 +182,12 @@ export function Tooltip() {
             <span className={styles.eyebrow}>{primaryLabel}</span>
             {recordId != null && <span className={styles.recordId}>#{recordId}</span>}
           </div>
-          <div className={styles.name}>{primary}</div>
+          {/* Every line on this card that can end in "…" carries its full text on hover — a long
+              desk name, holder or department ("Project Implementat…") is otherwise unreadable
+              here, and this card is where people go to read them. */}
+          <div className={styles.name} data-tip={primary}>
+            {primary}
+          </div>
         </div>
         <button className={styles.close} data-tip="Close" onClick={() => actions.selectUnit(null)}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -206,13 +211,17 @@ export function Tooltip() {
           {!recordPending && holder && (
             <div className={styles.holder}>
               <div className={styles.eyebrow}>Assigned to</div>
-              <div className={styles.holderName}>{holder}</div>
+              <div className={styles.holderName} data-tip={holder}>
+                {holder}
+              </div>
             </div>
           )}
           {details.map((d) => (
             <div key={d.label} className={styles.detailRow}>
               <span className={styles.detailLabel}>{d.label}</span>
-              <span className={styles.detailValue}>{d.value}</span>
+              <span className={styles.detailValue} data-tip={d.value}>
+                {d.value}
+              </span>
             </div>
           ))}
         </div>
@@ -240,7 +249,11 @@ export function Tooltip() {
           booked answering "Re-assign" under a Booking heading is an action about a different
           question — one this view cannot follow through on. Nothing is left unexplained: the
           status pill above already reads "Not bookable", or names the person it belongs to. */}
-      {(state.mode !== 'book' || bookable) && (
+      {/* Edit mode shows none of the org's transitions either. Editing is about WHERE a record
+          sits on the plan — its geometry, its label, its type — and a "Mark as In-active" button
+          under an outline you are tracing is a record-lifecycle action in the middle of a layout
+          task, one press from being fired by accident. */}
+      {state.mode !== 'edit' && (state.mode !== 'book' || bookable) && (
         <StateflowActions
           unit={unit}
           showState={false}

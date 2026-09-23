@@ -11,7 +11,6 @@ import { Button } from '../primitives/Button';
 import { Select } from '../primitives/Select';
 import { StatusPill } from '../primitives/StatusPill';
 import { Picklist } from '../fds/Picklist';
-import { StateflowActions } from './StateflowActions';
 import card from './Card.module.css';
 import styles from './EditPanel.module.css';
 
@@ -458,7 +457,6 @@ function Inspector() {
             <InspectorStatus sel={sel} />
           </div>
         )}
-        {sel.type !== 'amenity' && <StateflowActions unit={sel} />}
         <Button variant="danger" fullWidth style={{ marginTop: 10 }} onClick={() => actions.deleteUnit(sel.id)}>
           Delete
         </Button>
