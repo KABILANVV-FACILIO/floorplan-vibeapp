@@ -274,9 +274,6 @@ export function Tooltip() {
       {/* Assign / Re-assign / Vacate are NOT hardcoded here. They are stateflow transitions, so
           they come from `v2/statetransition/getAvailableState` via StateflowActions above —
           rendered only when the org's flow actually offers them from this record's state. */}
-      {state.mode === 'assign' && !assignable && (
-        <div className={styles.note}>Booked in Booking mode, not assigned.</div>
-      )}
       </>
       )}
 

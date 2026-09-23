@@ -88,7 +88,9 @@ export function AssignPanel() {
                 <StateflowActions unit={sel} fallback={<LocalAssign unit={sel} />} />
               </>
             ) : (
-              <p className={card.helper}>This space is booked in Booking mode, not assigned.</p>
+              // A space that is booked rather than assigned has nobody to show here, but it still
+              // has the org's transitions — the same ones its popover offers.
+              <StateflowActions unit={sel} />
             )}
           </div>
         </div>

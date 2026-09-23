@@ -16,6 +16,11 @@
 .cardBody {
   padding: 12px 14px;
 }
+/* A body whose only content had nothing to offer (a record with no flow) must not leave a padded
+   strip under the title. */
+.cardBody:empty {
+  display: none;
+}
 .label {
   display: block;
   font: 500 11px/1 var(--font-sans);
