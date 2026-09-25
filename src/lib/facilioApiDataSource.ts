@@ -7,6 +7,8 @@ import type { CreateSpaceLoc, FloorplanDataSource } from './dataSource';
 import type { Asset } from './assets';
 import { TYPE_META } from './types';
 import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, PlanId, PointGeom, Site, Unit, UnitType } from './types';
+import { buildEmployeeFilters, mapFilterFields } from './employeeFilters';
+import type { AppliedFilter, FilterFieldDef } from './employeeFilters';
 
 /**
  * `fetchOriginal=true` on `v2/files/preview` returns the ORIGINAL uploaded bytes — for a plain
@@ -582,26 +584,6 @@ function containsFilter(fields: string[], query: string): string {
 }
 
 /**
- * One `filters` payload that matches the query on ANY of the fields.
- *
- * V3 ANDs the top-level keys of `filters`, so `{name:…, email:…}` would demand a match on both.
- * The OR goes inside the first field instead, as `orFilters`: the backend adds each entry's
- * condition to the same group as the field it hangs off (FilterUtil.setConditions, "To have or
- * condition for different fields"), giving `name ∋ q OR email ∋ q OR hrmsEmployeeId ∋ q` in one
- * request. Facilio's own mobile client searches line items this way.
- *
- * Each entry carries its own operator and value rather than inheriting them: the backend reads
- * `operatorId` first when it is present, so nothing depends on how it fills the gaps.
- */
-function containsAnyFilter(fields: string[], query: string): string {
-  const [first, ...rest] = fields;
-  const clause = { operatorId: CONTAINS, value: [query] };
-  return JSON.stringify({
-    [first]: rest.length ? { ...clause, orFilters: rest.map((field) => ({ field, ...clause })) } : clause,
-  });
-}
-
-/**
  * The roster, read now rather than remembered from boot.
  *
  * `state.employees` is fetched once when the app starts and never again, so a person added in
@@ -618,22 +600,73 @@ export async function fetchEmployees(limit = 200): Promise<Employee[] | null> {
 
 /**
  * Employees matching a query on any of the identifiers a person is actually looked up by: name,
- * email, HRMS Employee ID — in ONE request (see containsAnyFilter).
+ * email, HRMS Employee ID — in ONE request (see employeeFilters.searchClause).
  */
 export async function searchEmployees(query: string, limit = 50): Promise<Employee[] | null> {
+  if (!query.trim()) return isFacilioApiConfigured ? [] : null;
+  return queryEmployees({ query, applied: [], fields: [] }, limit);
+}
+
+/**
+ * Employees matching the search AND the filter panel, in one request: `buildEmployeeFilters`
+ * puts the search clause and one key per ticked field into a single V3 `filters` payload.
+ *
+ * `hrmsEmployeeId` is the org's confirmed field name, so it is the only id field the search sends.
+ * The alternates in HRMS_ID_KEYS stay for READING a record (a missing property costs nothing), but
+ * one unknown field in the payload fails the whole request.
+ */
+export async function queryEmployees(
+  req: { query: string; applied: AppliedFilter[]; fields: FilterFieldDef[] },
+  limit = 50,
+): Promise<Employee[] | null> {
   if (!isFacilioApiConfigured) return null;
-  const q = query.trim();
-  if (!q) return [];
-  // `hrmsEmployeeId` is the org's confirmed field name, so it is the only id field sent. The
-  // alternates in HRMS_ID_KEYS stay for READING a record (a missing property costs nothing), but
-  // one unknown field in the payload fails the whole request.
-  const res = await facilioApi
-    .fetchAll('employee', { filters: containsAnyFilter(['name', 'email', 'hrmsEmployeeId'], q), perPage: limit })
-    .catch(() => null);
-  // A failed request, not an empty answer: the caller falls back to matching what is loaded
-  // rather than showing a list that looks like "nobody matches".
+  const filters = buildEmployeeFilters(req.query, req.applied, req.fields);
+  const params: Record<string, unknown> = { perPage: limit };
+  if (Object.keys(filters).length) params.filters = JSON.stringify(filters);
+  const res = await facilioApi.fetchAll('employee', params).catch(() => null);
+  // A failed request, not an empty answer: the caller decides what to show instead, rather than
+  // a list that looks like "nobody matches".
   if (!res || res.error || !res.list) return null;
   return sortByName(res.list).map(mapEmployee);
+}
+
+let employeeFilterFields: Promise<FilterFieldDef[] | null> | null = null;
+
+/**
+ * The employee fields the org lets a list be filtered by, with each field's own operators —
+ * `v2/filter/advanced/fields/employee`, the endpoint the Employee list page reads, so the panel
+ * offers exactly what that page does (custom fields included). Read once per session.
+ */
+export function fetchEmployeeFilterFields(): Promise<FilterFieldDef[] | null> {
+  if (!isFacilioApiConfigured) return Promise.resolve(null);
+  if (!employeeFilterFields) {
+    employeeFilterFields = customGet('v2/filter/advanced/fields/employee')
+      .then((body: any) => {
+        const raw = body?.result?.fields ?? body?.data?.fields ?? body?.fields;
+        const fields = mapFilterFields(raw);
+        return fields.length ? fields : null;
+      })
+      .catch((err: unknown) => {
+        // eslint-disable-next-line no-console
+        console.warn('[filters] could not read the employee filter fields', err);
+        employeeFilterFields = null; // let the next open try again
+        return null;
+      });
+  }
+  return employeeFilterFields;
+}
+
+/**
+ * The choices for a lookup field other than Department (which the app already holds, with its
+ * colours): the first page of that module's records, by name. Enough for the pickers people
+ * filter a roster with — a module too big for one page is better searched than ticked.
+ */
+export async function fetchLookupOptions(moduleName: string, limit = 200): Promise<{ value: string; label: string }[] | null> {
+  if (!isFacilioApiConfigured) return null;
+  const res = await facilioApi.fetchAll(moduleName, { perPage: limit }).catch(() => null);
+  if (!res || res.error || !res.list) return null;
+  return sortByName(res.list)
+    .map((r: any) => ({ value: String(r.id), label: String(r.name ?? r.displayName ?? r.id) }));
 }
 
 /**
@@ -811,6 +844,7 @@ export function invalidateOrgCaches(): void {
   bookingFormListCache.clear();
   bookingFormDetailCache.clear();
   floorIndex = null;
+  employeeFilterFields = null;
 }
 
 export interface FloorPlanTypeSummary {

@@ -27,6 +27,89 @@
   padding: 10px 14px 6px;
   flex-shrink: 0;
 }
+.peopleToolbar {
+  display: flex;
+  gap: 6px;
+}
+.peopleToolbar input {
+  flex: 1;
+  min-width: 0;
+}
+.filterBtn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--ink-700);
+  font: 500 12px/1 var(--font-sans);
+  cursor: pointer;
+}
+.filterBtn:hover:not(:disabled) {
+  border-color: var(--ink-400);
+}
+.filterBtn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+.filterBtn:disabled {
+  color: var(--ink-400);
+  cursor: default;
+}
+/* Something is filtering (or the panel is open): the button says so, since no tag row does. */
+.filterBtnOn {
+  border-color: var(--blue-500);
+  background: var(--blue-025);
+  color: var(--blue-600);
+}
+.filterBadge {
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: var(--blue-500);
+  color: #fff;
+  font: 600 10px/17px var(--font-sans);
+  text-align: center;
+}
+/* The list and the filter panel share this box; the panel covers the list, not the plan. */
+.peopleBody {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.listNote {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 24px 12px;
+  text-align: center;
+  font: 400 12px/1.4 var(--font-sans);
+  color: var(--ink-500);
+}
+.listNote b {
+  color: var(--ink-700);
+  font-weight: 500;
+}
+.linkBtn {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: 500 12px/1 var(--font-sans);
+  color: var(--blue-500);
+  cursor: pointer;
+}
+.linkBtn:hover {
+  text-decoration: underline;
+}
 .dragHint {
   font-size: 10.5px;
   color: var(--ink-400);
@@ -67,6 +150,7 @@
   color: var(--blue-500);
 }
 .avatar {
+  position: relative;
   flex-shrink: 0;
   width: 26px;
   height: 26px;
@@ -80,6 +164,25 @@
 .personText {
   flex: 1;
   min-width: 0;
+}
+/* The person's department, in the colour its desks have on the plan. */
+.deptDot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 9px;
+  height: 9px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  border: 2px solid #fff;
+}
+.personSub {
+  margin-top: 2px;
+  font: 400 11px/1.2 var(--font-sans);
+  color: var(--ink-500);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .personName {
   font: 500 12.5px/1.2 var(--font-sans);
