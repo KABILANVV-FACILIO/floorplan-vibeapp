@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { callHostInterface } from './hostInterface';
 
 const devMode = import.meta.env.VITE_DEV_MODE === 'true';
 const envBaseURL = import.meta.env.VITE_FACILIO_API_BASE_URL;
@@ -234,7 +235,8 @@ function facilioAppReady(): Promise<any> {
 
 /**
  * The HOST page's URL query — the Facilio page this app is embedded in, not the iframe's own URL.
- * `getUrlProps` answers `{ query }` with the host route's query as it stands.
+ * `getUrlProps` answers `{ query }` with the host route's query as it stands. Sent as
+ * `interface.getUrlProps` (see callHostInterface — `interface.trigger` would not reach it).
  *
  * Raced against a short deadline because the host resolves interface actions from an
  * if/else-if chain with no final branch: a host build that predates `getUrlProps` never settles
@@ -248,7 +250,7 @@ export async function getHostUrlProps(): Promise<Record<string, unknown> | null>
   try {
     const app = await facilioAppReady();
     const res = await Promise.race([
-      app.interface.trigger('getUrlProps'),
+      callHostInterface(app, 'getUrlProps'),
       new Promise((_, reject) => setTimeout(() => reject(new Error('getUrlProps: host did not answer')), HOST_URL_PROPS_TIMEOUT_MS)),
     ]);
     const query = (res as { query?: unknown } | null)?.query;
@@ -261,14 +263,15 @@ export async function getHostUrlProps(): Promise<Record<string, unknown> | null>
 }
 
 /**
- * Merge `query` into the host page's URL query (`pushUrlProps` does `{ ...current, ...query }`).
- * Note the host reads `params.query`, not the bare object. Fire-and-forget: the url is a
- * convenience for sharing and reloading, never something a floor change should wait on or fail on.
+ * Merge `query` into the host page's URL query (`pushUrlProps` does `{ ...current, ...query }`),
+ * sent as `interface.pushUrlProps`. Note the host reads `params.query`, not the bare object.
+ * Fire-and-forget: the url is a convenience for sharing and reloading, never something a floor
+ * change should wait on or fail on.
  */
 export function pushHostUrlProps(query: Record<string, string>): void {
   if (!isConnectedApp) return;
   void facilioAppReady()
-    .then((app) => app.interface.trigger('pushUrlProps', { query }))
+    .then((app) => callHostInterface(app, 'pushUrlProps', { query }))
     .catch((err: unknown) => {
       // eslint-disable-next-line no-console
       console.info('[facilio-api] could not update the host url', err);
