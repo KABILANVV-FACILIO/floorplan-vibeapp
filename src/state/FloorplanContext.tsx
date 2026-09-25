@@ -14,6 +14,7 @@ import { listFloorplanFloorIds, loadFloorplanFile, persistFloorplanFile } from '
 import { loadSettings, saveSettings, settingsFromState } from '../lib/settingsStore';
 import { loadDepartmentColors, saveDepartmentColor } from '../lib/departmentColorStore';
 import { pathForView, viewFromLocation } from '../lib/routes';
+import { bootFloorCandidates, readUrlFloorId, writeUrlFloorId } from '../lib/urlFloor';
 import { buildInitialState, reducer } from './reducer';
 import type { Action } from './reducer';
 import type { AppState } from './types';
@@ -135,18 +136,29 @@ async function revealFloorPath(dispatch: Dispatch<Action>, portfolio: Site[], fl
   return true;
 }
 
-async function resolveDefaultFloor(dispatch: Dispatch<Action>, portfolio: Site[], preferredFloorId?: string): Promise<string | undefined> {
-  // The floor the user actually cares about is the one their own desk is on — open there when we
-  // know it, and only fall back to "first site, first building, first floor" when we don't (no
-  // desk assigned, or its floor isn't reachable in this portfolio).
-  if (preferredFloorId) {
-    if (await revealFloorPath(dispatch, portfolio, preferredFloorId)) {
+/** Whether the demo portfolio carries this floor (the demo has no floor-path lookup). */
+function mockFloorExists(floorId: string): boolean {
+  return MOCK_PORTFOLIO.some((site) => site.buildings?.some((b) => b.floors?.some((f) => f.id === floorId)));
+}
+
+async function resolveDefaultFloor(
+  dispatch: Dispatch<Action>,
+  portfolio: Site[],
+  preferred: { floorId: string; source: 'url' | 'desk' }[] = [],
+): Promise<string | undefined> {
+  // A floor named in the URL wins — someone shared a link to it, or reloaded while on it. After
+  // that, the floor the user actually cares about is the one their own desk is on. Only then
+  // "first site, first building, first floor". Each candidate must be placeable in this
+  // portfolio; one that isn't (a stale link, a floor this user can't see) falls to the next.
+  for (const { floorId, source } of preferred) {
+    const what = source === 'url' ? 'the floor in the url' : "your desk's floor";
+    if (await revealFloorPath(dispatch, portfolio, floorId)) {
       // eslint-disable-next-line no-console
-      console.info(`[portfolio] opening on your desk's floor ${preferredFloorId}`);
-      return preferredFloorId;
+      console.info(`[portfolio] opening on ${what} ${floorId}`);
+      return floorId;
     }
     // eslint-disable-next-line no-console
-    console.info(`[portfolio] your desk's floor ${preferredFloorId} is not reachable in this portfolio — falling back to the first floor`);
+    console.info(`[portfolio] ${what} ${floorId} is not reachable in this portfolio — trying the next choice`);
   }
   const loaded = firstLoadedFloorId(portfolio);
   if (loaded) return loaded;
@@ -1339,6 +1351,8 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, undefined, buildInitialState);
   const canvasRectRef = useRef<DOMRect | null>(null);
   const loadedRef = useRef(false);
+  /** Set once boot has chosen the floor to open on; the url stays untouched until then. */
+  const floorBootedRef = useRef(false);
   const settingsLoadedRef = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>();
 
@@ -1367,6 +1381,14 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
   }, [state.busyUnitId]);
 
 
+  // The floor on screen, mirrored to the url as ?floorId= (the host page's url when embedded —
+  // see lib/urlFloor). Only once boot has settled which floor to open: before that, floorId is the
+  // demo default, and writing it would overwrite the very link boot is about to read.
+  useEffect(() => {
+    if (!floorBootedRef.current) return;
+    writeUrlFloorId(state.floorId);
+  }, [state.floorId]);
+
   // Path-route sync (see lib/routes.ts): state.activeView is the source of truth, pushed to
   // history (/bookings, /people, /settings — real files on the host via copy-route-pages) so
   // each bottom-nav view is a clean URL. Nav clicks push a history entry; back/forward come
@@ -1374,9 +1396,9 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
   // #/x hash link resolves via viewFromLocation and gets normalized to its path form here.
   useEffect(() => {
     if (viewFromLocation(window.location) !== state.activeView) {
-      window.history.pushState({}, '', pathForView(state.activeView));
+      window.history.pushState({}, '', pathForView(state.activeView) + window.location.search);
     } else if (window.location.hash) {
-      window.history.replaceState({}, '', pathForView(state.activeView));
+      window.history.replaceState({}, '', pathForView(state.activeView) + window.location.search);
     }
   }, [state.activeView]);
   useEffect(() => {
@@ -1447,10 +1469,11 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
         },
       );
 
-      const [portfolio, employees, myDesk] = await Promise.all([
+      const [portfolio, employees, myDesk, urlFloorId] = await Promise.all([
         dataSource.getPortfolio().catch(() => MOCK_PORTFOLIO),
         dataSource.getEmployees().catch(() => MOCK_EMPLOYEES),
         isFacilioApiConfigured ? fetchMyDesk().catch(() => null) : Promise.resolve(null),
+        readUrlFloorId().catch(() => null),
       ]);
       dispatch({ type: 'PORTFOLIO_LOADED', portfolio, employees });
       if (myDesk) dispatch({ type: 'SET_MY_DESK', myDesk });
@@ -1463,7 +1486,13 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
       // portfolio can come from the connector with no V3 host at all (a standalone tab), and
       // gating on the API would strand that session on the mock floor, showing demo units beside
       // a real org tree.
-      const firstRealFloor = portfolio === MOCK_PORTFOLIO ? undefined : await resolveDefaultFloor(dispatch, portfolio, myDesk?.floorId ?? undefined);
+      const candidates = bootFloorCandidates(urlFloorId, myDesk?.floorId);
+      const firstRealFloor =
+        portfolio === MOCK_PORTFOLIO
+          ? // The demo portfolio has no floor-path lookup, so a url floor is honoured only if it is
+            // one of its own floors — enough to exercise the link without an org.
+            candidates.find((c) => c.source === 'url' && mockFloorExists(c.floorId))?.floorId
+          : await resolveDefaultFloor(dispatch, portfolio, candidates);
       const floorId = firstRealFloor ?? state.floorId;
       if (floorId !== state.floorId) dispatch({ type: 'SELECT_FLOOR_START', floorId });
 
@@ -1474,7 +1503,10 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
       ]);
       dispatch({ type: 'SELECT_FLOOR_DONE', floorId, units, assignments, bookings });
       loadFloorPlanTypesAndImage(dispatch, floorId, state.planId);
-
+      // From here on the url follows the floor on screen (see the effect below). Written now too,
+      // so a session that opened on the desk's floor has a link to it straight away.
+      floorBootedRef.current = true;
+      writeUrlFloorId(floorId);
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 

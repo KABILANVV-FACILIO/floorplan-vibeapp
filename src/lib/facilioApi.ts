@@ -232,6 +232,49 @@ function facilioAppReady(): Promise<any> {
   return sdkReady;
 }
 
+/**
+ * The HOST page's URL query — the Facilio page this app is embedded in, not the iframe's own URL.
+ * `getUrlProps` answers `{ query }` with the host route's query as it stands.
+ *
+ * Raced against a short deadline because the host resolves interface actions from an
+ * if/else-if chain with no final branch: a host build that predates `getUrlProps` never settles
+ * the promise at all, and boot awaits this before choosing a floor. No answer means "nothing on
+ * the url", which is also what a standalone open gets.
+ */
+const HOST_URL_PROPS_TIMEOUT_MS = 3000;
+
+export async function getHostUrlProps(): Promise<Record<string, unknown> | null> {
+  if (!isConnectedApp) return null;
+  try {
+    const app = await facilioAppReady();
+    const res = await Promise.race([
+      app.interface.trigger('getUrlProps'),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('getUrlProps: host did not answer')), HOST_URL_PROPS_TIMEOUT_MS)),
+    ]);
+    const query = (res as { query?: unknown } | null)?.query;
+    return query && typeof query === 'object' && !Array.isArray(query) ? (query as Record<string, unknown>) : null;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.info('[facilio-api] could not read the host url', err);
+    return null;
+  }
+}
+
+/**
+ * Merge `query` into the host page's URL query (`pushUrlProps` does `{ ...current, ...query }`).
+ * Note the host reads `params.query`, not the bare object. Fire-and-forget: the url is a
+ * convenience for sharing and reloading, never something a floor change should wait on or fail on.
+ */
+export function pushHostUrlProps(query: Record<string, string>): void {
+  if (!isConnectedApp) return;
+  void facilioAppReady()
+    .then((app) => app.interface.trigger('pushUrlProps', { query }))
+    .catch((err: unknown) => {
+      // eslint-disable-next-line no-console
+      console.info('[facilio-api] could not update the host url', err);
+    });
+}
+
 export interface FacilioApiResult<T = any> {
   data?: T | null;
   error: { code?: number | string; message?: string; isCancelled?: boolean } | null;
