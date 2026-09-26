@@ -246,21 +246,38 @@ function facilioAppReady(): Promise<any> {
 const HOST_URL_PROPS_TIMEOUT_MS = 3000;
 
 export async function getHostUrlProps(): Promise<Record<string, unknown> | null> {
-  if (!isConnectedApp) return null;
+  if (!isConnectedApp) {
+    urlLog('not embedded in a Facilio page — the host url is not read (the app\'s own ?floorId= is used instead)');
+    return null;
+  }
+  const started = Date.now();
   try {
     const app = await facilioAppReady();
+    urlLog('→ interface.getUrlProps', { via: hostSendPath(app) });
     const res = await Promise.race([
       callHostInterface(app, 'getUrlProps'),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('getUrlProps: host did not answer')), HOST_URL_PROPS_TIMEOUT_MS)),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`no reply from the host after ${HOST_URL_PROPS_TIMEOUT_MS}ms — this Facilio page may not support getUrlProps`)),
+          HOST_URL_PROPS_TIMEOUT_MS,
+        ),
+      ),
     ]);
+    urlLog(`← getUrlProps replied in ${Date.now() - started}ms`, res);
     const query = (res as { query?: unknown } | null)?.query;
-    return query && typeof query === 'object' && !Array.isArray(query) ? (query as Record<string, unknown>) : null;
+    if (!(query && typeof query === 'object' && !Array.isArray(query))) {
+      urlLog('getUrlProps reply has no { query } object — treating it as no floor in the url');
+      return null;
+    }
+    return query as Record<string, unknown>;
   } catch (err) {
-    // eslint-disable-next-line no-console
-    console.info('[facilio-api] could not read the host url', err);
+    urlLog(`✗ getUrlProps failed after ${Date.now() - started}ms`, err);
     return null;
   }
 }
+
+/** A push with no reply by then is logged, so a host without the action is visible. */
+const HOST_PUSH_WATCHDOG_MS = 5000;
 
 /**
  * Merge `query` into the host page's URL query (`pushUrlProps` does `{ ...current, ...query }`),
@@ -270,12 +287,45 @@ export async function getHostUrlProps(): Promise<Record<string, unknown> | null>
  */
 export function pushHostUrlProps(query: Record<string, string>): void {
   if (!isConnectedApp) return;
+  const started = Date.now();
+  let replied = false;
+  const watchdog = setTimeout(() => {
+    if (!replied) urlLog(`… no reply to pushUrlProps after ${HOST_PUSH_WATCHDOG_MS}ms — this Facilio page may not support pushUrlProps`, { query });
+  }, HOST_PUSH_WATCHDOG_MS);
   void facilioAppReady()
-    .then((app) => callHostInterface(app, 'pushUrlProps', { query }))
+    .then((app) => {
+      urlLog('→ interface.pushUrlProps', { query, via: hostSendPath(app) });
+      return callHostInterface(app, 'pushUrlProps', { query });
+    })
+    .then((res) => {
+      replied = true;
+      clearTimeout(watchdog);
+      const ok = (res as { isSuccess?: boolean } | null)?.isSuccess;
+      urlLog(`← pushUrlProps replied in ${Date.now() - started}ms${ok === false ? ' — the host says it did NOT update the url' : ''}`, res);
+    })
     .catch((err: unknown) => {
-      // eslint-disable-next-line no-console
-      console.info('[facilio-api] could not update the host url', err);
+      replied = true;
+      clearTimeout(watchdog);
+      urlLog(`✗ pushUrlProps failed after ${Date.now() - started}ms`, err);
     });
+}
+
+/** Which way the message will go — the SDK's own request/reply channel, or a named method. */
+function hostSendPath(app: any): string {
+  if (typeof app?._postMessageWithPromise === 'function') return 'sdk._postMessageWithPromise';
+  if (typeof app?.interface?.pushUrlProps === 'function') return 'sdk.interface.<method>';
+  return 'none — this SDK build cannot send it';
+}
+
+/**
+ * Diagnostic trail for the url ⇄ floor handshake with the host, under one filterable prefix.
+ * Kept on in production on purpose: the host side can only be observed from a real Facilio page.
+ */
+export function urlLog(message: string, detail?: unknown): void {
+  // eslint-disable-next-line no-console
+  if (detail === undefined) console.info(`[url-floor] ${message}`);
+  // eslint-disable-next-line no-console
+  else console.info(`[url-floor] ${message}`, detail);
 }
 
 export interface FacilioApiResult<T = any> {

@@ -154,11 +154,11 @@ async function resolveDefaultFloor(
     const what = source === 'url' ? 'the floor in the url' : "your desk's floor";
     if (await revealFloorPath(dispatch, portfolio, floorId)) {
       // eslint-disable-next-line no-console
-      console.info(`[portfolio] opening on ${what} ${floorId}`);
+      console.info(`[url-floor] opening on ${what} ${floorId}`);
       return floorId;
     }
     // eslint-disable-next-line no-console
-    console.info(`[portfolio] ${what} ${floorId} is not reachable in this portfolio — trying the next choice`);
+    console.info(`[url-floor] ${what} ${floorId} is not reachable in this portfolio — trying the next choice`);
   }
   const loaded = firstLoadedFloorId(portfolio);
   if (loaded) return loaded;
@@ -1487,6 +1487,8 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
       // gating on the API would strand that session on the mock floor, showing demo units beside
       // a real org tree.
       const candidates = bootFloorCandidates(urlFloorId, myDesk?.floorId);
+      // eslint-disable-next-line no-console
+      console.info(`[url-floor] boot floor choices, in order: ${candidates.length ? candidates.map((c) => `${c.source} ${c.floorId}`).join(' → ') + ' → first floor' : 'first floor (nothing in the url, no desk)'}`);
       const firstRealFloor =
         portfolio === MOCK_PORTFOLIO
           ? // The demo portfolio has no floor-path lookup, so a url floor is honoured only if it is

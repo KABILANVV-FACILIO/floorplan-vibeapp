@@ -18,6 +18,7 @@ vi.mock('./facilioApi', () => ({
   },
   getHostUrlProps: async () => host.query,
   pushHostUrlProps: (q: Record<string, string>) => host.pushed.push(q),
+  urlLog: () => {},
 }));
 
 const { bootFloorCandidates, readUrlFloorId, writeUrlFloorId, _resetUrlFloorForTests } = await import('./urlFloor');

@@ -1,4 +1,4 @@
-import { getHostUrlProps, isConnectedApp, pushHostUrlProps } from './facilioApi';
+import { getHostUrlProps, isConnectedApp, pushHostUrlProps, urlLog } from './facilioApi';
 
 /**
  * The floor on screen, kept in the URL as `?floorId=` so a link or a reload opens on it.
@@ -11,13 +11,20 @@ import { getHostUrlProps, isConnectedApp, pushHostUrlProps } from './facilioApi'
 export const URL_FLOOR_KEY = 'floorId';
 
 export async function readUrlFloorId(): Promise<string | null> {
+  urlLog(`reading the floor from the url (embedded in Facilio: ${isConnectedApp})`);
   if (isConnectedApp) {
     const hostQuery = await getHostUrlProps();
     const fromHost = clean(hostQuery?.[URL_FLOOR_KEY]);
-    if (fromHost) return fromHost;
+    if (fromHost) {
+      urlLog(`host url has ${URL_FLOOR_KEY}=${fromHost}`);
+      return fromHost;
+    }
+    urlLog(`host url has no ${URL_FLOOR_KEY}`, hostQuery);
   }
   if (typeof window === 'undefined') return null;
-  return clean(new URLSearchParams(window.location.search).get(URL_FLOOR_KEY));
+  const own = clean(new URLSearchParams(window.location.search).get(URL_FLOOR_KEY));
+  urlLog(own ? `app's own url has ${URL_FLOOR_KEY}=${own}` : `no ${URL_FLOOR_KEY} in the app's own url either`);
+  return own;
 }
 
 /** The floor last written, so re-selecting the same floor (a refresh, say) writes nothing. */
@@ -27,9 +34,11 @@ export function writeUrlFloorId(floorId: string): void {
   if (!floorId || floorId === lastWritten) return;
   lastWritten = floorId;
   if (isConnectedApp) {
+    urlLog(`floor changed to ${floorId} — pushing it to the host url`);
     pushHostUrlProps({ [URL_FLOOR_KEY]: floorId });
     return;
   }
+  urlLog(`floor changed to ${floorId} — writing it to the app's own url`);
   if (typeof window === 'undefined') return;
   const url = new URL(window.location.href);
   if (url.searchParams.get(URL_FLOOR_KEY) === floorId) return;
