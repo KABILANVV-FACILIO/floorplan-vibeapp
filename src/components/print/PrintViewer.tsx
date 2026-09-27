@@ -23,7 +23,10 @@ const GUTTER = 24;
  * The page on screen IS the sheet (PrintSheet in `preview` mode, same component, same styles),
  * drawn at its physical size and scaled to fit. Print hands over to the browser, which prints the
  * app's hidden paper copy of the same sheet — this dialog is portaled to <body>, and the print
- * stylesheet hides everything there. Download rasterises the page shown here.
+ * stylesheet hides everything there. Download rasterises the pages shown here, one PDF page each.
+ *
+ * The plan page comes first; after it, as many Seating list pages as the floor needs (every desk,
+ * who is placed there, department). The grey area scrolls through them, one page fitting in view.
  */
 export function PrintViewer({ onClose }: { onClose: () => void }) {
   const { state } = useFloorplan();
@@ -31,8 +34,11 @@ export function PrintViewer({ onClose }: { onClose: () => void }) {
   const floorTitle = meta ? meta.floor.name : 'Floor plan';
 
   const areaRef = useRef<HTMLDivElement>(null);
-  const pageRef = useRef<HTMLDivElement>(null);
+  const pagesRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(0);
+  // The pages' unscaled height (the plan page plus however many Seating list pages the floor
+  // needs), so the frame can take the scaled size and the grey area scrolls through them.
+  const [pagesH, setPagesH] = useState(PAGE_H);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -48,6 +54,16 @@ export function PrintViewer({ onClose }: { onClose: () => void }) {
     return () => ro.disconnect();
   }, []);
 
+  useLayoutEffect(() => {
+    const el = pagesRef.current;
+    if (!el) return;
+    const measure = () => setPagesH(el.offsetHeight || PAGE_H);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -57,12 +73,12 @@ export function PrintViewer({ onClose }: { onClose: () => void }) {
   }, [onClose]);
 
   async function onDownload() {
-    const page = pageRef.current;
-    if (!page || downloading) return;
+    const pages = Array.from(pagesRef.current?.querySelectorAll<HTMLElement>('[data-print-page]') ?? []);
+    if (!pages.length || downloading) return;
     setDownloading(true);
     setError(null);
     try {
-      const blob = await sheetToPdfBlob(page);
+      const blob = await sheetToPdfBlob(pages);
       downloadBlob(blob, printFileName(floorTitle, orgNow().dateISO));
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -79,9 +95,9 @@ export function PrintViewer({ onClose }: { onClose: () => void }) {
       <div ref={areaRef} className={styles.area}>
         {/* The frame takes the SCALED size, so the area lays out around what is visible; the page
             inside keeps its full size and is scaled from its corner. */}
-        <div className={styles.frame} style={{ width: PAGE_W * scale, height: PAGE_H * scale, visibility: scale ? 'visible' : 'hidden' }}>
+        <div className={styles.frame} style={{ width: PAGE_W * scale, height: pagesH * scale, visibility: scale ? 'visible' : 'hidden' }}>
           <div className={styles.paper} style={{ transform: `scale(${scale})` }}>
-            <PrintSheet preview pageRef={pageRef} />
+            <PrintSheet preview pagesRef={pagesRef} />
           </div>
         </div>
       </div>

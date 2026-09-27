@@ -1,12 +1,16 @@
 /* The grey desk the page sits on, sized so header + page + footer fit the dialog's 88vh. */
+/* Pages stack top to bottom; the area scrolls through them, one page fitting in view at a time. */
 .area {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
+  box-sizing: border-box;
+  padding: 24px 0;
   height: min(calc(8.5in + 48px), calc(88vh - 140px));
   min-height: 240px;
   background: var(--ink-050);
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .frame {
@@ -19,7 +23,6 @@
   left: 0;
   top: 0;
   transform-origin: 0 0;
-  box-shadow: var(--shadow-md);
 }
 
 .error {

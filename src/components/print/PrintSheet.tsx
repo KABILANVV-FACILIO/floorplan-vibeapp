@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { Ref } from 'react';
 import { flushSync } from 'react-dom';
 import { useFloorplan } from '../../state/FloorplanContext';
-import { bookedUnitIds, floorMeta, markerLabelInputs, planMarkers, planRooms, visibleUnits } from '../../state/selectors';
+import { bookedUnitIds, contactById, floorMeta, markerLabelInputs, planMarkers, planRooms, visibleUnits } from '../../state/selectors';
 import { floorImageKey, unitOnPlan } from '../../lib/types';
 import type { Unit, UnitType } from '../../lib/types';
 import { orgNow } from '../../lib/orgTime';
@@ -13,6 +13,9 @@ import { RoomPolygon } from '../canvas/RoomPolygon';
 import { RoomLabel } from '../canvas/Canvas';
 import { Marker } from '../canvas/Marker';
 import { legendItems } from '../canvas/Legend';
+import { departmentColor, departmentKey, departmentsIn } from '../../lib/departmentColors';
+import { buildSeatingRows, seatingPages, seatingSummary } from '../../lib/seatingList';
+import type { SeatingRow } from '../../lib/seatingList';
 import styles from './PrintSheet.module.css';
 
 /**
@@ -23,6 +26,14 @@ import styles from './PrintSheet.module.css';
  */
 const PRINT_PLAN_HEIGHT_IN = 5.4;
 const PRINT_ZOOM = (PRINT_PLAN_HEIGHT_IN * 96) / IMG_H;
+
+/**
+ * Seating list rows per column. Every cell is one line, clipped with an ellipsis, so a row is
+ * always exactly SEATING_ROW_PX tall and the page break can be computed rather than measured —
+ * which is what keeps the viewer, the paper and the PDF breaking in the same place. 28 rows of
+ * 20px leave room for the title block and the footer on a letter-landscape page.
+ */
+const SEATING_ROWS_PER_COLUMN = 28;
 
 /**
  * The floor plan print sheet — a port of `Floorplan Print.dc.html` from the Claude Design project
@@ -51,6 +62,10 @@ const PRINT_ZOOM = (PRINT_PLAN_HEIGHT_IN * 96) / IMG_H;
  * result was a sheet that did not look like the floor anyone had just been looking at. It is the
  * whole floor fitted to the page: the plane at its native 1492×1054, scaled down exactly the way
  * the viewer scales it, so every chip and label lands where it does on screen.
+ *
+ * SEATING LIST pages follow the plan. The plan labels a desk only where its labels fit, so on a
+ * dense floor most desks print without a name, a holder or a department. The list carries all
+ * three for EVERY desk — the plan says where, the list says who.
  */
 
 /** The modules the sheet reports, in the design's order. Amenities carry no occupancy. */
@@ -61,7 +76,7 @@ const CARD_TYPES: { type: UnitType; name: string }[] = [
   { type: 'parking', name: 'Parking' },
 ];
 
-export function PrintSheet({ preview = false, pageRef }: { preview?: boolean; pageRef?: Ref<HTMLDivElement> } = {}) {
+export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; pagesRef?: Ref<HTMLDivElement> } = {}) {
   const { state } = useFloorplan();
   const meta = floorMeta(state, state.floorId);
   const booked = bookedUnitIds(state);
@@ -108,8 +123,31 @@ export function PrintSheet({ preview = false, pageRef }: { preview?: boolean; pa
   // waits for `beforeprint` (above).
   const showPlan = preview || printing;
 
-  const page = (
-    <div ref={pageRef} className={styles.page}>
+  // Every desk on the plan, with who is placed there and their department — built only when the
+  // sheet is actually shown, for the same reason as the plan (see `printing` above).
+  const seating = useMemo(() => {
+    if (!showPlan) return [];
+    const planDeptIds = departmentsIn(state.units).map((d) => d.id);
+    return buildSeatingRows(
+      units.filter((u) => u.type === 'workstation'),
+      {
+        holderName: (id) => {
+          const holder = state.assignments[id];
+          return holder ? (contactById(state, holder)?.name ?? '') : null;
+        },
+        isBooked: (id) => booked.has(id),
+        holderDepartment: (id) => contactById(state, state.assignments[id])?.department,
+        colorFor: (u, dept) => departmentColor(u.departmentId || 'name:' + departmentKey(dept), state.departmentColors, planDeptIds),
+      },
+    );
+    // `units`/`booked` are derived from state each render; state is the real dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showPlan, state]);
+  const seatingPageList = seatingPages(seating, SEATING_ROWS_PER_COLUMN);
+  const pageCount = 1 + seatingPageList.length;
+
+  const planPage = (
+    <div className={styles.page} data-print-page="">
       <div className={styles.head}>
         <div className={styles.headLeft}>
           {/* No wordmark and no "Seat occupancy" eyebrow: this sheet is printed inside the
@@ -157,11 +195,124 @@ export function PrintSheet({ preview = false, pageRef }: { preview?: boolean; pa
 
       <div className={styles.foot}>
         <span className={styles.footNote}>Occupancy reflects assignments and confirmed bookings at the time of printing.</span>
+        {pageCount > 1 && <span className={styles.pageNo}>Page 1 of {pageCount} · every desk is listed on the pages that follow</span>}
       </div>
     </div>
   );
 
-  return preview ? page : <div className={styles.sheet}>{page}</div>;
+  const pages = (
+    <>
+      {planPage}
+      {seatingPageList.map((columns, i) => (
+        <SeatingPage
+          key={i}
+          columns={columns}
+          floorTitle={floorTitle}
+          siteLine={siteLine}
+          generatedAt={generatedAt}
+          pageNo={i + 2}
+          pageCount={pageCount}
+          summary={seatingSummary(seating)}
+        />
+      ))}
+    </>
+  );
+
+  return preview ? (
+    <div ref={pagesRef} className={styles.previewPages}>
+      {pages}
+    </div>
+  ) : (
+    <div className={styles.sheet}>{pages}</div>
+  );
+}
+
+/**
+ * One Seating list page: the floor's name, then every desk in two side-by-side columns — desk,
+ * who is placed there, department (with the colour its desks have on the plan).
+ */
+function SeatingPage({
+  columns,
+  floorTitle,
+  siteLine,
+  generatedAt,
+  pageNo,
+  pageCount,
+  summary,
+}: {
+  columns: SeatingRow[][];
+  floorTitle: string;
+  siteLine: string;
+  generatedAt: string;
+  pageNo: number;
+  pageCount: number;
+  summary: string;
+}) {
+  return (
+    <div className={styles.page} data-print-page="">
+      <div className={styles.head}>
+        <div className={styles.headLeft}>
+          <div className={styles.title}>
+            {floorTitle} <span className={styles.titleSub}>· Seating list</span>
+          </div>
+          {siteLine && <div className={styles.siteLine}>{siteLine}</div>}
+        </div>
+        <div className={styles.headRight}>
+          <div className={styles.generatedAt}>{generatedAt}</div>
+        </div>
+      </div>
+
+      <div className={styles.seatCols}>
+        {[0, 1].map((c) => (
+          <table key={c} className={styles.seatTable}>
+            <colgroup>
+              <col className={styles.colDesk} />
+              <col className={styles.colHolder} />
+              <col className={styles.colDept} />
+            </colgroup>
+            {columns[c] && (
+              <>
+                <thead>
+                  <tr>
+                    <th>Desk</th>
+                    <th>Assigned to</th>
+                    <th>Department</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {columns[c].map((r) => (
+                    <tr key={r.id}>
+                      <td className={styles.cellDesk}>{r.desk}</td>
+                      <td className={r.status === 'assigned' ? styles.cellHolder : styles.cellQuiet}>
+                        {r.status === 'assigned' ? r.holder ?? 'Assigned' : r.status === 'booked' ? 'Booked' : 'Free'}
+                      </td>
+                      <td className={styles.cellDept}>
+                        {r.department ? (
+                          <>
+                            <span className={styles.deptDot} style={{ background: r.departmentColor }} />
+                            {r.department}
+                          </>
+                        ) : (
+                          <span className={styles.cellQuiet}>—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </>
+            )}
+          </table>
+        ))}
+      </div>
+
+      <div className={styles.foot}>
+        <span className={styles.footNote}>{summary}. Desks are listed by name; the plan on page 1 shows where each one is.</span>
+        <span className={styles.pageNo}>
+          Page {pageNo} of {pageCount}
+        </span>
+      </div>
+    </div>
+  );
 }
 
 /** What a downloaded sheet is called: the floor and the day it was drawn, safe as a file name. */

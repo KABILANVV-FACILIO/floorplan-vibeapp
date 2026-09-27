@@ -20,19 +20,24 @@ const PAGE_H_IN = 8.5;
  */
 const PIXEL_RATIO = 2.5;
 
-export async function sheetToPdfBlob(page: HTMLElement): Promise<Blob> {
+export async function sheetToPdfBlob(pages: HTMLElement[]): Promise<Blob> {
   const [{ toPng }, { jsPDF }] = await Promise.all([import('html-to-image'), import('jspdf')]);
   // Roboto comes from Google Fonts. Until it has loaded, the raster would be drawn in the
   // fallback face, so wait for it rather than capture a page that differs from the screen.
   await document.fonts?.ready;
-  const png = await toPng(page, {
-    pixelRatio: PIXEL_RATIO,
-    backgroundColor: '#ffffff',
-    width: page.offsetWidth,
-    height: page.offsetHeight,
-  });
   const pdf = new jsPDF({ orientation: 'landscape', unit: 'in', format: 'letter', compress: true });
-  pdf.addImage(png, 'PNG', 0, 0, PAGE_W_IN, PAGE_H_IN, undefined, 'FAST');
+  // One raster per page — the plan, then each Seating list page — each full-bleed on its own sheet.
+  for (let i = 0; i < pages.length; i++) {
+    const page = pages[i];
+    const png = await toPng(page, {
+      pixelRatio: PIXEL_RATIO,
+      backgroundColor: '#ffffff',
+      width: page.offsetWidth,
+      height: page.offsetHeight,
+    });
+    if (i > 0) pdf.addPage('letter', 'landscape');
+    pdf.addImage(png, 'PNG', 0, 0, PAGE_W_IN, PAGE_H_IN, undefined, 'FAST');
+  }
   return pdf.output('blob');
 }
 
