@@ -13,10 +13,17 @@ export function Marker({
   unit,
   invZ,
   labels,
+  badge,
   onDragStart,
 }: {
   unit: Unit;
   invZ: number;
+  /**
+   * Text drawn in the chip instead of its initials or icon — the print sheet's desk number, which
+   * keys the desk to its row in the Seating list. The chip keeps its colours; only the content
+   * changes.
+   */
+  badge?: string;
   /**
    * Which of this marker's labels the canvas found room for. Decided there, not here: whether a
    * label fits depends on the OTHER markers, which a single marker cannot see.
@@ -176,7 +183,9 @@ export function Marker({
       >
         {isHighlighted && <div className={styles.wave} />}
         {isBusy && <span className={styles.busy} aria-label="Working" />}
-        {!isBusy && (style.img ? (
+        {!isBusy && badge ? (
+          <span style={{ font: `700 ${badge.length > 2 ? 8.5 : 10}px/1 var(--font-sans)`, letterSpacing: badge.length > 2 ? '-0.02em' : undefined }}>{badge}</span>
+        ) : !isBusy && (style.img ? (
           <img src={style.img} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 'inherit', pointerEvents: 'none' }} />
         ) : (
           <>

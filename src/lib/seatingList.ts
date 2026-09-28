@@ -9,10 +9,13 @@ import type { Unit } from './types';
  * a second list page, and an ENEC floor is not.
  */
 
-export type SeatStatus = 'assigned' | 'booked' | 'free';
+/** `unassignable`: a desk that is booked, never assigned (a hot desk) — "Not assignable", as in the viewer. */
+export type SeatStatus = 'assigned' | 'booked' | 'free' | 'unassignable';
 
 export interface SeatingRow {
   id: string;
+  /** 1-based, in list order — printed on the desk's chip on the plan, so the two can be matched. */
+  no: number;
   desk: string;
   status: SeatStatus;
   /** Who is placed at the desk; null when free or booked, or when the holder isn't in the roster. */
@@ -25,6 +28,7 @@ export interface SeatingLookups {
   /** The assigned employee's name, or '' when the desk is assigned to someone not in the roster. */
   holderName: (unitId: string) => string | null;
   isBooked: (unitId: string) => boolean;
+  isAssignable: (unit: Unit) => boolean;
   /** The holder's own department, used only when the desk carries none. */
   holderDepartment: (unitId: string) => string | undefined;
   colorFor: (unit: Unit, department: string) => string | undefined;
@@ -32,9 +36,10 @@ export interface SeatingLookups {
 
 export function buildSeatingRows(desks: Unit[], look: SeatingLookups): SeatingRow[] {
   return desks
-    .map((u): SeatingRow => {
+    .map((u): Omit<SeatingRow, 'no'> => {
       const name = look.holderName(u.id);
-      const status: SeatStatus = name !== null ? 'assigned' : look.isBooked(u.id) ? 'booked' : 'free';
+      const status: SeatStatus =
+        name !== null ? 'assigned' : look.isBooked(u.id) ? 'booked' : look.isAssignable(u) ? 'free' : 'unassignable';
       // The desk's department first — it is what colours the desk on the plan, and a desk can be
       // lent to someone from another team. The holder's own department only fills a gap.
       const department = u.department?.trim() || (status === 'assigned' ? look.holderDepartment(u.id)?.trim() : undefined) || null;
@@ -47,7 +52,8 @@ export function buildSeatingRows(desks: Unit[], look: SeatingLookups): SeatingRo
         departmentColor: department ? look.colorFor(u, department) : undefined,
       };
     })
-    .sort((a, b) => a.desk.localeCompare(b.desk, undefined, { numeric: true, sensitivity: 'base' }));
+    .sort((a, b) => a.desk.localeCompare(b.desk, undefined, { numeric: true, sensitivity: 'base' }))
+    .map((r, i) => ({ ...r, no: i + 1 }));
 }
 
 /**
@@ -80,5 +86,6 @@ export function seatingSummary(rows: SeatingRow[]): string {
   const parts = [`${rows.length} ${rows.length === 1 ? 'desk' : 'desks'}`, `${n('assigned')} assigned`];
   if (n('booked')) parts.push(`${n('booked')} booked`);
   parts.push(`${n('free')} free`);
+  if (n('unassignable')) parts.push(`${n('unassignable')} not assignable`);
   return parts.join(' · ');
 }

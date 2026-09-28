@@ -14,6 +14,7 @@ const desk = (id: string, label: string, over: Partial<Unit> = {}) => ({ id, lab
 const look = (over: Partial<SeatingLookups> = {}): SeatingLookups => ({
   holderName: () => null,
   isBooked: () => false,
+  isAssignable: () => true,
   holderDepartment: () => undefined,
   colorFor: () => '#8a4bd3',
   ...over,
@@ -23,6 +24,15 @@ describe('the rows', () => {
   it('lists every desk, in natural order (WS-2 before WS-10)', () => {
     const rows = buildSeatingRows([desk('a', 'WS-10'), desk('b', 'WS-2'), desk('c', 'New Test Desk 1')], look());
     expect(rows.map((r) => r.desk)).toEqual(['New Test Desk 1', 'WS-2', 'WS-10']);
+  });
+
+  it('numbers the desks 1..n in list order — the number printed on each desk chip', () => {
+    const rows = buildSeatingRows([desk('a', 'WS-10'), desk('b', 'WS-2'), desk('c', 'WS-1')], look());
+    expect(rows.map((r) => [r.no, r.desk])).toEqual([
+      [1, 'WS-1'],
+      [2, 'WS-2'],
+      [3, 'WS-10'],
+    ]);
   });
 
   it('names who is placed at a desk, and says Free or Booked otherwise', () => {
@@ -35,6 +45,15 @@ describe('the rows', () => {
       ['WS-02', 'booked', null],
       ['WS-03', 'free', null],
     ]);
+  });
+
+  it('says Not assignable for a hot desk nobody is placed at, as the viewer does', () => {
+    const rows = buildSeatingRows(
+      [desk('a', 'WS-01', { deskType: 'HOT' } as Partial<Unit>), desk('b', 'WS-02', { deskType: 'HOT' } as Partial<Unit>)],
+      look({ isAssignable: (u) => (u as { deskType?: string }).deskType !== 'HOT', holderName: (id) => (id === 'b' ? 'Someone' : null) }),
+    );
+    expect(rows.map((r) => r.status)).toEqual(['unassignable', 'assigned']);
+    expect(seatingSummary(rows)).toBe('2 desks · 1 assigned · 0 free · 1 not assignable');
   });
 
   it('counts a desk assigned to someone outside the roster as assigned, without a name', () => {

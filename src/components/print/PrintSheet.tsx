@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import type { Ref } from 'react';
 import { flushSync } from 'react-dom';
 import { useFloorplan } from '../../state/FloorplanContext';
-import { bookedUnitIds, contactById, floorMeta, markerLabelInputs, planMarkers, planRooms, visibleUnits } from '../../state/selectors';
+import { bookedUnitIds, contactById, floorMeta, isAssignable, markerLabelInputs, planMarkers, planRooms, visibleUnits } from '../../state/selectors';
+import { markerStyle } from '../../lib/unitStatus';
 import { floorImageKey, unitOnPlan } from '../../lib/types';
 import type { Unit, UnitType } from '../../lib/types';
 import { orgNow } from '../../lib/orgTime';
@@ -136,6 +137,7 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
           return holder ? (contactById(state, holder)?.name ?? '') : null;
         },
         isBooked: (id) => booked.has(id),
+        isAssignable,
         holderDepartment: (id) => contactById(state, state.assignments[id])?.department,
         colorFor: (u, dept) => departmentColor(u.departmentId || 'name:' + departmentKey(dept), state.departmentColors, planDeptIds),
       },
@@ -144,6 +146,21 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showPlan, state]);
   const seatingPageList = seatingPages(seating, SEATING_ROWS_PER_COLUMN);
+  // Each desk's number in the list, printed on its chip on the plan: the plan says where desk 12
+  // is, the list says who sits at 12. Only desks are numbered — lockers and parking keep theirs.
+  const deskNumbers = useMemo(() => new Map(seating.map((r) => [r.id, r.no])), [seating]);
+  // The number chip in the list is drawn exactly like the desk's chip on the plan — same function,
+  // same state — so "4" looks the same in both places, whatever the desk's status or colour mode.
+  const chipColors = useMemo(() => {
+    const m = new Map<string, { background: string; borderColor: string; color: string }>();
+    for (const u of units) {
+      if (!deskNumbers.has(u.id)) continue;
+      const st = markerStyle(state, u);
+      m.set(u.id, { background: st.bg, borderColor: st.bd, color: st.fg });
+    }
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deskNumbers, state]);
   const pageCount = 1 + seatingPageList.length;
 
   const planPage = (
@@ -190,12 +207,12 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
       </div>
 
       <div className={styles.planWrap}>
-        <div className={styles.plan}>{showPlan && <PrintPlan />}</div>
+        <div className={styles.plan}>{showPlan && <PrintPlan deskNumbers={deskNumbers} />}</div>
       </div>
 
       <div className={styles.foot}>
         <span className={styles.footNote}>Occupancy reflects assignments and confirmed bookings at the time of printing.</span>
-        {pageCount > 1 && <span className={styles.pageNo}>Page 1 of {pageCount} · every desk is listed on the pages that follow</span>}
+        {pageCount > 1 && <span className={styles.pageNo}>Page 1 of {pageCount} · each desk's number is its row in the Seating list that follows</span>}
       </div>
     </div>
   );
@@ -213,6 +230,7 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
           pageNo={i + 2}
           pageCount={pageCount}
           summary={seatingSummary(seating)}
+          chipColors={chipColors}
         />
       ))}
     </>
@@ -239,8 +257,10 @@ function SeatingPage({
   pageNo,
   pageCount,
   summary,
+  chipColors,
 }: {
   columns: SeatingRow[][];
+  chipColors: Map<string, { background: string; borderColor: string; color: string }>;
   floorTitle: string;
   siteLine: string;
   generatedAt: string;
@@ -266,6 +286,7 @@ function SeatingPage({
         {[0, 1].map((c) => (
           <table key={c} className={styles.seatTable}>
             <colgroup>
+              <col className={styles.colNo} />
               <col className={styles.colDesk} />
               <col className={styles.colHolder} />
               <col className={styles.colDept} />
@@ -274,6 +295,7 @@ function SeatingPage({
               <>
                 <thead>
                   <tr>
+                    <th>#</th>
                     <th>Desk</th>
                     <th>Assigned to</th>
                     <th>Department</th>
@@ -282,9 +304,20 @@ function SeatingPage({
                 <tbody>
                   {columns[c].map((r) => (
                     <tr key={r.id}>
+                      <td className={styles.cellNo}>
+                        <span className={styles.noChip} style={chipColors.get(r.id)}>
+                          {r.no}
+                        </span>
+                      </td>
                       <td className={styles.cellDesk}>{r.desk}</td>
                       <td className={r.status === 'assigned' ? styles.cellHolder : styles.cellQuiet}>
-                        {r.status === 'assigned' ? r.holder ?? 'Assigned' : r.status === 'booked' ? 'Booked' : 'Free'}
+                        {r.status === 'assigned'
+                          ? r.holder ?? 'Assigned'
+                          : r.status === 'booked'
+                            ? 'Booked'
+                            : r.status === 'unassignable'
+                              ? 'Not assignable'
+                              : 'Free'}
                       </td>
                       <td className={styles.cellDept}>
                         {r.department ? (
@@ -306,7 +339,7 @@ function SeatingPage({
       </div>
 
       <div className={styles.foot}>
-        <span className={styles.footNote}>{summary}. Desks are listed by name; the plan on page 1 shows where each one is.</span>
+        <span className={styles.footNote}>{summary}. Desks are listed by name; the number is the one on the desk's chip on the plan (page 1).</span>
         <span className={styles.pageNo}>
           Page {pageNo} of {pageCount}
         </span>
@@ -325,7 +358,7 @@ export function printFileName(floorTitle: string, dateISO: string): string {
  * The floor as the viewer draws it, at the print zoom. Same components, same rules, same label
  * layout — only the zoom is fixed (PRINT_ZOOM) instead of wherever the user left it.
  */
-function PrintPlan() {
+function PrintPlan({ deskNumbers }: { deskNumbers: Map<string, number> }) {
   const { state } = useFloorplan();
   const rooms = planRooms(state);
   const markers = planMarkers(state);
@@ -349,9 +382,16 @@ function PrintPlan() {
       {rooms.map((r) => (
         <RoomLabel key={`l-${r.id}`} unit={r} />
       ))}
-      {markers.map((m) => (
-        <Marker key={m.id} unit={m} invZ={invZ} labels={labelPlan.get(m.id)} />
-      ))}
+      {markers.map((m) => {
+        // A numbered desk carries no text labels: its name, holder and department are on its row
+        // in the Seating list, so the plan stays readable however dense the floor is.
+        const no = deskNumbers.get(m.id);
+        return no ? (
+          <Marker key={m.id} unit={m} invZ={invZ} badge={String(no)} />
+        ) : (
+          <Marker key={m.id} unit={m} invZ={invZ} labels={labelPlan.get(m.id)} />
+        );
+      })}
     </div>
   );
 }

@@ -249,14 +249,17 @@
   table-layout: fixed;
   font: 400 11px/1 var(--font-sans);
 }
+.colNo {
+  width: 9%;
+}
 .colDesk {
-  width: 30%;
+  width: 25%;
 }
 .colHolder {
-  width: 38%;
+  width: 36%;
 }
 .colDept {
-  width: 32%;
+  width: 30%;
 }
 .seatTable th {
   height: 24px;
@@ -303,4 +306,21 @@
   margin-right: 6px;
   border-radius: 999px;
   vertical-align: -0.5px;
+}
+
+/* The desk's number, drawn like its chip on the plan (colours come from markerStyle, inline). */
+.cellNo {
+  padding-right: 0 !important;
+}
+.noChip {
+  display: inline-block;
+  min-width: 22px;
+  height: 15px;
+  box-sizing: border-box;
+  padding: 0 4px;
+  border-radius: 4px;
+  border: 1.5px solid var(--ink-300);
+  font: 700 9.5px/12px var(--font-sans);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
