@@ -1,4 +1,5 @@
 import { apiOrigin, customGet, customPost, facilioApi, fetchFilePreview, isFacilioApiConfigured } from './facilioApi';
+import type { FacilioApiListResult } from './facilioApi';
 import { renderCadToDataUrl } from './cadPreview';
 import { runAssignTransition } from './stateflowApi';
 import { renderPdfToDataUrl } from './pdfPreview';
@@ -95,14 +96,14 @@ export class FacilioApiDataSource implements FloorplanDataSource {
 
   async getBuildings(siteId: string): Promise<Building[]> {
     this.assertConfigured();
-    const res = await facilioApi.fetchAllRelatedList<any>({ moduleName: 'site', id: siteId, relatedModuleName: 'building', relatedFieldName: 'site' });
+    const res = await fetchAllRelatedPaged<any>({ moduleName: 'site', id: siteId, relatedModuleName: 'building', relatedFieldName: 'site' });
     if (res.error) throw new Error(`facilio-api: buildings for site ${siteId} failed (${res.error.code ?? '?'} ${res.error.message ?? ''})`.trim());
     return sortByName(res.list ?? []).map((b: any) => ({ id: String(b.id), name: b.name }));
   }
 
   async getFloors(buildingId: string): Promise<Floor[]> {
     this.assertConfigured();
-    const res = await facilioApi.fetchAllRelatedList<any>({ moduleName: 'building', id: buildingId, relatedModuleName: 'floor', relatedFieldName: 'building' });
+    const res = await fetchAllRelatedPaged<any>({ moduleName: 'building', id: buildingId, relatedModuleName: 'floor', relatedFieldName: 'building' });
     if (res.error) throw new Error(`facilio-api: floors for building ${buildingId} failed (${res.error.code ?? '?'} ${res.error.message ?? ''})`.trim());
     // hasPlan unknown until getFloorPlanSummary runs; true keeps the canvas reachable rather than
     // hiding it behind "No floorplan yet" pre-emptively.
@@ -238,7 +239,7 @@ export class FacilioApiDataSource implements FloorplanDataSource {
         continue;
       }
 
-      const markersRes = await facilioApi.fetchAllRelatedList<any>({
+      const markersRes = await fetchAllRelatedPaged<any>({
         moduleName: 'indoorfloorplan',
         id: planRecordId,
         relatedModuleName: 'floorplanmarker',
@@ -250,7 +251,7 @@ export class FacilioApiDataSource implements FloorplanDataSource {
         continue;
       }
       // eslint-disable-next-line no-console
-      console.info(`[facilio-api] getUnits: plan ${planId} (#${planRecordId}) -> ${markersRes.list?.length ?? 0} markers`);
+      console.info(`[facilio-api] getUnits: plan ${planId} (#${planRecordId}) -> ${markersRes.list?.length ?? 0} markers (${markersRes.pages} page${markersRes.pages === 1 ? '' : 's'})`);
 
       for (const marker of markersRes.list ?? []) {
         if (marker.recordId) placedRecordIds.add(String(marker.recordId));
@@ -289,8 +290,7 @@ export class FacilioApiDataSource implements FloorplanDataSource {
     // desks/lockers/stalls also live in, so rooms are whatever is left after excluding those ids and
     // anything that isn't a plain SPACE (buildings/floors also answer to `space`).
     const rel = (module: string) =>
-      facilioApi
-        .fetchAllRelatedList<any>({ moduleName: 'floor', id: floorId, relatedModuleName: module, relatedFieldName: 'floor' })
+      fetchAllRelatedPaged<any>({ moduleName: 'floor', id: floorId, relatedModuleName: module, relatedFieldName: 'floor' })
         .then((r) => (r.error ? [] : r.list ?? []))
         .catch(() => [] as any[]);
     const [desks, lockers, stalls, spaces] = await Promise.all([rel('desks'), rel('lockers'), rel('parkingstall'), rel('space')]);
@@ -437,8 +437,7 @@ export class FacilioApiDataSource implements FloorplanDataSource {
     if (!isRealFloorId(floorId)) throw new Error(`facilio-api: ${floorId} is not an org floor id`);
 
     const rel = (module: string) =>
-      facilioApi
-        .fetchAllRelatedList<any>({ moduleName: 'floor', id: floorId, relatedModuleName: module, relatedFieldName: 'floor' })
+      fetchAllRelatedPaged<any>({ moduleName: 'floor', id: floorId, relatedModuleName: module, relatedFieldName: 'floor' })
         .then((r) => (r.error ? [] : r.list ?? []))
         .catch(() => [] as any[]);
     const [desks, lockers, stalls] = await Promise.all([rel('desks'), rel('lockers'), rel('parkingstall')]);
@@ -739,6 +738,56 @@ async function fetchAllPaged(moduleName: string, perPage = 200): Promise<any[]> 
     if (rows.length < perPage) break;
   }
   return out;
+}
+
+/**
+ * The rows a server hands back when it is not asked for a page size — V3's list default. The
+ * relatedList endpoint answered exactly this many desks for a floor that has hundreds: every
+ * workspace module (desks, lockers, parking, rooms, the plan's markers) was cut at 50.
+ */
+const SERVER_DEFAULT_PAGE = 50;
+const RELATED_PAGE_SIZE = 500;
+
+/**
+ * EVERY row of a related list, page by page — `fetchAllRelatedList` alone returns the server's
+ * first page (50 rows) and nothing says there were more.
+ *
+ * Stops on an empty page, on a page with nothing new (a server that ignores `page` sends page 1
+ * again), or on a short page. "Short" allows for a server that ignores `perPage` too: it answers
+ * its own default of 50, which is shorter than the 500 asked for without being the last page, so
+ * exactly 50 rows asks for the next page rather than stopping.
+ *
+ * An error on the first page is the caller's to handle; a later page failing keeps what arrived.
+ */
+export async function fetchAllRelatedPaged<T = any>(
+  opts: { moduleName: string; id: string | number; relatedModuleName: string; relatedFieldName: string },
+  fetchPage: (page: number, perPage: number) => Promise<FacilioApiListResult<T>> = (page, perPage) =>
+    facilioApi.fetchAllRelatedList<T>(opts, { page, perPage }),
+  perPage = RELATED_PAGE_SIZE,
+): Promise<FacilioApiListResult<T> & { pages: number }> {
+  const out: T[] = [];
+  const seen = new Set<string>();
+  let pages = 0;
+  for (let page = 1; page <= 200; page++) {
+    const res = await fetchPage(page, perPage);
+    if (res.error) {
+      if (page === 1) return { ...res, list: null, pages };
+      break;
+    }
+    pages = page;
+    const rows = res.list ?? [];
+    const fresh = rows.filter((r) => {
+      const key = String((r as { id?: unknown })?.id ?? JSON.stringify(r));
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    out.push(...fresh);
+    if (!fresh.length) break;
+    if (rows.length >= perPage) continue;
+    if (rows.length !== SERVER_DEFAULT_PAGE) break;
+  }
+  return { error: null, list: out, pages };
 }
 
 function sortByName<T extends { name?: string }>(rows: T[]): T[] {
@@ -1133,8 +1182,7 @@ export async function ensurePlanGeoreference(floorId: string, planId: PlanId, im
   // which leaves `geometry` null and writes points in a small implicit space around [0,0]).
   // Inventing the synthetic quad over the top of those makes every one of them out-of-frame, so
   // the app shows an empty plan for a floor that really does have desks on it.
-  const existing = await facilioApi
-    .fetchAllRelatedList<any>({ moduleName: 'indoorfloorplan', id: summary.id, relatedModuleName: 'floorplanmarker', relatedFieldName: 'indoorfloorplan' })
+  const existing = await fetchAllRelatedPaged<any>({ moduleName: 'indoorfloorplan', id: summary.id, relatedModuleName: 'floorplanmarker', relatedFieldName: 'indoorfloorplan' })
     .then((r) => (r.error ? [] : r.list ?? []))
     .catch(() => [] as any[]);
   const existingPoints = existing.map((m: any) => parsePointGeometry(m.geometry)).filter((p): p is [number, number] => !!p);
@@ -1189,7 +1237,7 @@ async function syncMarkersForIndoorFloorPlan(indoorFloorPlanId: number, units: (
   const quad = geometryStringToQuad(record.geometry);
   if (!quad) return false;
 
-  const existingRes = await facilioApi.fetchAllRelatedList<any>({
+  const existingRes = await fetchAllRelatedPaged<any>({
     moduleName: 'indoorfloorplan',
     id: indoorFloorPlanId,
     relatedModuleName: 'floorplanmarker',
@@ -1297,7 +1345,7 @@ async function ensureRealSpaceRecord(unit: Unit): Promise<RealSpaceRef | null> {
     return null;
   }
 
-  const markersRes = await facilioApi.fetchAllRelatedList<any>({
+  const markersRes = await fetchAllRelatedPaged<any>({
     moduleName: 'indoorfloorplan',
     id: summary.id,
     relatedModuleName: 'floorplanmarker',
@@ -1601,7 +1649,7 @@ export async function findUnitIdForDeskRecord(floorId: string, deskRecordId: num
   const byType = await getFloorplanDetailsByType(floorId).catch(() => ({}) as Record<string, any>);
   const summary = byType[String(FLOOR_PLAN_TYPE.workstation)];
   if (!summary?.id) return null;
-  const markersRes = await facilioApi.fetchAllRelatedList<any>({
+  const markersRes = await fetchAllRelatedPaged<any>({
     moduleName: 'indoorfloorplan',
     id: summary.id,
     relatedModuleName: 'floorplanmarker',
