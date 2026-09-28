@@ -18,7 +18,7 @@ import { legendItems } from '../canvas/Legend';
 import { departmentColor, departmentKey, departmentsIn } from '../../lib/departmentColors';
 import { buildSeatingRows, holderText, seatingColumns, seatingPages, seatingRowLines, seatingSummary } from '../../lib/seatingList';
 import type { MeasureText, SeatingColumns } from '../../lib/seatingList';
-import { planDetailAreas } from '../../lib/printAreas';
+import { planLabelledDetailAreas } from '../../lib/printAreas';
 import type { DetailArea } from '../../lib/printAreas';
 import type { SeatingRow } from '../../lib/seatingList';
 import styles from './PrintSheet.module.css';
@@ -194,14 +194,24 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
   // name above and "Holder · Department" below (see lib/printAreas).
   const detailAreas = useMemo(() => {
     if (!showPlan || scope !== 'detail') return [];
-    const desks = planMarkers(state)
+    const markers = planMarkers(state);
+    const desks = markers
       .filter((m) => m.type === 'workstation' && m.geom.kind === 'point')
       .map((m) => ({ id: m.id, x: (m.geom as { x: number }).x * IMG_W, y: (m.geom as { y: number }).y * IMG_H }));
-    // Cut for a frame 1/scale the size, then scaled back up: labels DETAIL_LABEL_SCALE× bigger.
-    return planDetailAreas(desks, { frameW: VIEW_FRAME_W / DETAIL_LABEL_SCALE, frameH: VIEW_FRAME_H / DETAIL_LABEL_SCALE }).map((a) => ({
-      ...a,
-      zoom: a.zoom * DETAIL_LABEL_SCALE,
-    }));
+    // A detail page shows every desk in FULL — its name, who holds it, their department — checked
+    // with the same label layout the page draws with (PrintZoomedPlan); an area where one doesn't
+    // fit is zoomed in further (see planLabelledDetailAreas).
+    const inputs = markerLabelInputs(state, markers, { personal: false });
+    const wants = new Map(inputs.map((i) => [i.id, i]));
+    const allLabelled = (area: DetailArea) => {
+      const placed = planMarkerLabels(inputs, { planW: IMG_W, planH: IMG_H, zoom: area.zoom / DETAIL_LABEL_SCALE });
+      return area.deskIds.every((id) => {
+        const p = placed.get(id);
+        const want = wants.get(id);
+        return !!p?.name && (!want?.sub || p.sub) && (!want?.dept || !!p.dept);
+      });
+    };
+    return planLabelledDetailAreas(desks, { frameW: VIEW_FRAME_W, frameH: VIEW_FRAME_H, labelScale: DETAIL_LABEL_SCALE, allLabelled });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showPlan, scope, state]);
   const pageCount = 1 + detailAreas.length + seatingPageList.length;

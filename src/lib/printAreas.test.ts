@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { deskPitch, planDetailAreas } from './printAreas';
+import { deskPitch, planDetailAreas, planLabelledDetailAreas } from './printAreas';
+import { planMarkerLabels } from './labelLayout';
+import type { MarkerLabelInput } from './labelLayout';
 import type { DeskPoint } from './printAreas';
 
 /**
@@ -70,5 +72,39 @@ describe('detail pages', () => {
     const [area] = planDetailAreas(pod('a', 100, 100), FRAME);
     expect(area.cx).toBe(115);
     expect(area.cy).toBe(130);
+  });
+});
+
+describe('every desk on a detail page is labelled in full', () => {
+  // The floor's usual spacing is 90 plan px (rows of desks); one pod of six sits round a table
+  // with desks 26 px apart — like the one that printed its middle desk bare.
+  const rows: DeskPoint[] = Array.from({ length: 24 }, (_, i) => ({ id: `r${i}`, x: 100 + (i % 8) * 90, y: 100 + Math.floor(i / 8) * 90 }));
+  const podDesks: DeskPoint[] = [0, 1, 2].flatMap((c) => [
+    { id: `p0${c}`, x: 1100 + c * 26, y: 700 },
+    { id: `p1${c}`, x: 1100 + c * 26, y: 760 },
+  ]);
+  const points = [...rows, ...podDesks];
+  const inputs: MarkerLabelInput[] = points.map((p) => ({
+    id: p.id,
+    x: p.x / 1492,
+    y: p.y / 1054,
+    size: 24,
+    name: `New Test Desk ${p.id}`,
+    sub: 'Amrithya',
+    dept: 'Project Implementation',
+    rank: 2,
+  }));
+  const allLabelled = (area: { zoom: number; deskIds: string[] }) => {
+    const placed = planMarkerLabels(inputs, { planW: 1492, planH: 1054, zoom: area.zoom / 1.3 });
+    return area.deskIds.every((id) => placed.get(id)?.name && placed.get(id)?.sub && placed.get(id)?.dept);
+  };
+
+  it('zooms in on a pod packed tighter than the rest of the floor until each desk fits', () => {
+    const plain = planDetailAreas(points, { frameW: FRAME.frameW / 1.3, frameH: FRAME.frameH / 1.3 }).map((a) => ({ ...a, zoom: a.zoom * 1.3 }));
+    expect(plain.every(allLabelled)).toBe(false); // the old cut: some pod desk printed bare
+
+    const areas = planLabelledDetailAreas(points, { ...FRAME, labelScale: 1.3, allLabelled });
+    expect(areas.every(allLabelled)).toBe(true);
+    expect(allIds(areas)).toEqual(points.map((p) => p.id).sort());
   });
 });

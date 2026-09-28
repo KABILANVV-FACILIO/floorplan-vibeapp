@@ -38,6 +38,11 @@ export interface DetailAreaOptions {
   /** The page's plan frame, in CSS px. */
   frameW: number;
   frameH: number;
+  /**
+   * Zoom in this much further than the plan's own spacing asks for (and past MAX_ZOOM by as much).
+   * For a pod whose desks sit closer than the floor's usual pitch — see planLabelledDetailAreas.
+   */
+  zoomBoost?: number;
 }
 
 /** Screen px wanted between neighbouring desks — about one holder line ("Name · Department"). */
@@ -60,7 +65,8 @@ interface Box {
 export function planDetailAreas(points: DeskPoint[], opts: DetailAreaOptions): DetailArea[] {
   if (points.length === 0) return [];
   const pitch = deskPitch(points);
-  const zoom = clamp(TARGET_PITCH_PX / pitch, MIN_ZOOM, MAX_ZOOM);
+  const boost = opts.zoomBoost ?? 1;
+  const zoom = clamp(TARGET_PITCH_PX / pitch, MIN_ZOOM, MAX_ZOOM) * boost;
   // How much plan fits in one page at that zoom, after the label margins.
   const capW = (opts.frameW - 2 * PAD_X) / zoom;
   const capH = (opts.frameH - 2 * PAD_Y) / zoom;
@@ -87,11 +93,50 @@ export function planDetailAreas(points: DeskPoint[], opts: DetailAreaOptions): D
       return {
         cx: (b.minX + b.maxX) / 2,
         cy: (b.minY + b.maxY) / 2,
-        zoom: Math.min(fitZoom, zoom * 1.5, MAX_ZOOM),
+        zoom: Math.min(fitZoom, zoom * 1.5, MAX_ZOOM * boost),
         deskIds: p.map((d) => d.id),
       };
     })
     .sort((a, b) => a.cy - b.cy || a.cx - b.cx);
+}
+
+/** How far past the plan's own zoom a crowded area may go before it prints as it is. */
+const MAX_BOOST = 3.2;
+const BOOST_STEP = 1.3;
+
+/**
+ * Detail areas in which EVERY desk is labelled in full — the promise each detail page makes
+ * ("every desk in this area, with who is placed there").
+ *
+ * The zoom `planDetailAreas` picks comes from the floor's typical desk spacing, so a pod packed
+ * tighter than the rest of the floor (six desks round one table) still prints with neighbouring
+ * labels colliding, and the layout drops whichever ones don't fit. So each area is checked with
+ * the real label layout (`allLabelled`), and one that fails is cut again, zoomed in further — on
+ * more pages if it no longer fits one — until every desk on it is labelled, or the zoom has gone
+ * as far as it sensibly can (two desks drawn on top of each other never separate).
+ *
+ * `labelScale` is how much larger than the screen the pages draw their chips and labels: areas are
+ * cut for a frame 1/labelScale the size, and their zoom scaled back up.
+ */
+export function planLabelledDetailAreas(
+  points: DeskPoint[],
+  opts: DetailAreaOptions & { labelScale: number; allLabelled: (area: DetailArea) => boolean },
+): DetailArea[] {
+  const cut = (pts: DeskPoint[], boost: number) =>
+    planDetailAreas(pts, { frameW: opts.frameW / opts.labelScale, frameH: opts.frameH / opts.labelScale, zoomBoost: boost }).map((a) => ({
+      ...a,
+      zoom: a.zoom * opts.labelScale,
+    }));
+  const byId = new Map(points.map((p) => [p.id, p]));
+  const out: DetailArea[] = [];
+  const visit = (pts: DeskPoint[], boost: number) => {
+    for (const area of cut(pts, boost)) {
+      if (boost * BOOST_STEP > MAX_BOOST || opts.allLabelled(area)) out.push(area);
+      else visit(area.deskIds.map((id) => byId.get(id)!), boost * BOOST_STEP);
+    }
+  };
+  visit(points, 1);
+  return out.sort((a, b) => a.cy - b.cy || a.cx - b.cx);
 }
 
 /** Median nearest-neighbour distance — the plan's own spacing between desks. */
