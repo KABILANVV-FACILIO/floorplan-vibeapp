@@ -3,6 +3,7 @@ import { moduleColor } from '../../lib/unitStatus';
 import { AMENITY_META, isRoomLike, TYPE_META } from '../../lib/types';
 import { enabledTypes } from '../../state/selectors';
 import { departmentColor, departmentsIn } from '../../lib/departmentColors';
+import { departmentDisplayName } from '../../lib/displayNames';
 import type { AmenityIcon } from '../../lib/types';
 import type { AppState } from '../../state/types';
 
@@ -25,7 +26,7 @@ export function legendItems(state: AppState): { label: string; color: string }[]
     // "Free / Assigned" key beside department-coloured desks would be a straight lie.
     const present = departmentsIn(state.units);
     const ids = present.map((d) => d.id);
-    items = present.map((d) => ({ label: d.name, color: departmentColor(d.id, state.departmentColors, ids) }));
+    items = present.map((d) => ({ label: departmentDisplayName(d.name), color: departmentColor(d.id, state.departmentColors, ids) }));
     // Desks with no department on their record keep the state colours, so the key says so.
     if (state.units.some((u) => u.type === 'workstation' && !u.department)) {
       items.push({ label: 'No department', color: moduleColor(state, 'workstation', 'free') });

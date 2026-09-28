@@ -5,6 +5,7 @@ import { moduleEnabled } from '../../state/selectors';
 import { Button } from '../primitives/Button';
 import { moduleColor } from '../../lib/unitStatus';
 import { departmentColor, departmentsIn, DEPARTMENT_PALETTE } from '../../lib/departmentColors';
+import { departmentDisplayName } from '../../lib/displayNames';
 import styles from './SettingsScreen.module.css';
 
 const MODULE_TABS: { id: 'permissions' | 'modules' | 'bookings' | UnitType; name: string }[] = [
@@ -420,7 +421,7 @@ function DepartmentColors() {
             <div key={dept.id} className={styles.stateRow}>
               <span className={styles.stateSwatch} style={{ background: current }} />
               <div className={styles.stateText}>
-                <div className={styles.rowName}>{dept.name}</div>
+                <div className={styles.rowName}>{departmentDisplayName(dept.name)}</div>
                 <div className={styles.rowDesc}>{here > 0 ? `${here} desks on this floor` : 'No desks on this floor'}</div>
               </div>
               <div className={styles.swatchRow}>

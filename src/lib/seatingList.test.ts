@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildSeatingRows, seatingPages, seatingSummary } from './seatingList';
+import { buildSeatingRows, seatingColumns, seatingPages, seatingRowLines, seatingSummary } from './seatingList';
 import type { SeatingLookups } from './seatingList';
 import type { Unit } from './types';
 
@@ -18,6 +18,24 @@ const look = (over: Partial<SeatingLookups> = {}): SeatingLookups => ({
   holderDepartment: () => undefined,
   colorFor: () => '#8a4bd3',
   ...over,
+});
+
+describe('names as the org writes them', () => {
+  it('prints the holder without the employee number, and the number in its own column', () => {
+    const [row] = buildSeatingRows([desk('a', 'E-1-WS77')], look({ holderName: () => '251850 - Johar  Ali Ali Asghar' }));
+    expect(row).toMatchObject({ holder: 'Johar Ali Ali Asghar', holderNo: '251850' });
+  });
+
+  it('prefers the HRMS id for the number when the org fills it', () => {
+    const [row] = buildSeatingRows([desk('a', 'E-1-WS77')], look({ holderName: () => '251850 - Johar Ali', holderNumber: () => 'HR-9' }));
+    expect(row.holderNo).toBe('HR-9');
+  });
+
+  it('prints the department without its cost-centre code, but colours it by the record', () => {
+    const colorFor = (_u: Unit, dept: string) => (dept === '10000264-Investment Executive Program' ? '#123456' : undefined);
+    const [row] = buildSeatingRows([desk('a', 'E-1-WS77', { department: '10000264-Investment Executive Program' })], look({ colorFor }));
+    expect(row).toMatchObject({ department: 'Investment Executive Program', departmentColor: '#123456' });
+  });
 });
 
 describe('the rows', () => {
@@ -112,5 +130,40 @@ describe('the pages', () => {
 
   it('has no pages for no desks', () => {
     expect(seatingPages([], 28)).toEqual([]);
+  });
+});
+
+describe('printed columns', () => {
+  const opts = { tablePx: 480, numbered: true, withNumbers: true };
+  const enec = buildSeatingRows(
+    [
+      desk('a', 'E-1-WS77', { department: '10000264-Investment Executive Program' }),
+      desk('b', 'E-1-WS78', { department: '10000204-Chief Communications & PR Officer Office' }),
+      desk('c', 'E-1-WS79', { department: 'Finance' }),
+    ],
+    look({ holderName: (id) => (id === 'c' ? null : '251795 - Abdulrahman Abdullah Khalaf AlAnazi') }),
+  );
+
+  it('gives short desk names a narrow column, and the department the room', () => {
+    const cols = seatingColumns(enec, opts);
+    expect(cols.desk).toBeLessThan(80);
+    expect(cols.dept).toBeGreaterThanOrEqual(150);
+    expect(cols.no + cols.desk + cols.holder + cols.empNo + cols.dept).toBe(480);
+  });
+
+  it('prints a department that fits on one line, and wraps one that does not', () => {
+    const cols = seatingColumns(enec, opts);
+    const lines = new Map(enec.map((r) => [r.desk, seatingRowLines(r, cols)]));
+    expect(lines.get('E-1-WS79')).toBe(1); // Free · Finance
+    expect(lines.get('E-1-WS78')).toBe(2); // Chief Communications & PR Officer Office
+  });
+
+  it('holds fewer rows on a page when rows wrap', () => {
+    const rows = Array.from({ length: 60 }, (_, i) => i);
+    const tall = (i: number) => (i % 2 ? 32 : 20);
+    const pages = seatingPages(rows, 560, 2, tall);
+    for (const col of pages.flat(1)) expect(col.reduce((sum, i) => sum + tall(i), 0)).toBeLessThanOrEqual(560);
+    expect(pages.flat(2)).toEqual(rows);
+    expect(pages.length).toBe(2);
   });
 });

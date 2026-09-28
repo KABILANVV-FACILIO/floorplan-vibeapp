@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent as ReactDragEvent } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { contactName, initials, isAssignable, unitById, visibleUnits } from '../../state/selectors';
+import { byDepartmentName, departmentDisplayName, employeeNumber, personDisplayName } from '../../lib/displayNames';
 import { TYPE_META } from '../../lib/types';
 import type { Unit } from '../../lib/types';
 import { facilioRecordUrl, isFacilioApiConfigured } from '../../lib/facilioApi';
@@ -67,8 +68,8 @@ export function AssignPanel() {
   const departmentChoices: LookupChoice[] = useMemo(() => {
     if (state.departments.length) {
       return [...state.departments]
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map((d) => ({ value: d.id, label: d.name, color: departmentColor(d.id, state.departmentColors, planDeptIds) }));
+        .sort(byDepartmentName)
+        .map((d) => ({ value: d.id, label: departmentDisplayName(d.name), color: departmentColor(d.id, state.departmentColors, planDeptIds) }));
     }
     // Against the org, department values must be record ids (PickListOperators match ids). If the
     // department list didn't load at boot, answer nothing here and let the panel read the
@@ -76,7 +77,7 @@ export function AssignPanel() {
     if (isFacilioApiConfigured) return [];
     // The demo roster has department names but no department records: filter by name.
     const names = [...new Set(state.employees.map((e) => e.department).filter((n): n is string => !!n))].sort();
-    return names.map((n) => ({ value: n, label: n, color: departmentColor('name:' + departmentKey(n), state.departmentColors, planDeptIds) }));
+    return names.map((n) => ({ value: n, label: departmentDisplayName(n), color: departmentColor('name:' + departmentKey(n), state.departmentColors, planDeptIds) }));
   }, [state.departments, state.employees, state.departmentColors, planDeptIds]);
   const activeFilters = filters.length;
   const filtersUsable = !!filterFields && filterFields.length > 0;
@@ -239,9 +240,9 @@ export function AssignPanel() {
                     {contact.department && <span className={styles.deptDot} style={{ background: deptColorForName(contact.department) }} />}
                   </span>
                   <div className={styles.personText}>
-                    <div className={styles.personName}>{contact.name}</div>
-                    {(contact.hrmsEmployeeId || contact.department) && (
-                      <div className={styles.personSub}>{[contact.hrmsEmployeeId, contact.department].filter(Boolean).join(' · ')}</div>
+                    <div className={styles.personName}>{personDisplayName(contact.name)}</div>
+                    {(employeeNumber(contact) || contact.department) && (
+                      <div className={styles.personSub}>{[employeeNumber(contact), departmentDisplayName(contact.department)].filter(Boolean).join(' · ')}</div>
                     )}
                   </div>
                   {held.length > 0 && <span className={styles.heldBadge}>{held.join(', ')}</span>}

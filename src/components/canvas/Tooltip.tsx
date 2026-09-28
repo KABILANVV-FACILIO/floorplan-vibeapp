@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { contactName, isAssignable, isBookable, moduleEnabled, unitById } from '../../state/selectors';
+import { departmentDisplayName, personDisplayName } from '../../lib/displayNames';
 import { fmtTime, tooltipPlacement, unitCenter } from '../../lib/geometry';
 import { unitStatus } from '../../lib/unitStatus';
 import { StatusPill } from '../primitives/StatusPill';
@@ -145,7 +146,7 @@ export function Tooltip() {
   // The card reports each thing ONCE. `Type` is already the eyebrow, the holder gets its own
   // block below, and the record's state is the pill — repeating them as rows produced a card
   // that said "Free", "Record status: Vacant" and "State: Vacant" one under the other.
-  const details: { label: string; value: string }[] = [];
+  const details: { label: string; value: string; full?: string }[] = [];
   if (!isAmenity) {
     if (unit.type === 'workstation') {
       const deskType = DESK_TYPES.find((d) => d.id === (unit.deskType ?? 'ASSIGNED'));
@@ -156,7 +157,8 @@ export function Tooltip() {
     if (todaysBooking) {
       details.push({ label: 'Booked', value: `${fmtTime(todaysBooking.start)}–${fmtTime(todaysBooking.end)}` });
     }
-    for (const f of record?.fields ?? []) details.push(f);
+    // The department reads without its cost-centre code, as on the plan; the full value is its hover text.
+    for (const f of record?.fields ?? []) details.push(f.label === 'Department' ? { label: f.label, value: departmentDisplayName(f.value), full: f.value } : f);
   }
 
   // The status is always a TAG, and the record's own state wins over the app's computed one — it
@@ -211,15 +213,16 @@ export function Tooltip() {
           {!recordPending && holder && (
             <div className={styles.holder}>
               <div className={styles.eyebrow}>Assigned to</div>
+              {/* The name as the plan shows it; the record's own form, employee number and all, on hover. */}
               <div className={styles.holderName} data-tip={holder}>
-                {holder}
+                {personDisplayName(holder)}
               </div>
             </div>
           )}
           {details.map((d) => (
             <div key={d.label} className={styles.detailRow}>
               <span className={styles.detailLabel}>{d.label}</span>
-              <span className={styles.detailValue} data-tip={d.value}>
+              <span className={styles.detailValue} data-tip={d.full ?? d.value}>
                 {d.value}
               </span>
             </div>

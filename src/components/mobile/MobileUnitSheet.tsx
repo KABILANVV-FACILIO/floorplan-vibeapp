@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { contactName, initials, isAssignable, isBookable, unitById } from '../../state/selectors';
+import { personDisplayName } from '../../lib/displayNames';
 import { unitStatus } from '../../lib/unitStatus';
 import { fmtTime } from '../../lib/geometry';
 import { resolveMarkerDef, TYPE_META } from '../../lib/types';
@@ -130,7 +131,7 @@ export function MobileUnitSheet() {
                 >
                   <span className={styles.avatar}>{initials(c.name)}</span>
                   <span className={styles.empText}>
-                    <span className={styles.empName}>{c.name}</span>
+                    <span className={styles.empName}>{personDisplayName(c.name)}</span>
                   </span>
                   {contactId === c.id && (
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--blue-600)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">

@@ -1,4 +1,5 @@
 import type { AppState } from '../state/types';
+import { personInitials } from './displayNames';
 import { conflictsFor, isAssignable, isBookable } from '../state/selectors';
 import { isRoomLike, resolveMarkerDef, STATE_DEFS } from './types';
 import { departmentColor, departmentsIn } from './departmentColors';
@@ -178,7 +179,8 @@ function markerIcon(type: Unit['type']): MarkerStyle['icon'] {
   return null;
 }
 function initialsOf(name: string): string {
-  return name.split(' ').map((p) => p[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
+  // From the name, never its employee number: "251850 - Johar Ali" is "JA", not "2-".
+  return personInitials(name);
 }
 function contactNameFallback(state: AppState, contactId: string): string {
   return state.employees.find((e) => e.id === contactId)?.name ?? contactId;

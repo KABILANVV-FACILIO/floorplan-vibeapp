@@ -1,11 +1,14 @@
 import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
-import { contactName, myAssignedUnit } from '../../state/selectors';
+import { contactName, markerSubTexts, myAssignedUnit } from '../../state/selectors';
 import { markerStyle, unitStatus } from '../../lib/unitStatus';
 import { isRoomLike } from '../../lib/types';
 import type { PointGeom, Unit } from '../../lib/types';
 import type { LabelPlacement } from '../../lib/labelLayout';
-import { NAME_MAX_PX, SUB_MAX_PX } from '../../lib/labelLayout';
+import { DEPT_FONT, NAME_MAX_PX, SUB_MAX_PX } from '../../lib/labelLayout';
+
+/** One line of the holder label: its own ellipsis, so a long department never pushes the name out. */
+const LINE = { display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } as const;
 import { MARKER_ICONS as ICONS } from './markerIcons';
 import styles from './Marker.module.css';
 
@@ -14,6 +17,7 @@ export function Marker({
   invZ,
   labels,
   badge,
+  personal = true,
   onDragStart,
 }: {
   unit: Unit;
@@ -29,6 +33,11 @@ export function Marker({
    * label fits depends on the OTHER markers, which a single marker cannot see.
    */
   labels?: LabelPlacement;
+  /**
+   * Mark the viewer's own desk with the "Your desk" pill. The print sheet turns it off: a sheet on
+   * a wall is read by everyone, and the pill would stand where the desk's name belongs.
+   */
+  personal?: boolean;
   onDragStart?: (unit: Unit, e: ReactMouseEvent) => void;
 }) {
   const { state, actions } = useFloorplan();
@@ -36,7 +45,7 @@ export function Marker({
   const style = markerStyle(state, unit);
   const status = unitStatus(state, unit, (id) => contactName(state, id));
   const draggable = state.mode === 'edit' && state.tool === 'select';
-  const isMine = myAssignedUnit(state)?.id === unit.id;
+  const isMine = personal && myAssignedUnit(state)?.id === unit.id;
   const isHighlighted = state.highlightUnitId === unit.id;
   // An org write is in flight for THIS record — shown on the record, not only on the button that
   // started it, because the transition is happening to the thing on the plan.
@@ -97,16 +106,17 @@ export function Marker({
   // Under-marker label. Assign view: desk name on top, assignee (if any)
   // underneath. Book view: the space name. Amenities: their name, always.
   const contactId = state.assignments[unit.id];
-  // "Omar Haddad · Facilities": who holds it and which team they are on, under the desk number
-  // above. The department is the thing a workplace manager is actually scanning for, and reading
-  // it off a colour alone means holding a legend in your head.
+  // Who holds it, and on a second line which team they are on, under the desk number above. The
+  // department is the thing a workplace manager is actually scanning for, and reading it off a
+  // colour alone means holding a legend in your head. Same texts the layout measured.
   const holder = state.mode === 'assign' && contactId ? contactName(state, contactId) : null;
-  const assignedName = holder ? (unit.department ? `${holder} · ${unit.department}` : holder) : null;
+  const sub = markerSubTexts(state, unit);
+  const dept = sub.dept;
   // The chip's tooltip carries everything in FULL — the labels beside it are capped and may end
   // in "…", and they take no pointer events, so this is where a truncated name is readable.
   // The status already names the holder in Assign view ("Assigned · Amrithya"), so only the
   // department is added — appending the whole holder line repeated the name.
-  const title = `${unit.label}${unit.room ? ' · ' + unit.room : ''} — ${status.text}${holder && unit.department ? ` · ${unit.department}` : ''}`;
+  const title = `${unit.label}${unit.room ? ' · ' + unit.room : ''} — ${status.text}${holder && dept ? ` · ${dept}` : ''}`;
   // The zoom threshold this used to carry (`invZ <= 1.9`) dropped every label past one zoom level
   // whether or not there was room for it, and kept every label before it whether or not there was.
   // Room is what actually matters, and only the canvas can judge it.
@@ -195,7 +205,8 @@ export function Marker({
         ))}
       </div>
       {/*
-        The desk's name ABOVE its chip, and who holds it with their department BELOW.
+        The desk's name ABOVE its chip; who holds it BELOW, with their department as a second,
+        smaller line when there is room for both (the holder alone when there isn't).
 
         The two are separate boxes but never separate decisions: `planMarkerLabels` never draws a
         holder line without its own desk's name above it. That is what stops the old failure where
@@ -219,17 +230,20 @@ export function Marker({
           {unit.label}
         </div>
       )}
-      {showSub && assignedName && (
+      {showSub && sub.holder && (
         <div
           style={{
             ...labelBase,
             transform: `scale(${invZ}) translate(-50%, ${Math.round(style.size / 2 + 4)}px)`,
             maxWidth: labels?.subWidth ?? SUB_MAX_PX,
-            font: '500 8px/1.2 var(--font-sans)',
-            color: 'var(--ink-500)',
+            // Centred, so a short department sits under a long name rather than hanging left.
+            textAlign: 'center',
           }}
         >
-          {assignedName}
+          <div style={{ ...LINE, font: '500 8px/1.2 var(--font-sans)', color: 'var(--ink-700)' }}>{sub.holder}</div>
+          {labels?.dept && sub.dept && (
+            <div style={{ ...LINE, font: `400 ${DEPT_FONT}px/1.2 var(--font-sans)`, color: 'var(--ink-500)' }}>{sub.dept}</div>
+          )}
         </div>
       )}
     </>

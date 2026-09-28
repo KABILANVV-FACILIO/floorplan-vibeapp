@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { initials, visibleUnits } from '../../state/selectors';
+import { byPersonName, departmentDisplayName, employeeNumber, personDisplayName } from '../../lib/displayNames';
 import { facilioRecordUrl } from '../../lib/facilioApi';
 import { useLivePeople } from '../../hooks/useLivePeople';
 import styles from './PeopleView.module.css';
@@ -25,7 +26,7 @@ export function PeopleView() {
   // The org's own list, re-read each time this page opens and filtered at the org as you type —
   // the roster in state is only the fallback until it answers (see useLivePeople).
   const { people: live } = useLivePeople(search, state.employees);
-  const people = live.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const people = live.slice().sort(byPersonName);
 
   return (
     <div className={styles.page}>
@@ -54,9 +55,9 @@ export function PeopleView() {
                 <div key={c.id} className={styles.row}>
                   <span className={styles.avatar}>{initials(c.name) || '·'}</span>
                   <div className={styles.meta}>
-                    <span className={styles.name}>{c.name}</span>
-                    {(c.hrmsEmployeeId || c.department || c.email) && (
-                      <span className={styles.rowSub}>{[c.hrmsEmployeeId, c.department, c.email].filter(Boolean).join(' · ')}</span>
+                    <span className={styles.name}>{personDisplayName(c.name)}</span>
+                    {(employeeNumber(c) || c.department || c.email) && (
+                      <span className={styles.rowSub}>{[employeeNumber(c), departmentDisplayName(c.department), c.email].filter(Boolean).join(' · ')}</span>
                     )}
                   </div>
                   {desk && <span className={styles.deskPill}>{desk}</span>}

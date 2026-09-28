@@ -1,3 +1,4 @@
+import { byDepartmentName } from './displayNames';
 /**
  * Colouring desks by the department that holds them.
  *
@@ -155,5 +156,5 @@ function computeDepartmentsIn(units: { department?: string; departmentId?: strin
     const id = u.departmentId || 'name:' + departmentKey(name);
     if (!seen.has(id)) seen.set(id, { id, name });
   }
-  return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+  return [...seen.values()].sort(byDepartmentName);
 }

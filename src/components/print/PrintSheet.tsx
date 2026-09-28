@@ -16,7 +16,8 @@ import { RoomLabel } from '../canvas/Canvas';
 import { Marker } from '../canvas/Marker';
 import { legendItems } from '../canvas/Legend';
 import { departmentColor, departmentKey, departmentsIn } from '../../lib/departmentColors';
-import { buildSeatingRows, seatingPages, seatingSummary } from '../../lib/seatingList';
+import { buildSeatingRows, holderText, seatingColumns, seatingPages, seatingRowLines, seatingSummary } from '../../lib/seatingList';
+import type { MeasureText, SeatingColumns } from '../../lib/seatingList';
 import { planDetailAreas } from '../../lib/printAreas';
 import type { DetailArea } from '../../lib/printAreas';
 import type { SeatingRow } from '../../lib/seatingList';
@@ -32,12 +33,15 @@ const PRINT_PLAN_HEIGHT_IN = 6.2;
 const PRINT_ZOOM = (PRINT_PLAN_HEIGHT_IN * 96) / IMG_H;
 
 /**
- * Seating list rows per column. Every cell is one line, clipped with an ellipsis, so a row is
- * always exactly SEATING_ROW_PX tall and the page break can be computed rather than measured —
- * which is what keeps the viewer, the paper and the PDF breaking in the same place. 28 rows of
- * 20px leave room for the title block and the footer on a letter-landscape page.
+ * The Seating list's geometry. A row is one line (20px) or, when its department or name won't fit
+ * its column, two (32px) — decided per row from the text (seatingRowLines), never measured, so
+ * the page break can be computed and the viewer, the paper and the PDF break in the same place.
+ * 560px is 28 one-line rows: what a letter-landscape page leaves under the bar and over the footer.
  */
-const SEATING_ROWS_PER_COLUMN = 28;
+const SEATING_COLUMN_PX = 28 * 20;
+const SEATING_ROW_PX = { 1: 20, 2: 32 } as const;
+/** One of the page's two side-by-side tables: the content width (11in less 34px padding a side) less the 28px gap, halved. */
+const SEATING_TABLE_PX = (11 * 96 - 68 - 28) / 2;
 
 /**
  * The plan frame in "Current view": the full content width of the page (11in less the sheet's
@@ -47,6 +51,15 @@ const SEATING_ROWS_PER_COLUMN = 28;
  */
 const VIEW_FRAME_W = 11 * 96 - 68;
 const VIEW_FRAME_H = PRINT_PLAN_HEIGHT_IN * 96;
+
+/**
+ * How much larger the detail pages draw chips and labels than the screen does. On screen a label
+ * is 8px; on a page that prints at 6pt, which is small for a sheet pinned to a wall. 1.3× prints
+ * the holder at ~8pt and the desk name at ~8.3pt. Chips, labels and the gaps between them all
+ * scale together, so the collision layout is the screen's own (run at zoom / scale) and the
+ * detail areas are cut for a frame 1/scale the size — every label that fits, fits at this size.
+ */
+const DETAIL_LABEL_SCALE = 1.3;
 
 /**
  * The floor plan print sheet — a port of `Floorplan Print.dc.html` from the Claude Design project
@@ -147,6 +160,7 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
         },
         isBooked: (id) => booked.has(id),
         isAssignable,
+        holderNumber: (id) => contactById(state, state.assignments[id])?.hrmsEmployeeId,
         holderDepartment: (id) => contactById(state, state.assignments[id])?.department,
         colorFor: (u, dept) => departmentColor(u.departmentId || 'name:' + departmentKey(dept), state.departmentColors, planDeptIds),
       },
@@ -154,7 +168,13 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
     // `units`/`booked` are derived from state each render; state is the real dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showPlan, state]);
-  const seatingPageList = seatingPages(seating, SEATING_ROWS_PER_COLUMN);
+  // The employee number gets a column when anyone on the floor has one — the org's names carry it
+  // in front ("251850 - …"), and the list prints the name without it.
+  const withNumbers = seating.some((r) => r.holderNo);
+  const measure = useMemo(listTextMeasure, []);
+  const seatCols = seatingColumns(seating, { tablePx: SEATING_TABLE_PX, numbered, withNumbers }, measure);
+  const lines = (r: SeatingRow) => seatingRowLines(r, seatCols, measure);
+  const seatingPageList = seatingPages(seating, SEATING_COLUMN_PX, 2, (r) => SEATING_ROW_PX[lines(r)]);
   // Each desk's number in the list, printed on its chip on the plan: the plan says where desk 12
   // is, the list says who sits at 12. Only desks are numbered — lockers and parking keep theirs.
   const deskNumbers = useMemo(() => new Map(seating.map((r) => [r.id, r.no])), [seating]);
@@ -177,7 +197,11 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
     const desks = planMarkers(state)
       .filter((m) => m.type === 'workstation' && m.geom.kind === 'point')
       .map((m) => ({ id: m.id, x: (m.geom as { x: number }).x * IMG_W, y: (m.geom as { y: number }).y * IMG_H }));
-    return planDetailAreas(desks, { frameW: VIEW_FRAME_W, frameH: VIEW_FRAME_H });
+    // Cut for a frame 1/scale the size, then scaled back up: labels DETAIL_LABEL_SCALE× bigger.
+    return planDetailAreas(desks, { frameW: VIEW_FRAME_W / DETAIL_LABEL_SCALE, frameH: VIEW_FRAME_H / DETAIL_LABEL_SCALE }).map((a) => ({
+      ...a,
+      zoom: a.zoom * DETAIL_LABEL_SCALE,
+    }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showPlan, scope, state]);
   const pageCount = 1 + detailAreas.length + seatingPageList.length;
@@ -260,6 +284,8 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
           summary={seatingSummary(seating)}
           chipColors={chipColors}
           numbered={numbered}
+          cols={seatCols}
+          lines={lines}
         />
       ))}
     </>
@@ -287,11 +313,17 @@ function SeatingPage({
   summary,
   chipColors,
   numbered,
+  cols,
+  lines,
 }: {
   columns: SeatingRow[][];
   where: Where;
   /** The plan page shows desk numbers (Whole floor), so the list carries them too. */
   numbered: boolean;
+  /** Column widths in px, sized to the floor's rows; `empNo` 0 when nobody has an employee number. */
+  cols: SeatingColumns;
+  /** How many lines each row takes — decided once, with the page breaks. */
+  lines: (r: SeatingRow) => 1 | 2;
   chipColors: Map<string, { background: string; borderColor: string; color: string }>;
   generatedAt: string;
   pageNo: number;
@@ -311,10 +343,11 @@ function SeatingPage({
         {[0, 1].map((c) => (
           <table key={c} className={styles.seatTable}>
             <colgroup>
-              {numbered && <col className={styles.colNo} />}
-              <col className={numbered ? styles.colDesk : styles.colDeskWide} />
-              <col className={styles.colHolder} />
-              <col className={styles.colDept} />
+              {numbered && <col style={{ width: cols.no }} />}
+              <col style={{ width: cols.desk }} />
+              <col style={{ width: cols.holder }} />
+              {cols.empNo > 0 && <col style={{ width: cols.empNo }} />}
+              <col style={{ width: cols.dept }} />
             </colgroup>
             {columns[c] && (
               <>
@@ -323,12 +356,13 @@ function SeatingPage({
                     {numbered && <th>#</th>}
                     <th>Desk</th>
                     <th>Assigned to</th>
+                    {cols.empNo > 0 && <th>Emp no</th>}
                     <th>Department</th>
                   </tr>
                 </thead>
                 <tbody>
                   {columns[c].map((r) => (
-                    <tr key={r.id}>
+                    <tr key={r.id} className={lines(r) === 2 ? styles.rowTwo : undefined}>
                       {numbered && (
                         <td className={styles.cellNo}>
                           <span className={styles.noChip} style={chipColors.get(r.id)}>
@@ -336,22 +370,19 @@ function SeatingPage({
                           </span>
                         </td>
                       )}
-                      <td className={styles.cellDesk}>{r.desk}</td>
-                      <td className={r.status === 'assigned' ? styles.cellHolder : styles.cellQuiet}>
-                        {r.status === 'assigned'
-                          ? r.holder ?? 'Assigned'
-                          : r.status === 'booked'
-                            ? 'Booked'
-                            : r.status === 'unassignable'
-                              ? 'Not assignable'
-                              : 'Free'}
+                      <td className={styles.cellDesk}>
+                        <span className={styles.cellText}>{r.desk}</span>
                       </td>
+                      <td className={r.status === 'assigned' ? styles.cellHolder : styles.cellQuiet}>
+                        <span className={styles.cellText}>{holderText(r)}</span>
+                      </td>
+                      {cols.empNo > 0 && <td className={styles.cellEmpNo}>{r.holderNo ?? ''}</td>}
                       <td className={styles.cellDept}>
                         {r.department ? (
-                          <>
+                          <span className={styles.cellText}>
                             <span className={styles.deptDot} style={{ background: r.departmentColor }} />
                             {r.department}
-                          </>
+                          </span>
                         ) : (
                           <span className={styles.cellQuiet}>—</span>
                         )}
@@ -375,6 +406,22 @@ function SeatingPage({
       </div>
     </div>
   );
+}
+
+/**
+ * The Seating list's text widths, measured in the page's own font on a canvas — what decides the
+ * column widths and which rows need a second line. A 3% margin covers the difference between the
+ * canvas and the page's text layout. No canvas (tests, SSR): the character-count estimate.
+ */
+function listTextMeasure(): MeasureText | undefined {
+  if (typeof document === 'undefined') return undefined;
+  const ctx = document.createElement('canvas').getContext('2d');
+  if (!ctx) return undefined;
+  const family = getComputedStyle(document.documentElement).getPropertyValue('--font-sans').trim() || 'sans-serif';
+  return (text, bold) => {
+    ctx.font = `${bold ? 600 : 400} 11px ${family}`;
+    return Math.ceil(ctx.measureText(text).width * 1.03);
+  };
 }
 
 interface Where {
@@ -426,17 +473,19 @@ function PrintViewPlan() {
  * viewer's own components and label layout, so desk names above and "Holder · Department" below
  * land exactly as the viewer places them at that zoom. Used by "Current view" and the detail pages.
  */
-function PrintZoomedPlan({ cx, cy, zoom }: { cx: number; cy: number; zoom: number }) {
+function PrintZoomedPlan({ cx, cy, zoom, labelScale = 1 }: { cx: number; cy: number; zoom: number; labelScale?: number }) {
   const { state } = useFloorplan();
   const rooms = planRooms(state);
   const markers = planMarkers(state);
+  // Chips and labels `labelScale`× their screen size: laid out as the screen would at
+  // zoom / labelScale (same geometry, everything divided by the scale), drawn at labelScale / zoom.
   const labelPlan = useMemo(
-    () => planMarkerLabels(markerLabelInputs(state, markers), { planW: IMG_W, planH: IMG_H, zoom }),
+    () => planMarkerLabels(markerLabelInputs(state, markers, { personal: false }), { planW: IMG_W, planH: IMG_H, zoom: zoom / labelScale }),
     // Built once per page, from the state at that moment.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [zoom],
+    [zoom, labelScale],
   );
-  const invZ = 1 / zoom;
+  const invZ = labelScale / zoom;
   const ox = VIEW_FRAME_W / 2 - cx * zoom;
   const oy = VIEW_FRAME_H / 2 - cy * zoom;
 
@@ -453,7 +502,7 @@ function PrintZoomedPlan({ cx, cy, zoom }: { cx: number; cy: number; zoom: numbe
         <RoomLabel key={`l-${r.id}`} unit={r} />
       ))}
       {markers.map((m) => (
-        <Marker key={m.id} unit={m} invZ={invZ} labels={labelPlan.get(m.id)} />
+        <Marker key={m.id} unit={m} invZ={invZ} personal={false} labels={labelPlan.get(m.id)} />
       ))}
     </div>
   );
@@ -508,7 +557,7 @@ function DetailPage({
 
       <div className={styles.planWrap}>
         <div className={[styles.plan, styles.planView].join(' ')}>
-          <PrintZoomedPlan cx={area.cx} cy={area.cy} zoom={area.zoom} />
+          <PrintZoomedPlan cx={area.cx} cy={area.cy} zoom={area.zoom} labelScale={DETAIL_LABEL_SCALE} />
         </div>
       </div>
 
@@ -531,7 +580,7 @@ function PrintPlan({ deskNumbers }: { deskNumbers: Map<string, number> }) {
   const rooms = planRooms(state);
   const markers = planMarkers(state);
   const labelPlan = useMemo(
-    () => planMarkerLabels(markerLabelInputs(state, markers), { planW: IMG_W, planH: IMG_H, zoom: PRINT_ZOOM }),
+    () => planMarkerLabels(markerLabelInputs(state, markers, { personal: false }), { planW: IMG_W, planH: IMG_H, zoom: PRINT_ZOOM }),
     // Built once per print, from the state at that moment.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -555,9 +604,9 @@ function PrintPlan({ deskNumbers }: { deskNumbers: Map<string, number> }) {
         // in the Seating list, so the plan stays readable however dense the floor is.
         const no = deskNumbers.get(m.id);
         return no ? (
-          <Marker key={m.id} unit={m} invZ={invZ} badge={String(no)} />
+          <Marker key={m.id} unit={m} invZ={invZ} personal={false} badge={String(no)} />
         ) : (
-          <Marker key={m.id} unit={m} invZ={invZ} labels={labelPlan.get(m.id)} />
+          <Marker key={m.id} unit={m} invZ={invZ} personal={false} labels={labelPlan.get(m.id)} />
         );
       })}
     </div>

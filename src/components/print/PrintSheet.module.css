@@ -224,27 +224,14 @@
   grid-template-columns: 1fr 1fr;
   gap: 28px;
   align-content: start;
+  /* Each table its own height: stretched to its taller neighbour, its rows grew past 20/32px. */
+  align-items: start;
 }
 .seatTable {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
   font: 400 11px/1 var(--font-sans);
-}
-.colNo {
-  width: 9%;
-}
-.colDesk {
-  width: 25%;
-}
-.colDeskWide {
-  width: 30%;
-}
-.colHolder {
-  width: 36%;
-}
-.colDept {
-  width: 30%;
 }
 .seatTable th {
   height: 24px;
@@ -268,6 +255,19 @@
   text-overflow: ellipsis;
   color: var(--ink-700);
 }
+/* A row whose department or name is too long for one line gets two — the row is taller (32px,
+   counted by the page break), and the text wraps instead of ending in "…". Two lines at most. */
+.seatTable tr.rowTwo td {
+  height: 32px;
+  white-space: normal;
+}
+.rowTwo .cellText {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  line-height: 13px;
+}
 .seatTable tbody tr:nth-child(even) td {
   background: #f7f9fc;
 }
@@ -283,6 +283,10 @@
 }
 .cellDept {
   color: var(--ink-700);
+}
+.cellEmpNo {
+  color: var(--ink-500) !important;
+  font-variant-numeric: tabular-nums;
 }
 .deptDot {
   display: inline-block;

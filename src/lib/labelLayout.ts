@@ -31,6 +31,11 @@ export interface MarkerLabelInput {
   name?: string | null;
   /** Text of the label BELOW the chip (the holder's name), or null. */
   sub?: string | null;
+  /**
+   * The holder's department, drawn as a second, smaller line under the holder when there is room
+   * for both — and dropped, leaving the holder alone, when there isn't.
+   */
+  dept?: string | null;
   /** The label above is the wider "Your desk" pill rather than a plain name. */
   pill?: boolean;
   /**
@@ -50,8 +55,10 @@ export interface MarkerLabelInput {
 export interface LabelPlacement {
   /** The desk's name, ABOVE its chip — or the "Your desk" pill, which takes that place. */
   name: boolean;
-  /** "Holder · Department", BELOW the chip. Never drawn without `name`. */
+  /** The holder, BELOW the chip. Never drawn without `name`. */
   sub: boolean;
+  /** The holder's department, a second line under the holder. Never drawn without `sub`. */
+  dept?: boolean;
   /**
    * How wide the holder line may run, in px, when it is drawn. Usually SUB_MAX_PX or the text's
    * own width; narrower when that is what it took to fit beside a neighbour's. The markup caps
@@ -98,6 +105,12 @@ export function labelHeight(fontPx: number): number {
 
 const NAME_FONT = 8.5;
 const SUB_FONT = 8;
+export const DEPT_FONT = 7.5;
+
+/** Height of the two-line holder + department label: both line boxes (line-height 1.2) plus padding and border. */
+export function twoLineLabelHeight(): number {
+  return Math.round(SUB_FONT * 1.2 + DEPT_FONT * 1.2) + 6;
+}
 
 /**
  * The longest a label may run on screen before its text ends in "…". Shared with the markup
@@ -114,6 +127,13 @@ export const SUB_MAX_PX = 120;
 const SUB_MIN_PX = 68;
 /** The narrower widths tried, widest first, when the holder line does not fit at its own. */
 const SUB_NARROWER_PX = [100, 84, SUB_MIN_PX];
+/**
+ * The holder + department label stops narrowing sooner: a department cut to "Investm…" says less
+ * than no department, and the holder alone (which can go narrower) is the better fallback.
+ */
+const TWO_LINE_MIN_PX = 84;
+/** Characters a holder line holds at SUB_MAX_PX — past this a name is shortened to first + last. */
+export const SUB_MAX_CHARS = Math.floor((SUB_MAX_PX - 12) / (SUB_FONT * 0.55));
 /** The "Your desk" pill carries an icon and more generous padding than a plain name label. */
 const PILL_EXTRA = 26;
 const PILL_HEIGHT = 20;
@@ -222,17 +242,26 @@ export function planMarkerLabels(inputs: MarkerLabelInput[], opts: LabelLayoutOp
       grid.add(nameBox);
       placement.name = true;
 
+      // Widest first; the first width that clears everything already placed wins.
+      const tryBox = (own: number, min: number, h: number): number | null => {
+        for (const w of [own, ...SUB_NARROWER_PX.filter((n) => n < own && n >= min)]) {
+          const box = { x: cx - w / 2, y: cy + half + GAP, w, h };
+          if (grid.hits(box)) continue;
+          grid.add(box);
+          return w;
+        }
+        return null;
+      };
       if (i.sub) {
-        const own = Math.min(estimateLabelWidth(i.sub, SUB_FONT), SUB_MAX_PX);
-        const widths = [own, ...SUB_NARROWER_PX.filter((w) => w < own)];
-        const h = labelHeight(SUB_FONT);
-        for (const w of widths) {
-          const subBox = { x: cx - w / 2, y: cy + half + GAP, w, h };
-          if (grid.hits(subBox)) continue;
-          grid.add(subBox);
+        // Holder and department on two lines when both fit; the holder alone when they don't.
+        const two = i.dept
+          ? tryBox(Math.min(Math.max(estimateLabelWidth(i.sub, SUB_FONT), estimateLabelWidth(i.dept, DEPT_FONT)), SUB_MAX_PX), TWO_LINE_MIN_PX, twoLineLabelHeight())
+          : null;
+        const w = two ?? tryBox(Math.min(estimateLabelWidth(i.sub, SUB_FONT), SUB_MAX_PX), SUB_MIN_PX, labelHeight(SUB_FONT));
+        if (w !== null) {
           placement.sub = true;
           placement.subWidth = w;
-          break;
+          if (two !== null) placement.dept = true;
         }
       }
     }

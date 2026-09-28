@@ -149,3 +149,20 @@ describe('when something has to go, the important label stays', () => {
     for (const id of ['WS-01', 'WS-02', 'WS-03']) expect(backwards.get(id)).toEqual(forwards.get(id));
   });
 });
+
+describe('the holder and the department', () => {
+  it('draws the department as a second line when there is room', () => {
+    const plan = planMarkerLabels([desk('E-1-WS77', 0.5, 0.5, { sub: 'Johar Ali Ali Asghar', dept: 'Investment Executive Program' })], opts);
+    expect(plan.get('E-1-WS77')).toMatchObject({ name: true, sub: true, dept: true });
+  });
+
+  it('keeps the holder and drops the department when the second line would hit a neighbour', () => {
+    // A desk 45px below: its name label sits where the department line would go.
+    const plan = planMarkerLabels(
+      [desk('E-1-WS77', 0.5, 0.5, { sub: 'Johar Ali Ali Asghar', dept: 'Investment Executive Program' }), desk('E-1-WS78', 0.5, 0.545)],
+      opts,
+    );
+    expect(plan.get('E-1-WS77')).toMatchObject({ name: true, sub: true });
+    expect(plan.get('E-1-WS77')?.dept).toBeFalsy();
+  });
+});

@@ -8,6 +8,7 @@ import type { Asset } from './assets';
 import { TYPE_META } from './types';
 import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, PlanId, PointGeom, Site, Unit, UnitType } from './types';
 import { buildEmployeeFilters, mapFilterFields } from './employeeFilters';
+import { byDepartmentName, byPersonName } from './displayNames';
 import type { AppliedFilter, FilterFieldDef } from './employeeFilters';
 
 /**
@@ -170,7 +171,7 @@ export class FacilioApiDataSource implements FloorplanDataSource {
     const rows = await fetchAllPaged('employee');
     // eslint-disable-next-line no-console
     console.info(`[facilio-api] getEmployees: ${rows.length} employees`, rows[0] ? `(fields seen: ${Object.keys(rows[0]).join(', ')})` : '');
-    return sortByName(rows).map(mapEmployee);
+    return rows.map(mapEmployee).sort(byPersonName);
   }
 
   /**
@@ -595,7 +596,7 @@ export async function fetchEmployees(limit = 200): Promise<Employee[] | null> {
   if (!isFacilioApiConfigured) return null;
   const res = await facilioApi.fetchAll('employee', { perPage: limit }).catch(() => null);
   if (!res || res.error || !res.list) return null;
-  return sortByName(res.list).map(mapEmployee);
+  return res.list.map(mapEmployee).sort(byPersonName);
 }
 
 /**
@@ -627,7 +628,7 @@ export async function queryEmployees(
   // A failed request, not an empty answer: the caller decides what to show instead, rather than
   // a list that looks like "nobody matches".
   if (!res || res.error || !res.list) return null;
-  return sortByName(res.list).map(mapEmployee);
+  return res.list.map(mapEmployee).sort(byPersonName);
 }
 
 let employeeFilterFields: Promise<FilterFieldDef[] | null> | null = null;
@@ -1429,7 +1430,7 @@ export async function fetchDepartments(): Promise<{ id: string; name: string }[]
   return rows
     .map((r: any) => ({ id: String(r.id), name: String(r.name ?? r.displayName ?? '').trim() }))
     .filter((d: { id: string; name: string }) => d.name)
-    .sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name));
+    .sort(byDepartmentName);
 }
 
 /**

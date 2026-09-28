@@ -1,7 +1,9 @@
 import { isModuleEnabled, isRoomLike, unitOnPlan } from '../lib/types';
+import { SUB_MAX_CHARS } from '../lib/labelLayout';
 import type { MarkerLabelInput } from '../lib/labelLayout';
 import type { Booking, Employee, Unit, UnitType } from '../lib/types';
 import type { AppState } from './types';
+import { departmentDisplayName, personDisplayName, personInitials, shortPersonName } from '../lib/displayNames';
 
 export function unitById(state: AppState, id: string | null | undefined): Unit | null {
   if (!id) return null;
@@ -32,18 +34,18 @@ export function contactById(state: AppState, id: string | null | undefined): Emp
   return state.employees.find((c) => c.id === id) ?? null;
 }
 
+/**
+ * The name to SHOW for a person — without the employee number the org's records put in front of
+ * it ("251850 - Johar Ali" reads "Johar Ali"; see lib/displayNames). Display only: anything that
+ * matches or searches reads the record's own `name`.
+ */
 export function contactName(state: AppState, id: string | null | undefined): string {
-  return contactById(state, id)?.name ?? '';
+  return personDisplayName(contactById(state, id)?.name);
 }
 
+/** Chip and avatar initials, from the name and never from its employee number. */
 export function initials(name: string): string {
-  return name
-    .split(' ')
-    .map((p) => p[0])
-    .filter(Boolean)
-    .slice(0, 2)
-    .join('')
-    .toUpperCase();
+  return personInitials(name);
 }
 
 /** Units with any booking overlapping [start,end) on `date`. */
@@ -118,23 +120,39 @@ export function planMarkers(state: AppState): Unit[] {
 }
 
 /**
- * The label each marker WANTS, before `planMarkerLabels` decides which ones fit: its name above
- * (or the "Your desk" pill in its place), and "Holder · Department" below. Shared with the print
- * sheet so a label reads the same on paper as on screen.
+ * What a desk says UNDER its chip in Assignment view: who holds it, and their department — one
+ * function for the layout that measures it and the marker that draws it, so what was measured is
+ * what is drawn, on screen and on paper alike.
+ *
+ * The holder is the name without its employee number, shortened to first name + surname when it
+ * would not fit a label ("Abdulrahman Abdullah Khalaf AlAnazi" → "Abdulrahman AlAnazi"); the full
+ * name is on the chip's tooltip and in the Seating list. The department is the desk's own, else
+ * the holder's — the same rule as the Seating list — without its cost-centre code.
  */
-export function markerLabelInputs(state: AppState, markers: Unit[]): MarkerLabelInput[] {
-  const mineId = myAssignedUnit(state)?.id ?? null;
+export function markerSubTexts(state: AppState, unit: Unit): { holder: string | null; dept: string | null } {
+  const holderId = state.mode === 'assign' ? state.assignments[unit.id] : undefined;
+  const contact = holderId ? contactById(state, holderId) : null;
+  const name = personDisplayName(contact?.name);
+  if (!name) return { holder: null, dept: null };
+  const dept = departmentDisplayName(unit.department?.trim() || contact?.department);
+  return { holder: shortPersonName(name, SUB_MAX_CHARS), dept: dept || null };
+}
+
+/**
+ * The label each marker WANTS, before `planMarkerLabels` decides which ones fit: its name above
+ * (or the "Your desk" pill in its place), and the holder with their department below. Shared with
+ * the print sheet so a label reads the same on paper as on screen.
+ */
+export function markerLabelInputs(state: AppState, markers: Unit[], opts: { personal?: boolean } = {}): MarkerLabelInput[] {
+  // `personal: false` (the print sheet): no "Your desk" pill — the desk shows its own name.
+  const mineId = opts.personal === false ? null : (myAssignedUnit(state)?.id ?? null);
   const labelsOn = state.mode === 'assign' || state.mode === 'book';
   return markers
     .filter((m) => labelsOn || m.type === 'amenity')
     .map((m) => {
       const g = m.geom as { x?: number; y?: number };
       const mine = m.id === mineId;
-      const holderId = state.mode === 'assign' ? state.assignments[m.id] : undefined;
-      const holderName = holderId ? contactName(state, holderId) : null;
-      // The label below carries "Holder · Department", so the layout measures THAT — measuring
-      // the bare name would reserve a box the real label overflows.
-      const holder = holderName ? (m.department ? `${holderName} · ${m.department}` : holderName) : null;
+      const { holder, dept } = markerSubTexts(state, m);
       return {
         id: m.id,
         x: g.x ?? 0,
@@ -145,6 +163,7 @@ export function markerLabelInputs(state: AppState, markers: Unit[]): MarkerLabel
         pill: mine,
         must: mine,
         sub: holder,
+        dept,
         rank: m.id === state.selected ? 0 : mine ? 1 : 2,
       };
     });

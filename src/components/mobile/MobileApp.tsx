@@ -17,6 +17,7 @@ import { FloorplanSkeleton } from '../canvas/FloorplanSkeleton';
 import { markerStyle } from '../../lib/unitStatus';
 import { MARKER_ICONS } from '../canvas/markerIcons';
 import { contactName, myAssignedUnit } from '../../state/selectors';
+import { departmentDisplayName } from '../../lib/displayNames';
 import { floorImageKey } from '../../lib/types';
 import type { Unit } from '../../lib/types';
 import styles from './MobileApp.module.css';
@@ -388,7 +389,8 @@ function MobileMap({
           const contactId = state.assignments[m.id];
           const holder = contactId ? contactName(state, contactId) : null;
           // Same pairing as the web plan: desk number above, "Holder · Department" below.
-          const contact = holder ? (m.department ? `${holder} · ${m.department}` : holder) : null;
+          const dept = departmentDisplayName(m.department);
+          const contact = holder ? (dept ? `${holder} · ${dept}` : holder) : null;
           // Same palette as the web: markerStyle keyed on a mode synced to the
           // mobile tab, so bg / border / fill are identical across views.
           const ms = markerStyle({ ...state, mode: state.mobileTab } as typeof state, m);

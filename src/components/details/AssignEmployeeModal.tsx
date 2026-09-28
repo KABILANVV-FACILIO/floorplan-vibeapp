@@ -3,6 +3,7 @@ import { useLivePeople } from '../../hooks/useLivePeople';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { assignEmployeeToRecord, resolveUnitRecord } from '../../lib/facilioApiDataSource';
 import { initials } from '../../state/selectors';
+import { byPersonName, personDisplayName } from '../../lib/displayNames';
 import type { Unit } from '../../lib/types';
 import { TYPE_META } from '../../lib/types';
 import { Modal, ModalFooter, ModalHeader } from '../primitives/Modal';
@@ -32,7 +33,7 @@ export function AssignEmployeeModal({ unit, onClose }: { unit: Unit; onClose: ()
   // Read from the org when the dialog opens, and filtered at the org while typing: this is the
   // one place a person is chosen, so it must not offer a roster that stopped updating at boot.
   const { people: live, loading } = useLivePeople(query, state.employees);
-  const people = useMemo(() => [...live].sort((a, b) => a.name.localeCompare(b.name)), [live]);
+  const people = useMemo(() => [...live].sort(byPersonName), [live]);
 
   async function pick(employeeId: string, name: string) {
     setBusyId(employeeId);
@@ -79,9 +80,9 @@ export function AssignEmployeeModal({ unit, onClose }: { unit: Unit; onClose: ()
         />
         <div className={styles.list}>
           {people.map((p) => (
-            <button key={p.id} className={styles.row} disabled={busyId !== null} onClick={() => void pick(p.id, p.name)}>
+            <button key={p.id} className={styles.row} disabled={busyId !== null} onClick={() => void pick(p.id, personDisplayName(p.name))}>
               <span className={styles.avatar}>{initials(p.name)}</span>
-              <span className={styles.name}>{p.name}</span>
+              <span className={styles.name}>{personDisplayName(p.name)}</span>
               {busyId === p.id && <ButtonSpinner />}
             </button>
           ))}
