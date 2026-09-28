@@ -70,11 +70,14 @@ const DDL = [
 let schemaReady = false;
 
 function connect() {
-  // Credentials are injected into the run's env map by the platform — never hardcoded, and never
-  // sent from the browser. Host/port/database are fixed by the platform to this app's own schema.
+  // vibe-server puts this app's database login into every run's env map
+  // (FunctionRunUtil.buildEnv): SCHEMA, DB_USER, DB_PASSWORD — never hardcoded, never sent from the
+  // browser. SCHEMA is the app's own schema (vibe_<app uuid>, from `facilio vibe db create`), set as
+  // the connection's search_path so the plain table names below resolve inside it.
   const db = new StudioDatabase({
-    userName: process.env.DB_USERNAME,
+    userName: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
+    schema: process.env.SCHEMA,
   });
   if (!schemaReady) {
     for (const stmt of DDL) db.query(stmt);
