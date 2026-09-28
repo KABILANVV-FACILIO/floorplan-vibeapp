@@ -5,7 +5,8 @@ import { useFloorplan } from '../../state/FloorplanContext';
 import { bookedUnitIds, contactById, floorMeta, isAssignable, markerLabelInputs, planMarkers, planRooms, visibleUnits } from '../../state/selectors';
 import { markerStyle } from '../../lib/unitStatus';
 import { floorImageKey, unitOnPlan } from '../../lib/types';
-import type { Unit, UnitType } from '../../lib/types';
+import type { Unit } from '../../lib/types';
+import type { AppState } from '../../state/types';
 import { orgNow } from '../../lib/orgTime';
 import { IMG_H, IMG_W } from '../../lib/mockData';
 import { planMarkerLabels } from '../../lib/labelLayout';
@@ -16,16 +17,18 @@ import { Marker } from '../canvas/Marker';
 import { legendItems } from '../canvas/Legend';
 import { departmentColor, departmentKey, departmentsIn } from '../../lib/departmentColors';
 import { buildSeatingRows, seatingPages, seatingSummary } from '../../lib/seatingList';
+import { planDetailAreas } from '../../lib/printAreas';
+import type { DetailArea } from '../../lib/printAreas';
 import type { SeatingRow } from '../../lib/seatingList';
 import styles from './PrintSheet.module.css';
 
 /**
  * The plan frame's printed height, and the zoom it implies. Fixed in physical units because the
  * sheet is `display: none` on screen and cannot be measured before it prints — and the zoom has
- * to be known exactly, since it decides which labels fit (see planMarkerLabels). 5.4in is what
- * letter landscape leaves once the title block, legend and footer are counted.
+ * to be known exactly, since it decides which labels fit (see planMarkerLabels). 6.2in is what
+ * letter landscape leaves once the bar, legend and footer are counted.
  */
-const PRINT_PLAN_HEIGHT_IN = 5.4;
+const PRINT_PLAN_HEIGHT_IN = 6.2;
 const PRINT_ZOOM = (PRINT_PLAN_HEIGHT_IN * 96) / IMG_H;
 
 /**
@@ -35,6 +38,15 @@ const PRINT_ZOOM = (PRINT_PLAN_HEIGHT_IN * 96) / IMG_H;
  * 20px leave room for the title block and the footer on a letter-landscape page.
  */
 const SEATING_ROWS_PER_COLUMN = 28;
+
+/**
+ * The plan frame in "Current view": the full content width of the page (11in less the sheet's
+ * 34px side padding) by the same 6.2in height. The view is printed at the viewer's OWN zoom —
+ * chips, labels and gaps the size they are on screen — so this frame is how much of the floor
+ * around the view's centre fits on the page. Height as the whole-floor frame.
+ */
+const VIEW_FRAME_W = 11 * 96 - 68;
+const VIEW_FRAME_H = PRINT_PLAN_HEIGHT_IN * 96;
 
 /**
  * The floor plan print sheet — a port of `Floorplan Print.dc.html` from the Claude Design project
@@ -69,14 +81,6 @@ const SEATING_ROWS_PER_COLUMN = 28;
  * three for EVERY desk — the plan says where, the list says who.
  */
 
-/** The modules the sheet reports, in the design's order. Amenities carry no occupancy. */
-const CARD_TYPES: { type: UnitType; name: string }[] = [
-  { type: 'workstation', name: 'Desks' },
-  { type: 'room', name: 'Rooms' },
-  { type: 'locker', name: 'Lockers' },
-  { type: 'parking', name: 'Parking' },
-];
-
 export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; pagesRef?: Ref<HTMLDivElement> } = {}) {
   const { state } = useFloorplan();
   const meta = floorMeta(state, state.floorId);
@@ -104,17 +108,17 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
   }, []);
   const isOccupied = (u: Unit) => !!state.assignments[u.id] || booked.has(u.id);
 
-  const total = units.length;
-  const occupied = units.filter(isOccupied).length;
-
-  const cards = CARD_TYPES.map(({ type, name }) => {
-    const list = units.filter((u) => u.type === type);
-    const occ = list.filter(isOccupied).length;
-    return { type, name, total: list.length, available: list.length - occ, pct: list.length ? Math.round((occ / list.length) * 100) : 0 };
-  }).filter((c) => c.total > 0);
+  // The bar's figures: the floor's DESKS — what the Seating list lists — occupied meaning someone
+  // is assigned or a booking covers the window on screen. A floor with no desks counts its other
+  // units instead, so the bar never reads "Total 0" above a plan full of lockers.
+  const desks = units.filter((u) => u.type === 'workstation');
+  const counted = desks.length ? desks : units;
+  const total = counted.length;
+  const occupied = counted.filter(isOccupied).length;
+  const vacant = total - occupied;
 
   const floorTitle = meta ? meta.floor.name : 'Floor plan';
-  const siteLine = meta ? `${meta.site.name} · ${meta.building.name}` : '';
+  const where = { site: meta?.site.name ?? '', building: meta?.building.name ?? '', floor: floorTitle };
   const now = orgNow();
   const generatedAt = new Date(`${now.dateISO}T${String(Math.floor(now.minutes / 60)).padStart(2, '0')}:${String(now.minutes % 60).padStart(2, '0')}`).toLocaleString(
     undefined,
@@ -123,6 +127,11 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
   // The viewer draws the page on screen and needs the plan in it from the start; the paper copy
   // waits for `beforeprint` (above).
   const showPlan = preview || printing;
+  // "Current view" needs a view to print; before the canvas has measured itself there is none.
+  const scope: AppState['printScope'] =
+    state.printScope === 'view' ? (state.stage.w > 0 && state.stage.h > 0 ? 'view' : 'floor') : state.printScope;
+  // The whole-floor page numbers its desks, keyed to the Seating list; the on-screen view doesn't.
+  const numbered = scope !== 'view';
 
   // Every desk on the plan, with who is placed there and their department — built only when the
   // sheet is actually shown, for the same reason as the plan (see `printing` above).
@@ -161,35 +170,34 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
     return m;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deskNumbers, state]);
-  const pageCount = 1 + seatingPageList.length;
+  // "Floor + details": every area of desks on a page of its own, zoomed so each desk carries its
+  // name above and "Holder · Department" below (see lib/printAreas).
+  const detailAreas = useMemo(() => {
+    if (!showPlan || scope !== 'detail') return [];
+    const desks = planMarkers(state)
+      .filter((m) => m.type === 'workstation' && m.geom.kind === 'point')
+      .map((m) => ({ id: m.id, x: (m.geom as { x: number }).x * IMG_W, y: (m.geom as { y: number }).y * IMG_H }));
+    return planDetailAreas(desks, { frameW: VIEW_FRAME_W, frameH: VIEW_FRAME_H });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showPlan, scope, state]);
+  const pageCount = 1 + detailAreas.length + seatingPageList.length;
 
   const planPage = (
     <div className={styles.page} data-print-page="">
-      <div className={styles.head}>
-        <div className={styles.headLeft}>
-          {/* No wordmark and no "Seat occupancy" eyebrow: this sheet is printed inside the
-              organisation that owns the floor, on their paper, and branding the vendor on it
-              tells the reader nothing they need. The floor's own name leads instead. */}
-          <div className={styles.title}>{floorTitle}</div>
-          {siteLine && <div className={styles.siteLine}>{siteLine}</div>}
-        </div>
-        <div className={styles.headRight}>
-          <div className={styles.generatedAt}>{generatedAt}</div>
-          <div className={styles.cards}>
-            {cards.map((c) => (
-              <div key={c.type} className={styles.card}>
-                <span className={styles.cardName}>{c.name}</span>
-                <div className={styles.cardFigures}>
-                  <span className={styles.cardBig}>{c.available}</span>
-                  <span className={styles.cardOf}>free of {c.total}</span>
-                </div>
-                <div className={styles.cardBar}>
-                  <div className={styles.cardBarFill} style={{ width: `${c.pct}%` }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+      {/* One bar: where this is, and how full. No wordmark and no eyebrow — this sheet is printed
+          inside the organisation that owns the floor, and the floor's own name leads. */}
+      <div className={styles.bar}>
+        <LocationBox where={where} />
+        <span className={styles.spacer} />
+        <span className={styles.statPlain}>
+          Total <b>{total}</b>
+        </span>
+        <span className={[styles.stat, styles.statOccupied].join(' ')}>
+          Occupied <b>{occupied}</b>
+        </span>
+        <span className={[styles.stat, styles.statVacant].join(' ')}>
+          Vacant <b>{vacant}</b>
+        </span>
       </div>
 
       <div className={styles.legend}>
@@ -201,18 +209,27 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
           </span>
         ))}
         <span className={styles.spacer} />
-        <span className={styles.totalLine}>
-          {occupied} of {total} units occupied
-        </span>
+        <span className={styles.totalLine}>Printed {generatedAt}</span>
       </div>
 
       <div className={styles.planWrap}>
-        <div className={styles.plan}>{showPlan && <PrintPlan deskNumbers={deskNumbers} />}</div>
+        <div className={[styles.plan, scope === 'view' ? styles.planView : ''].join(' ')}>
+          {showPlan && (scope === 'view' ? <PrintViewPlan /> : <PrintPlan deskNumbers={deskNumbers} />)}
+        </div>
       </div>
 
       <div className={styles.foot}>
         <span className={styles.footNote}>Occupancy reflects assignments and confirmed bookings at the time of printing.</span>
-        {pageCount > 1 && <span className={styles.pageNo}>Page 1 of {pageCount} · each desk's number is its row in the Seating list that follows</span>}
+        {pageCount > 1 && (
+          <span className={styles.pageNo}>
+            Page 1 of {pageCount} ·{' '}
+            {scope === 'detail'
+              ? "each desk's number is its row in the Seating list; zoomed-in pages of every area follow"
+              : numbered
+                ? "each desk's number is its row in the Seating list that follows"
+                : 'the area on screen when printed; every desk is listed on the pages that follow'}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -220,17 +237,29 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
   const pages = (
     <>
       {planPage}
+      {detailAreas.map((area, i) => (
+        <DetailPage
+          key={`d${i}`}
+          area={area}
+          index={i}
+          count={detailAreas.length}
+          where={where}
+          generatedAt={generatedAt}
+          pageNo={i + 2}
+          pageCount={pageCount}
+        />
+      ))}
       {seatingPageList.map((columns, i) => (
         <SeatingPage
           key={i}
           columns={columns}
-          floorTitle={floorTitle}
-          siteLine={siteLine}
+          where={where}
           generatedAt={generatedAt}
-          pageNo={i + 2}
+          pageNo={1 + detailAreas.length + i + 1}
           pageCount={pageCount}
           summary={seatingSummary(seating)}
           chipColors={chipColors}
+          numbered={numbered}
         />
       ))}
     </>
@@ -251,18 +280,19 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
  */
 function SeatingPage({
   columns,
-  floorTitle,
-  siteLine,
+  where,
   generatedAt,
   pageNo,
   pageCount,
   summary,
   chipColors,
+  numbered,
 }: {
   columns: SeatingRow[][];
+  where: Where;
+  /** The plan page shows desk numbers (Whole floor), so the list carries them too. */
+  numbered: boolean;
   chipColors: Map<string, { background: string; borderColor: string; color: string }>;
-  floorTitle: string;
-  siteLine: string;
   generatedAt: string;
   pageNo: number;
   pageCount: number;
@@ -270,24 +300,19 @@ function SeatingPage({
 }) {
   return (
     <div className={styles.page} data-print-page="">
-      <div className={styles.head}>
-        <div className={styles.headLeft}>
-          <div className={styles.title}>
-            {floorTitle} <span className={styles.titleSub}>· Seating list</span>
-          </div>
-          {siteLine && <div className={styles.siteLine}>{siteLine}</div>}
-        </div>
-        <div className={styles.headRight}>
-          <div className={styles.generatedAt}>{generatedAt}</div>
-        </div>
+      <div className={styles.bar}>
+        <LocationBox where={where} />
+        <span className={styles.barLabel}>Seating list</span>
+        <span className={styles.spacer} />
+        <span className={styles.totalLine}>Printed {generatedAt}</span>
       </div>
 
       <div className={styles.seatCols}>
         {[0, 1].map((c) => (
           <table key={c} className={styles.seatTable}>
             <colgroup>
-              <col className={styles.colNo} />
-              <col className={styles.colDesk} />
+              {numbered && <col className={styles.colNo} />}
+              <col className={numbered ? styles.colDesk : styles.colDeskWide} />
               <col className={styles.colHolder} />
               <col className={styles.colDept} />
             </colgroup>
@@ -295,7 +320,7 @@ function SeatingPage({
               <>
                 <thead>
                   <tr>
-                    <th>#</th>
+                    {numbered && <th>#</th>}
                     <th>Desk</th>
                     <th>Assigned to</th>
                     <th>Department</th>
@@ -304,11 +329,13 @@ function SeatingPage({
                 <tbody>
                   {columns[c].map((r) => (
                     <tr key={r.id}>
-                      <td className={styles.cellNo}>
-                        <span className={styles.noChip} style={chipColors.get(r.id)}>
-                          {r.no}
-                        </span>
-                      </td>
+                      {numbered && (
+                        <td className={styles.cellNo}>
+                          <span className={styles.noChip} style={chipColors.get(r.id)}>
+                            {r.no}
+                          </span>
+                        </td>
+                      )}
                       <td className={styles.cellDesk}>{r.desk}</td>
                       <td className={r.status === 'assigned' ? styles.cellHolder : styles.cellQuiet}>
                         {r.status === 'assigned'
@@ -339,7 +366,9 @@ function SeatingPage({
       </div>
 
       <div className={styles.foot}>
-        <span className={styles.footNote}>{summary}. Desks are listed by name; the number is the one on the desk's chip on the plan (page 1).</span>
+        <span className={styles.footNote}>
+          {summary}. Desks are listed by name{numbered ? "; the number is the one on the desk's chip on the plan (page 1)" : ''}.
+        </span>
         <span className={styles.pageNo}>
           Page {pageNo} of {pageCount}
         </span>
@@ -348,10 +377,149 @@ function SeatingPage({
   );
 }
 
+interface Where {
+  site: string;
+  building: string;
+  floor: string;
+}
+
+/** "HQ - Abu Dhabi / C Block / 06 Floor": the site in bold, the rest of the path after it. */
+function LocationBox({ where }: { where: Where }) {
+  const rest = [where.building, where.floor].filter(Boolean).join(' / ');
+  return (
+    <div className={styles.where}>
+      {where.site ? (
+        <>
+          <b>{where.site}</b>
+          {rest && <span className={styles.wherePath}> / {rest}</span>}
+        </>
+      ) : (
+        <b>{where.floor}</b>
+      )}
+    </div>
+  );
+}
+
 /** What a downloaded sheet is called: the floor and the day it was drawn, safe as a file name. */
 export function printFileName(floorTitle: string, dateISO: string): string {
   const safe = floorTitle.replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim() || 'Floor plan';
   return `${safe} ${dateISO}.pdf`;
+}
+
+/**
+ * "Current view": the plan exactly as the viewer draws it right now — the viewer's own zoom, the
+ * same label layout (so the desk names above and "Holder · Department" below land as they do on
+ * screen) — centred on what the screen is centred on, and cropped to the page's plan frame.
+ *
+ * At the viewer's zoom rather than scaled to fit: shrinking the screen onto paper would shrink
+ * its 8.5px labels past legibility. Same zoom means same-size text and the same labels shown.
+ */
+function PrintViewPlan() {
+  const { state } = useFloorplan();
+  const { tx, ty, z } = state.view;
+  // The plan point at the centre of the screen.
+  return <PrintZoomedPlan cx={(state.stage.w / 2 - tx) / z} cy={(state.stage.h / 2 - ty) / z} zoom={z} />;
+}
+
+/**
+ * The plan at a given zoom, centred on a given plan point, cropped to the page's plan frame — the
+ * viewer's own components and label layout, so desk names above and "Holder · Department" below
+ * land exactly as the viewer places them at that zoom. Used by "Current view" and the detail pages.
+ */
+function PrintZoomedPlan({ cx, cy, zoom }: { cx: number; cy: number; zoom: number }) {
+  const { state } = useFloorplan();
+  const rooms = planRooms(state);
+  const markers = planMarkers(state);
+  const labelPlan = useMemo(
+    () => planMarkerLabels(markerLabelInputs(state, markers), { planW: IMG_W, planH: IMG_H, zoom }),
+    // Built once per page, from the state at that moment.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [zoom],
+  );
+  const invZ = 1 / zoom;
+  const ox = VIEW_FRAME_W / 2 - cx * zoom;
+  const oy = VIEW_FRAME_H / 2 - cy * zoom;
+
+  return (
+    <div
+      className={styles.plane}
+      style={{ width: IMG_W, height: IMG_H, transform: `translate(${ox}px, ${oy}px) scale(${zoom})`, ['--inv' as string]: invZ }}
+    >
+      <FloorplanBackground imageUrl={state.floorImages[floorImageKey(state.floorId, state.planId)]} />
+      {rooms.map((r) => (
+        <RoomPolygon key={r.id} unit={r} />
+      ))}
+      {rooms.map((r) => (
+        <RoomLabel key={`l-${r.id}`} unit={r} />
+      ))}
+      {markers.map((m) => (
+        <Marker key={m.id} unit={m} invZ={invZ} labels={labelPlan.get(m.id)} />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * One detail page: an area of the floor zoomed so every desk in it is labelled, under the same bar
+ * as page 1. The desks shown are that area's; its neighbours at the edge are drawn too, for context,
+ * and have pages of their own.
+ */
+function DetailPage({
+  area,
+  index,
+  count,
+  where,
+  generatedAt,
+  pageNo,
+  pageCount,
+}: {
+  area: DetailArea;
+  index: number;
+  count: number;
+  where: Where;
+  generatedAt: string;
+  pageNo: number;
+  pageCount: number;
+}) {
+  const { state } = useFloorplan();
+  return (
+    <div className={styles.page} data-print-page="">
+      <div className={styles.bar}>
+        <LocationBox where={where} />
+        <span className={styles.barLabel}>
+          Detail {index + 1} of {count}
+        </span>
+        <span className={styles.spacer} />
+        <span className={styles.statPlain}>
+          Desks <b>{area.deskIds.length}</b>
+        </span>
+      </div>
+
+      <div className={styles.legend}>
+        {legendItems(state).map((it) => (
+          <span key={it.label} className={styles.legendItem}>
+            <span className={styles.legendDot} style={{ background: it.color }} />
+            {it.label}
+          </span>
+        ))}
+        <span className={styles.spacer} />
+        <span className={styles.totalLine}>Printed {generatedAt}</span>
+      </div>
+
+      <div className={styles.planWrap}>
+        <div className={[styles.plan, styles.planView].join(' ')}>
+          <PrintZoomedPlan cx={area.cx} cy={area.cy} zoom={area.zoom} />
+        </div>
+      </div>
+
+      <div className={styles.foot}>
+        <span className={styles.footNote}>Every desk in this area, with who is placed there. The whole floor is on page 1.</span>
+        <span className={styles.pageNo}>
+          Page {pageNo} of {pageCount}
+        </span>
+      </div>
+    </div>
+  );
 }
 
 /**

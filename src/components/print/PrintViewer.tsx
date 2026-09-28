@@ -29,7 +29,7 @@ const GUTTER = 24;
  * who is placed there, department). The grey area scrolls through them, one page fitting in view.
  */
 export function PrintViewer({ onClose }: { onClose: () => void }) {
-  const { state } = useFloorplan();
+  const { state, actions } = useFloorplan();
   const meta = floorMeta(state, state.floorId);
   const floorTitle = meta ? meta.floor.name : 'Floor plan';
 
@@ -102,6 +102,21 @@ export function PrintViewer({ onClose }: { onClose: () => void }) {
         </div>
       </div>
       <ModalFooter>
+        {/* What the plan pages show. Floor + details: the numbered whole floor, then a zoomed page
+            for every area of desks, each labelled as on screen. Current view: the screen as it is.
+            Whole floor: the numbered floor alone. The Seating list follows in every case. */}
+        <div className={styles.scope} role="group" aria-label="Plan on page 1">
+          <span className={styles.scopeLabel}>Plan</span>
+          <button type="button" className={styles.scopeBtn} aria-pressed={state.printScope === 'detail'} onClick={() => actions.setPrintScope('detail')}>
+            Floor + details
+          </button>
+          <button type="button" className={styles.scopeBtn} aria-pressed={state.printScope === 'view'} onClick={() => actions.setPrintScope('view')}>
+            Current view
+          </button>
+          <button type="button" className={styles.scopeBtn} aria-pressed={state.printScope === 'floor'} onClick={() => actions.setPrintScope('floor')}>
+            Whole floor
+          </button>
+        </div>
         {error && <span className={styles.error}>{error}</span>}
         <Button variant="secondary" onClick={() => void onDownload()} disabled={downloading} icon={downloading ? <ButtonSpinner /> : <DownloadIcon />}>
           {downloading ? 'Preparing PDF…' : 'Download PDF'}

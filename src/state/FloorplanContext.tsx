@@ -1234,6 +1234,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     setModuleColor: (key: string, hex: string) => dispatch({ type: 'SET_MODULE_COLOR', key, hex }),
     /** Colour the desks by availability, or by the department on their record. */
     setColorBy: (value: AppState['colorBy']) => dispatch({ type: 'SET_COLOR_BY', value }),
+    setPrintScope: (value: AppState['printScope']) => dispatch({ type: 'SET_PRINT_SCOPE', value }),
     /**
      * A department's colour is org data, not a browser preference: it goes to the app's own
      * `fp_department_color` table keyed by the department's record id, so a rename in Facilio

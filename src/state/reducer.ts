@@ -119,6 +119,7 @@ export function buildInitialState(): AppState {
     settingsTab: 'permissions',
     moduleColors: {},
     colorBy: 'status',
+    printScope: 'detail',
     departments: [],
     departmentColors: {},
     slotGranularity: 30,
@@ -219,6 +220,7 @@ export type Action =
   | { type: 'SET_SETTINGS_TAB'; tab: AppState['settingsTab'] }
   | { type: 'SET_MODULE_COLOR'; key: string; hex: string }
   | { type: 'SET_COLOR_BY'; value: AppState['colorBy'] }
+  | { type: 'SET_PRINT_SCOPE'; value: AppState['printScope'] }
   | { type: 'SET_DEPARTMENT_COLOR'; department: string; hex: string }
   | { type: 'DEPARTMENTS_LOADED'; departments: { id: string; name: string }[] }
   | { type: 'DEPARTMENT_COLORS_LOADED'; colors: Record<string, string> }
@@ -559,6 +561,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, moduleColors: { ...state.moduleColors, [action.key]: action.hex } };
     case 'SET_COLOR_BY':
       return { ...state, colorBy: action.value };
+    case 'SET_PRINT_SCOPE':
+      return { ...state, printScope: action.value };
     case 'SET_DEPARTMENT_COLOR':
       return { ...state, departmentColors: { ...state.departmentColors, [action.department]: action.hex } };
     case 'DEPARTMENTS_LOADED':

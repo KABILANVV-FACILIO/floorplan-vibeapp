@@ -136,6 +136,12 @@ export interface AppState {
    * "who sits where" — the question a plan coloured only by availability cannot answer at all.
    */
   colorBy: 'status' | 'department';
+  /**
+   * What the print sheet's plan pages show. `detail`: the whole floor with numbered desks, then a
+   * zoomed page for every area of desks, each desk labelled as on screen. `floor`: the numbered
+   * whole floor alone. `view`: the area on screen, at the viewer's own zoom. Session-only.
+   */
+  printScope: 'detail' | 'view' | 'floor';
   /** The org's own departments (the `department` module), for Settings to colour. */
   departments: { id: string; name: string }[];
   /**
