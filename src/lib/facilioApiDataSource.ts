@@ -212,143 +212,87 @@ export class FacilioApiDataSource implements FloorplanDataSource {
    * calibrated is skipped rather than guessed at — without the quad there is no sane fraction, and
    * inventing one would silently scatter markers across the plan.
    */
-  async getUnits(floorId: string): Promise<Unit[]> {
+  async getUnits(floorId: string, onMore?: (units: Unit[]) => void): Promise<Unit[]> {
     this.assertConfigured();
     // Throw rather than return [] — a demo floor's units belong to the local tier, and the
     // composite only falls through on a rejection. Returning empty would strand the canvas.
     if (!isRealFloorId(floorId)) throw new Error(`facilio-api: ${floorId} is not an org floor id`);
+
+    // Everything the floor needs, asked for at once: the floor's desks, lockers, stalls and spaces
+    // (started before anything is awaited, so getAssignments — asked for alongside — shares these
+    // requests rather than repeating them), and each plan type's record (for its georeference) and
+    // markers. Each list answers with its first page and its count straight away; the rest of a big
+    // list follows in the background.
+    const listsP = Promise.all(['desks', 'lockers', 'parkingstall', 'space'].map((m) => loadFloorList(floorId, m)));
     const byType = await getFloorplanDetailsByType(floorId);
-    const units: Unit[] = [];
-    // Real records already represented by a marker — matched on the marker's `recordId`, which this
-    // app sets when it creates the backing desk/locker/stall. A marker placed in the org's own
-    // editor may lack it, in which case that record also appears as unplaced (logged below).
-    const placedRecordIds = new Set<string>();
-    let outOfFrame = 0;
-
-    for (const [typeNum, summary] of Object.entries(byType)) {
-      const planId = PLAN_ID_BY_TYPE[Number(typeNum)];
-      const planRecordId = (summary as any)?.id;
-      if (!planId || !planRecordId) continue;
-
-      const recordRes = await facilioApi.fetchRecord<any>('indoorfloorplan', { id: planRecordId });
-      const planRecord = recordOf<any>(recordRes, 'indoorfloorplan');
-      const quad = geometryStringToQuad(planRecord?.geometry);
-      if (!quad) {
+    const plansP = Promise.all(
+      Object.entries(byType).map(async ([typeNum, summary]) => {
+        const planId = PLAN_ID_BY_TYPE[Number(typeNum)];
+        const planRecordId = (summary as any)?.id;
+        if (!planId || !planRecordId) return null;
+        const [recordRes, markers] = await Promise.all([
+          facilioApi.fetchRecord<any>('indoorfloorplan', { id: planRecordId }),
+          loadRelated<any>({ moduleName: 'indoorfloorplan', id: planRecordId, relatedModuleName: 'floorplanmarker', relatedFieldName: 'indoorfloorplan' }),
+        ]);
+        const quad = geometryStringToQuad(recordOf<any>(recordRes, 'indoorfloorplan')?.geometry);
+        if (!quad) {
+          // eslint-disable-next-line no-console
+          console.warn(`[facilio-api] getUnits: plan ${planId} (#${planRecordId}) has no calibrated geometry — its markers are skipped, not guessed`);
+          return null;
+        }
+        if (markers.error) {
+          // eslint-disable-next-line no-console
+          console.warn(`[facilio-api] getUnits: marker list failed for plan ${planId} (#${planRecordId}):`, markers.error);
+          return null;
+        }
         // eslint-disable-next-line no-console
-        console.warn(`[facilio-api] getUnits: plan ${planId} (#${planRecordId}) has no calibrated geometry — its markers are skipped, not guessed`);
-        continue;
-      }
-
-      const markersRes = await fetchAllRelatedPaged<any>({
-        moduleName: 'indoorfloorplan',
-        id: planRecordId,
-        relatedModuleName: 'floorplanmarker',
-        relatedFieldName: 'indoorfloorplan',
-      });
-      if (markersRes.error) {
-        // eslint-disable-next-line no-console
-        console.warn(`[facilio-api] getUnits: marker list failed for plan ${planId} (#${planRecordId}):`, markersRes.error);
-        continue;
-      }
-      // eslint-disable-next-line no-console
-      console.info(`[facilio-api] getUnits: plan ${planId} (#${planRecordId}) -> ${markersRes.list?.length ?? 0} markers (${markersRes.pages} page${markersRes.pages === 1 ? '' : 's'})`);
-
-      for (const marker of markersRes.list ?? []) {
-        if (marker.recordId) placedRecordIds.add(String(marker.recordId));
-        const point = parsePointGeometry(marker.geometry);
-        if (!point) continue; // polygons/zones live in floorplanmarkedzone, not here
-        const [x, y] = lngLatToQuadFraction(quad, point[0], point[1]);
-        // A marker written in some other coordinate space (e.g. by the org's own editor before this
-        // plan had a quad) converts to a wildly out-of-frame fraction. Drop it and say so, rather
-        // than pinning it to an edge where it looks like a real, mis-placed unit.
-        if (x < -0.05 || x > 1.05 || y < -0.05 || y > 1.05) {
-          outOfFrame++;
-          continue;
-        }
-        const props = safeJson<{ unitType?: string; secondary?: string | null }>(marker.properties) ?? {};
-        // `properties` is free-form JSON on the org's record — another app, an older build of this
-        // one, or a hand-edited row can put anything in `unitType`. An unrecognised value used to
-        // flow straight into a Unit, where every `TYPE_META[unit.type].name` lookup (the marker's
-        // own status pill included) threw on undefined and took the whole canvas down with it.
-        const type = asUnitType(props.unitType) ?? PLAN_UNIT_TYPE[planId] ?? 'workstation';
-        units.push({
-          id: String(marker.geoId || marker.id),
-          type,
-          label: marker.label ?? String(marker.id),
-          ...(props.secondary ? { secondary: props.secondary } : {}),
-          room: null,
-          geom: { kind: 'point', x, y },
-          floor: floorId,
-          plan: planId,
-        });
-      }
-    }
-
-    // The floor's REAL desks / lockers / parking stalls / rooms that have no marker yet, via the same
-    // verified relatedList pattern (floor -> <module> on the `floor` lookup). They enter the
-    // "Available to place" pool so they can be dragged onto the plan. `space` is the base table
-    // desks/lockers/stalls also live in, so rooms are whatever is left after excluding those ids and
-    // anything that isn't a plain SPACE (buildings/floors also answer to `space`).
-    const rel = (module: string) =>
-      fetchAllRelatedPaged<any>({ moduleName: 'floor', id: floorId, relatedModuleName: module, relatedFieldName: 'floor' })
-        .then((r) => (r.error ? [] : r.list ?? []))
-        .catch(() => [] as any[]);
-    const [desks, lockers, stalls, spaces] = await Promise.all([rel('desks'), rel('lockers'), rel('parkingstall'), rel('space')]);
-    const pointIds = new Set([...desks, ...lockers, ...stalls].map((r: any) => String(r.id)));
-
-    // The desk rows are already here for the unplaced pool, and they carry `department` — the
-    // field the plan needs to colour by who sits where. Stamp it onto the markers that were
-    // already built from the floorplan marker list, which never saw the record behind them.
-    // `department` is a LOOKUP, so the row carries the whole related record: its id is what the
-    // colour is stored against (a department can be renamed and must keep its colour), and its
-    // name is what a person reads.
-    const deptById = new Map<string, { id: string; name: string }>();
-    for (const r of desks as any[]) {
-      const d = r.department;
-      if (!d) continue;
-      const name = typeof d === 'string' ? d : (d.displayName ?? d.name ?? null);
-      const id = typeof d === 'object' && d.id != null ? String(d.id) : null;
-      if (name) deptById.set(String(r.id), { id: id ?? departmentFallbackId(String(name)), name: String(name) });
-    }
-    if (deptById.size) {
-      for (const u of units) {
-        const dept = deptById.get(u.id);
-        if (dept) {
-          u.department = dept.name;
-          u.departmentId = dept.id;
-        }
-      }
-    }
-    const rooms = spaces.filter((r: any) => !pointIds.has(String(r.id)) && (r.spaceTypeEnum ?? 'SPACE') === 'SPACE');
-
-    let unmatchedMarkers = 0;
-    const addUnplaced = (rows: any[], type: Unit['type']) => {
-      for (const r of rows) {
-        const id = String(r.id);
-        if (placedRecordIds.has(id)) continue;
-        if (units.some((u) => u.id === id)) {
-          unmatchedMarkers++;
-          continue;
-        }
-        const unit = toUnplacedUnit(r, type, floorId);
-        const dept = deptById.get(id);
-        if (dept) {
-          unit.department = dept.name;
-          unit.departmentId = dept.id;
-        }
-        units.push(unit);
-      }
-    };
-    addUnplaced(desks, 'workstation');
-    addUnplaced(lockers, 'locker');
-    addUnplaced(stalls, 'parking');
-    addUnplaced(rooms, 'room');
-    // eslint-disable-next-line no-console
-    console.info(
-      `[facilio-api] getUnits floor ${floorId}: ${units.filter((u) => !u.unplaced).length} placed markers; unplaced records: ${desks.length} desks, ${lockers.length} lockers, ${stalls.length} stalls, ${rooms.length} rooms (${placedRecordIds.size} already placed)` +
-        (unmatchedMarkers ? ` — ${unmatchedMarkers} records also appear as markers without a recordId link` : '') +
-        (outOfFrame ? ` — ${outOfFrame} markers dropped: outside the plan after conversion (written in another coordinate space?)` : '')
+        console.info(
+          `[facilio-api] getUnits: plan ${planId} (#${planRecordId}) -> ${markers.first.length}${markers.hasMore ? ` of ${markers.total ?? '?'} (rest loading)` : ''} markers`,
+        );
+        return { planId, quad, markers };
+      }),
     );
+    const [lists, plansRaw] = await Promise.all([listsP, plansP]);
+    const plans = plansRaw.filter((p): p is NonNullable<typeof p> => !!p);
+    const [desks, lockers, stalls, spaces] = lists;
+
+    const units = buildFloorUnits(floorId, {
+      plans: plans.map((p) => ({ planId: p.planId, quad: p.quad, markers: p.markers.first })),
+      desks: desks.first,
+      lockers: lockers.first,
+      stalls: stalls.first,
+      spaces: spaces.first,
+    });
+
+    const pending = [...plans.map((p) => p.markers), ...lists].filter((l) => l.hasMore);
+    if (pending.length) {
+      // What is placed can be drawn from the first pages; what is NOT placed can't be told yet — a
+      // desk whose marker is on a later page would read as unplaced, and a desk row on the first
+      // page of `space` whose desk record is on a later page of `desks` would read as a room. So the
+      // first answer carries the placed units only, and the "Available to place" pool comes with
+      // the rest.
+      // The rest of the floor: never awaited here, so a floor of 2,000 desks draws as soon as its
+      // first pages are in. With a listener it arrives through `onMore`; without one (a caller that
+      // needs the whole floor) this waits for it after all.
+      const full = Promise.all([Promise.all(plans.map((p) => p.markers.rest)), Promise.all(lists.map((l) => l.rest))]).then(([markerRests, listRests]) => {
+        const all = buildFloorUnits(floorId, {
+          plans: plans.map((p, i) => ({ planId: p.planId, quad: p.quad, markers: [...p.markers.first, ...markerRests[i]] })),
+          desks: [...desks.first, ...listRests[0]],
+          lockers: [...lockers.first, ...listRests[1]],
+          stalls: [...stalls.first, ...listRests[2]],
+          spaces: [...spaces.first, ...listRests[3]],
+        });
+        // eslint-disable-next-line no-console
+        console.info(`[facilio-api] getUnits floor ${floorId}: rest of the floor loaded in the background — ${units.length} → ${all.length} units`);
+        return all;
+      });
+      if (!onMore) return full;
+      full.then(onMore, (err) => {
+        // eslint-disable-next-line no-console
+        console.warn(`[facilio-api] getUnits floor ${floorId}: background pages failed; the floor shows its first pages`, err);
+      });
+      return units.filter((u) => !u.unplaced);
+    }
     return units;
   }
 
@@ -432,23 +376,37 @@ export class FacilioApiDataSource implements FloorplanDataSource {
    * Keyed by RECORD id, which is also the unit id for anything org-backed (see `toUnplacedUnit`
    * and `createUnit`), so the map lines up with `state.units` without a translation step.
    */
-  async getAssignments(floorId: string): Promise<Assignments> {
+  async getAssignments(floorId: string, onMore?: (more: Assignments) => void): Promise<Assignments> {
     this.assertConfigured();
     if (!isRealFloorId(floorId)) throw new Error(`facilio-api: ${floorId} is not an org floor id`);
 
-    const rel = (module: string) =>
-      fetchAllRelatedPaged<any>({ moduleName: 'floor', id: floorId, relatedModuleName: module, relatedFieldName: 'floor' })
-        .then((r) => (r.error ? [] : r.list ?? []))
-        .catch(() => [] as any[]);
-    const [desks, lockers, stalls] = await Promise.all([rel('desks'), rel('lockers'), rel('parkingstall')]);
-
-    const out: Assignments = {};
-    for (const record of [...desks, ...lockers, ...stalls]) {
-      const employeeId = lookupId(record, 'employee');
-      if (employeeId != null && employeeId !== '') out[String(record.id)] = String(employeeId);
-    }
+    // The same three lists getUnits reads, shared while in flight (loadFloorList) — during a floor
+    // load. Without `onMore` this is a re-read after a change (an assignment, a transition), and a
+    // load still in flight from before that change would answer with who held the desk before it.
+    const lists = await Promise.all(
+      ['desks', 'lockers', 'parkingstall'].map((m) =>
+        onMore ? loadFloorList(floorId, m) : loadRelated<any>({ moduleName: 'floor', id: floorId, relatedModuleName: m, relatedFieldName: 'floor' }),
+      ),
+    );
+    const held = (records: any[]): Assignments => {
+      const out: Assignments = {};
+      for (const record of records) {
+        const employeeId = lookupId(record, 'employee');
+        if (employeeId != null && employeeId !== '') out[String(record.id)] = String(employeeId);
+      }
+      return out;
+    };
+    const out = held(lists.flatMap((l) => l.first));
     // eslint-disable-next-line no-console
-    console.info(`[facilio-api] getAssignments floor ${floorId}: ${Object.keys(out).length} held of ${desks.length + lockers.length + stalls.length} records`);
+    console.info(`[facilio-api] getAssignments floor ${floorId}: ${Object.keys(out).length} held of ${lists.reduce((n, l) => n + l.first.length, 0)} records`);
+
+    if (lists.some((l) => l.hasMore)) {
+      // Who holds the desks past the first page — only THOSE, so an assignment changed on screen
+      // meanwhile is never overwritten by what the org said a moment ago.
+      const more = Promise.all(lists.map((l) => l.rest)).then((rests) => held(rests.flat()));
+      if (!onMore) return more.then((m) => ({ ...out, ...m }));
+      more.then(onMore, () => {});
+    }
     return out;
   }
   async assignUnit(): Promise<void> {
@@ -476,6 +434,119 @@ const DESK_TYPE_INT: Record<NonNullable<Unit['deskType']>, number> = { ASSIGNED:
  * A real org record with no marker -> an `unplaced` Unit for the "Available to place" pool. The
  * geometry is a placeholder: the pool never draws, and placing it supplies the real position.
  */
+/**
+ * A floor's units from its rows — placed ones from each plan's markers, then the desks, lockers,
+ * stalls and rooms with no marker yet as the "Available to place" pool. A function of the rows
+ * alone, so the floor can be built from its first pages and again, identically, once the rest
+ * have arrived.
+ */
+function buildFloorUnits(
+  floorId: string,
+  rows: { plans: { planId: PlanId; quad: NonNullable<ReturnType<typeof geometryStringToQuad>>; markers: any[] }[]; desks: any[]; lockers: any[]; stalls: any[]; spaces: any[] },
+): Unit[] {
+  const units: Unit[] = [];
+  // Real records already represented by a marker — matched on the marker's `recordId`, which this
+  // app sets when it creates the backing desk/locker/stall. A marker placed in the org's own
+  // editor may lack it, in which case that record also appears as unplaced (logged below).
+  const placedRecordIds = new Set<string>();
+  let outOfFrame = 0;
+
+  for (const { planId, quad, markers } of rows.plans) {
+    for (const marker of markers) {
+      if (marker.recordId) placedRecordIds.add(String(marker.recordId));
+      const point = parsePointGeometry(marker.geometry);
+      if (!point) continue; // polygons/zones live in floorplanmarkedzone, not here
+      const [x, y] = lngLatToQuadFraction(quad, point[0], point[1]);
+      // A marker written in some other coordinate space (e.g. by the org's own editor before this
+      // plan had a quad) converts to a wildly out-of-frame fraction. Drop it and say so, rather
+      // than pinning it to an edge where it looks like a real, mis-placed unit.
+      if (x < -0.05 || x > 1.05 || y < -0.05 || y > 1.05) {
+        outOfFrame++;
+        continue;
+      }
+      const props = safeJson<{ unitType?: string; secondary?: string | null }>(marker.properties) ?? {};
+      // `properties` is free-form JSON on the org's record — another app, an older build of this
+      // one, or a hand-edited row can put anything in `unitType`. An unrecognised value used to
+      // flow straight into a Unit, where every `TYPE_META[unit.type].name` lookup (the marker's
+      // own status pill included) threw on undefined and took the whole canvas down with it.
+      const type = asUnitType(props.unitType) ?? PLAN_UNIT_TYPE[planId] ?? 'workstation';
+      units.push({
+        id: String(marker.geoId || marker.id),
+        type,
+        label: marker.label ?? String(marker.id),
+        ...(props.secondary ? { secondary: props.secondary } : {}),
+        room: null,
+        geom: { kind: 'point', x, y },
+        floor: floorId,
+        plan: planId,
+      });
+    }
+  }
+
+  const { desks, lockers, stalls, spaces } = rows;
+  // The floor's REAL desks / lockers / parking stalls / rooms that have no marker yet (floor ->
+  // <module> on the `floor` lookup) enter the "Available to place" pool so they can be dragged
+  // onto the plan. `space` is the base table desks/lockers/stalls also live in, so rooms are
+  // whatever is left after excluding those ids and anything that isn't a plain SPACE
+  // (buildings/floors also answer to `space`).
+  const pointIds = new Set([...desks, ...lockers, ...stalls].map((r: any) => String(r.id)));
+
+  // The desk rows carry `department` — the field the plan needs to colour by who sits where.
+  // Stamp it onto the markers built from the marker list, which never saw the record behind them.
+  // `department` is a LOOKUP, so the row carries the whole related record: its id is what the
+  // colour is stored against (a department can be renamed and must keep its colour), and its
+  // name is what a person reads.
+  const deptById = new Map<string, { id: string; name: string }>();
+  for (const r of desks as any[]) {
+    const d = r.department;
+    if (!d) continue;
+    const name = typeof d === 'string' ? d : (d.displayName ?? d.name ?? null);
+    const id = typeof d === 'object' && d.id != null ? String(d.id) : null;
+    if (name) deptById.set(String(r.id), { id: id ?? departmentFallbackId(String(name)), name: String(name) });
+  }
+  if (deptById.size) {
+    for (const u of units) {
+      const dept = deptById.get(u.id);
+      if (dept) {
+        u.department = dept.name;
+        u.departmentId = dept.id;
+      }
+    }
+  }
+  const rooms = spaces.filter((r: any) => !pointIds.has(String(r.id)) && (r.spaceTypeEnum ?? 'SPACE') === 'SPACE');
+
+  let unmatchedMarkers = 0;
+  const placedIds = new Set(units.map((u) => u.id));
+  const addUnplaced = (list: any[], type: Unit['type']) => {
+    for (const r of list) {
+      const id = String(r.id);
+      if (placedRecordIds.has(id)) continue;
+      if (placedIds.has(id)) {
+        unmatchedMarkers++;
+        continue;
+      }
+      const unit = toUnplacedUnit(r, type, floorId);
+      const dept = deptById.get(id);
+      if (dept) {
+        unit.department = dept.name;
+        unit.departmentId = dept.id;
+      }
+      units.push(unit);
+    }
+  };
+  addUnplaced(desks, 'workstation');
+  addUnplaced(lockers, 'locker');
+  addUnplaced(stalls, 'parking');
+  addUnplaced(rooms, 'room');
+  // eslint-disable-next-line no-console
+  console.info(
+    `[facilio-api] getUnits floor ${floorId}: ${units.filter((u) => !u.unplaced).length} placed markers; unplaced records: ${desks.length} desks, ${lockers.length} lockers, ${stalls.length} stalls, ${rooms.length} rooms (${placedRecordIds.size} already placed)` +
+      (unmatchedMarkers ? ` — ${unmatchedMarkers} records also appear as markers without a recordId link` : '') +
+      (outOfFrame ? ` — ${outOfFrame} markers dropped: outside the plan after conversion (written in another coordinate space?)` : ''),
+  );
+  return units;
+}
+
 function toUnplacedUnit(record: any, type: Unit['type'], floorId: string): Unit {
   const deskType = type === 'workstation' ? DESK_TYPE_BY_INT[Number(record.deskType)] : undefined;
   const isZone = type === 'room';
@@ -741,53 +812,128 @@ async function fetchAllPaged(moduleName: string, perPage = 200): Promise<any[]> 
 }
 
 /**
- * The rows a server hands back when it is not asked for a page size — V3's list default. The
- * relatedList endpoint answered exactly this many desks for a floor that has hundreds: every
- * workspace module (desks, lockers, parking, rooms, the plan's markers) was cut at 50.
+ * Rows per related-list page. The relatedList endpoint pages with `page`/`perPage` (V3's
+ * RelatedDataAction → V3Util.fetchList, no upper cap) and answers 50 when `perPage` isn't sent —
+ * which is what cut every workspace module on a floor at 50. 500 loads nearly every floor in one
+ * page.
  */
-const SERVER_DEFAULT_PAGE = 50;
 const RELATED_PAGE_SIZE = 500;
+/** A backstop for the page loop when the count is unavailable. */
+const MAX_RELATED_PAGES = 200;
+
+type RelatedOpts = { moduleName: string; id: string | number; relatedModuleName: string; relatedFieldName: string };
+type RelatedPage<T> = (page: number, perPage: number) => Promise<FacilioApiListResult<T>>;
 
 /**
- * EVERY row of a related list, page by page — `fetchAllRelatedList` alone returns the server's
- * first page (50 rows) and nothing says there were more.
+ * A related list as it arrives: the first page now, and the rest behind it.
  *
- * Stops on an empty page, on a page with nothing new (a server that ignores `page` sends page 1
- * again), or on a short page. "Short" allows for a server that ignores `perPage` too: it answers
- * its own default of 50, which is shorter than the 500 asked for without being the last page, so
- * exactly 50 rows asks for the next page rather than stopping.
- *
- * An error on the first page is the caller's to handle; a later page failing keeps what arrived.
+ * `first` is what the caller draws from straight away. `rest` is every row after it — the other
+ * pages, fetched together once the count says how many there are — and resolves to [] when the
+ * first page was all of it (`hasMore` false). A caller that needs every row awaits `rest`; one
+ * that only needs to get the screen up does not.
  */
-export async function fetchAllRelatedPaged<T = any>(
-  opts: { moduleName: string; id: string | number; relatedModuleName: string; relatedFieldName: string },
-  fetchPage: (page: number, perPage: number) => Promise<FacilioApiListResult<T>> = (page, perPage) =>
-    facilioApi.fetchAllRelatedList<T>(opts, { page, perPage }),
-  perPage = RELATED_PAGE_SIZE,
-): Promise<FacilioApiListResult<T> & { pages: number }> {
-  const out: T[] = [];
+export interface RelatedLoad<T> {
+  error: FacilioApiListResult<T>['error'] | null;
+  first: T[];
+  /** The org's own count, or null when the count call failed. */
+  total: number | null;
+  hasMore: boolean;
+  rest: Promise<T[]>;
+}
+
+/** `GET …/relatedList/<module>/<field>/count` → `{ data: { count } }` (RelatedDataAction, type=count). */
+async function fetchRelatedCount(opts: RelatedOpts): Promise<number | null> {
+  try {
+    const body = await customGet(`v3/modules/${opts.moduleName}/${opts.id}/relatedList/${opts.relatedModuleName}/${opts.relatedFieldName}/count`);
+    const count = Number(body?.data?.count ?? body?.count);
+    return body?.code === 0 && Number.isFinite(count) ? count : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Load a related list: its COUNT and its FIRST page together (neither waits on the other), then —
+ * without anyone waiting on them — every remaining page at once, however many the count says.
+ *
+ * Without a count (the call failed) the pages are read one after another while they come back
+ * full, and a page with nothing new (a server ignoring `page`) stops the loop. Rows are de-duplicated
+ * by id throughout. A later page that fails costs its rows, not the ones already here.
+ */
+export async function loadRelated<T = any>(
+  opts: RelatedOpts,
+  deps: { fetchPage?: RelatedPage<T>; fetchCount?: () => Promise<number | null>; perPage?: number } = {},
+): Promise<RelatedLoad<T>> {
+  const perPage = deps.perPage ?? RELATED_PAGE_SIZE;
+  const fetchPage: RelatedPage<T> = deps.fetchPage ?? ((page, n) => facilioApi.fetchAllRelatedList<T>(opts, { page, perPage: n }));
+  const [total, firstRes] = await Promise.all([(deps.fetchCount ?? (() => fetchRelatedCount(opts)))(), fetchPage(1, perPage)]);
+  if (firstRes.error) return { error: firstRes.error, first: [], total, hasMore: false, rest: Promise.resolve([]) };
+
   const seen = new Set<string>();
-  let pages = 0;
-  for (let page = 1; page <= 200; page++) {
-    const res = await fetchPage(page, perPage);
-    if (res.error) {
-      if (page === 1) return { ...res, list: null, pages };
-      break;
-    }
-    pages = page;
-    const rows = res.list ?? [];
-    const fresh = rows.filter((r) => {
+  const fresh = (rows: T[] | null | undefined) =>
+    (rows ?? []).filter((r) => {
       const key = String((r as { id?: unknown })?.id ?? JSON.stringify(r));
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
-    out.push(...fresh);
-    if (!fresh.length) break;
-    if (rows.length >= perPage) continue;
-    if (rows.length !== SERVER_DEFAULT_PAGE) break;
-  }
-  return { error: null, list: out, pages };
+  const first = fresh(firstRes.list);
+  const firstLen = firstRes.list?.length ?? 0;
+  const hasMore = total !== null ? total > first.length && firstLen >= perPage : firstLen >= perPage;
+  if (!hasMore) return { error: null, first, total, hasMore, rest: Promise.resolve([]) };
+
+  const page = (n: number) => fetchPage(n, perPage).then((r) => (r.error ? null : r.list ?? []), () => null);
+  const rest: Promise<T[]> =
+    total !== null
+      ? // The count says how many pages: ask for all of them at once.
+        Promise.all(Array.from({ length: Math.min(MAX_RELATED_PAGES, Math.ceil(total / perPage)) - 1 }, (_, i) => page(i + 2))).then((lists) =>
+          lists.flatMap((l) => fresh(l)),
+        )
+      : // No count: page on while pages come back full and bring something new.
+        (async () => {
+          const out: T[] = [];
+          for (let n = 2; n <= MAX_RELATED_PAGES; n++) {
+            const rows = await page(n);
+            if (!rows) break;
+            const added = fresh(rows);
+            out.push(...added);
+            if (!added.length || rows.length < perPage) break;
+          }
+          return out;
+        })();
+  return { error: null, first, total, hasMore, rest };
+}
+
+/**
+ * EVERY row of a related list — the first page and the rest, awaited. For the paths that must see
+ * the whole list before acting: saving markers diffs against the existing ones, and a missing one
+ * would be created twice.
+ */
+export async function fetchAllRelatedPaged<T = any>(opts: RelatedOpts, deps?: Parameters<typeof loadRelated<T>>[1]): Promise<FacilioApiListResult<T>> {
+  // These callers wait for every row anyway, and most of their lists (a site's buildings, a plan's
+  // markers) fit one page — so no count call: one request when it fits, the next page only when
+  // the first came back full.
+  const load = await loadRelated<T>(opts, { fetchCount: async () => null, ...deps });
+  if (load.error) return { error: load.error, list: null } as FacilioApiListResult<T>;
+  return { error: null, list: [...load.first, ...(await load.rest)] } as FacilioApiListResult<T>;
+}
+
+/**
+ * The floor's desks, lockers, stalls and spaces, shared by `getUnits` and `getAssignments`. The
+ * two are asked for together on every floor load and need the same three lists; without this each
+ * list was read twice. Kept only while its pages are in flight.
+ */
+const floorListLoads = new Map<string, Promise<RelatedLoad<any>>>();
+function loadFloorList(floorId: string, module: string): Promise<RelatedLoad<any>> {
+  const key = `${floorId}:${module}`;
+  const hit = floorListLoads.get(key);
+  if (hit) return hit;
+  const load = loadRelated<any>({ moduleName: 'floor', id: floorId, relatedModuleName: module, relatedFieldName: 'floor' }).catch(
+    (): RelatedLoad<any> => ({ error: { message: 'request failed' }, first: [], total: null, hasMore: false, rest: Promise.resolve([]) }),
+  );
+  floorListLoads.set(key, load);
+  void load.then((l) => l.rest).finally(() => floorListLoads.delete(key));
+  return load;
 }
 
 function sortByName<T extends { name?: string }>(rows: T[]): T[] {

@@ -41,9 +41,15 @@ export interface FloorplanDataSource {
   getEmployees(): Promise<Employee[]>;
   /** Catalog of assets that can be dropped onto a plan (Edit mode asset picker). */
   getAssets(): Promise<Asset[]>;
-  getUnits(floorId: string): Promise<Unit[]>;
+  /**
+   * The floor's units. With `onMore`, a tier may answer with what its first pages hold and hand the
+   * whole floor to `onMore` once the rest has arrived — so a big floor draws without waiting for
+   * every page. Without it, the answer is always the whole floor.
+   */
+  getUnits(floorId: string, onMore?: (units: Unit[]) => void): Promise<Unit[]>;
   saveUnits(floorId: string, units: Unit[]): Promise<void>;
-  getAssignments(floorId: string): Promise<Assignments>;
+  /** As getUnits: with `onMore`, the holders of the records past the first pages arrive there. */
+  getAssignments(floorId: string, onMore?: (more: Assignments) => void): Promise<Assignments>;
   assignUnit(unitId: string, contactId: string): Promise<void>;
   vacateUnit(unitId: string): Promise<void>;
   getBookings(floorId: string, date: string): Promise<Booking[]>;
@@ -334,8 +340,8 @@ export class CompositeDataSource implements FloorplanDataSource {
   getAssets() {
     return this.run('getAssets');
   }
-  getUnits(floorId: string) {
-    return this.run('getUnits', floorId);
+  getUnits(floorId: string, onMore?: (units: Unit[]) => void) {
+    return this.run('getUnits', floorId, onMore);
   }
   /** Fast path across tiers that implement it; callers fall back to the per-call path on throw. */
   async getFloorData(floorId: string, date: string, planId: string): Promise<FloorBundle> {
@@ -363,8 +369,8 @@ export class CompositeDataSource implements FloorplanDataSource {
   createUnit(loc: CreateSpaceLoc, unit: Unit) {
     return this.run('createUnit', loc, unit) as Promise<Unit>;
   }
-  getAssignments(floorId: string) {
-    return this.run('getAssignments', floorId);
+  getAssignments(floorId: string, onMore?: (more: Assignments) => void) {
+    return this.run('getAssignments', floorId, onMore);
   }
   assignUnit(unitId: string, contactId: string) {
     return this.run('assignUnit', unitId, contactId);

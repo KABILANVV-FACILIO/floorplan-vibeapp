@@ -218,6 +218,26 @@ async function toStorableDataUrl(url: string): Promise<string | null> {
  * is instant and works offline. The cache write is deployed-only (persistFloorplanFile no-ops in
  * dev), and only real (@facilio/connector) fetches populate it — so it stays equal to the source.
  */
+/**
+ * The pages of a big floor that arrive after it is drawn (see getUnits' `onMore`). They can land
+ * before the floor's own load has finished — its bookings may still be in flight — and applied
+ * then, SELECT_FLOOR_DONE would overwrite them with the first pages. So they wait for `release`,
+ * called once the floor is on screen.
+ */
+function floorMore(dispatch: Dispatch<Action>, floorId: string) {
+  let released = false;
+  const queued: Action[] = [];
+  const send = (a: Action) => (released ? dispatch(a) : queued.push(a));
+  return {
+    units: (units: Unit[]) => send({ type: 'FLOOR_UNITS_MORE', floorId, units }),
+    assignments: (assignments: AppState['assignments']) => send({ type: 'FLOOR_ASSIGNMENTS_MORE', floorId, assignments }),
+    release: () => {
+      released = true;
+      queued.splice(0).forEach(dispatch);
+    },
+  };
+}
+
 async function loadFloorPlanTypesAndImage(dispatch: Dispatch<Action>, floorId: string, currentPlanId: PlanId) {
   dispatch({ type: 'SET_FLOOR_IMAGE_LOADING', value: true });
   try {
@@ -340,12 +360,15 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       }
     }
 
+    // A big floor draws from its first pages; the rest merges in when it arrives (floorMore).
+    const more = floorMore(dispatch, floorId);
     const [units, assignments, bookings] = await Promise.all([
-      dataSource.getUnits(floorId),
-      dataSource.getAssignments(floorId),
+      dataSource.getUnits(floorId, more.units),
+      dataSource.getAssignments(floorId, more.assignments),
       dataSource.getBookings(floorId, state.date),
     ]);
     dispatch({ type: 'SELECT_FLOOR_DONE', floorId, units, assignments, bookings });
+    more.release();
     loadFloorPlanTypesAndImage(dispatch, floorId, state.planId);
     return units;
   }
@@ -1499,12 +1522,14 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
       const floorId = firstRealFloor ?? state.floorId;
       if (floorId !== state.floorId) dispatch({ type: 'SELECT_FLOOR_START', floorId });
 
+      const more = floorMore(dispatch, floorId);
       const [units, assignments, bookings] = await Promise.all([
-        dataSource.getUnits(floorId),
-        dataSource.getAssignments(floorId),
+        dataSource.getUnits(floorId, more.units),
+        dataSource.getAssignments(floorId, more.assignments),
         dataSource.getBookings(floorId, state.date),
       ]);
       dispatch({ type: 'SELECT_FLOOR_DONE', floorId, units, assignments, bookings });
+      more.release();
       loadFloorPlanTypesAndImage(dispatch, floorId, state.planId);
       // From here on the url follows the floor on screen (see the effect below). Written now too,
       // so a session that opened on the desk's floor has a link to it straight away.

@@ -162,6 +162,10 @@ export type Action =
   | { type: 'TOGGLE_NODE'; id: string }
   | { type: 'SELECT_FLOOR_START'; floorId: string }
   | { type: 'SELECT_FLOOR_DONE'; floorId: string; units: Unit[]; assignments: AppState['assignments']; bookings: Booking[] }
+  /** The whole floor, once the pages past the first have arrived in the background. */
+  | { type: 'FLOOR_UNITS_MORE'; floorId: string; units: Unit[] }
+  /** Holders of the records past the first pages. */
+  | { type: 'FLOOR_ASSIGNMENTS_MORE'; floorId: string; assignments: AppState['assignments'] }
   | { type: 'SET_PLAN'; planId: AppState['planId'] }
   | { type: 'SET_STAGE_SIZE'; w: number; h: number }
   | { type: 'SET_VIEW'; view: AppState['view']; animate?: boolean }
@@ -334,6 +338,37 @@ export function reducer(state: AppState, action: Action): AppState {
       const placed = action.units.filter((u) => !u.unplaced);
       const pooled = action.units.filter((u) => u.unplaced);
       return { ...state, units: placed, savedUnits: placed, unplacedUnits: pooled, unsavedChanges: 0, assignments: action.assignments, bookings: action.bookings, loading: false };
+    }
+    case 'FLOOR_UNITS_MORE': {
+      if (action.floorId !== state.floorId) return state;
+      // The rest of a big floor, arriving after it was drawn from its first pages. It ADDS to what
+      // is on screen and never replaces it: a marker moved, placed or deleted in the seconds
+      // between is the user's, and the load it came from is older than that.
+      const known = new Set([...state.units, ...state.savedUnits].map((u) => u.id));
+      const added = action.units.filter((u) => !u.unplaced && !known.has(u.id));
+      // A desk record on a later page carries the department for a marker already drawn.
+      const deptOf = new Map(action.units.filter((u) => u.department).map((u) => [u.id, u]));
+      const stamp = (u: Unit): Unit => {
+        const d = !u.department ? deptOf.get(u.id) : undefined;
+        return d ? { ...u, department: d.department, departmentId: d.departmentId } : u;
+      };
+      const units = [...state.units.map(stamp), ...added];
+      const placedNow = new Set(units.map((u) => u.id));
+      return {
+        ...state,
+        units,
+        savedUnits: [...state.savedUnits.map(stamp), ...added],
+        // The pool is the whole floor's now, less anything placed meanwhile.
+        unplacedUnits: action.units.filter((u) => u.unplaced && !placedNow.has(u.id)),
+      };
+    }
+    case 'FLOOR_ASSIGNMENTS_MORE': {
+      if (action.floorId !== state.floorId) return state;
+      // Only records the first pages didn't hold; one assigned or vacated on screen meanwhile keeps
+      // what was done there.
+      const assignments = { ...state.assignments };
+      for (const [unitId, contactId] of Object.entries(action.assignments)) if (!(unitId in assignments)) assignments[unitId] = contactId;
+      return { ...state, assignments };
     }
     case 'SET_PLAN':
       return { ...state, planId: action.planId, ...resetSelectionState(state) };
