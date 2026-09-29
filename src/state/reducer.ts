@@ -368,21 +368,36 @@ export function reducer(state: AppState, action: Action): AppState {
       // saved, it is in neither `units` nor `savedUnits`, and this older load — which still reads
       // it as placed (its zone) — would otherwise put it back on the plan as saved.
       //
-      // One exception to "never replaces": a desk, locker or stall MARKER in these pages whose id
-      // the first pages drew as a ROOM. The first pages can't always tell — a zone tied to a desk
-      // whose desk record (or marker) is on a later page reads as that desk's room — and the full
-      // load, which can, says the id is the marker's. Kept as a room, the id would count as known,
-      // the marker would never be added, and the next Save — which sends only point units — would
-      // DELETE that marker from the org. So the marker takes the room's place, in `units` and
-      // `savedUnits` both (it is what the org holds), and its id is not a pooled room's either.
-      const roomLikeIds = new Set(
-        [...state.units, ...state.savedUnits, ...state.unplacedUnits].filter((u) => isRoomLike(u.type) && (u.unplaced || u.geom.kind === 'poly')).map((u) => u.id),
+      // One exception to "never replaces": an id the first pages drew as a ROOM that the full load
+      // says is a desk's, locker's or stall's. The first pages can't always tell — a zone tied to a
+      // desk whose desk record (or marker) is on a later page reads as that desk's room — and the
+      // full load, which can, drops the zone. It then answers one of three ways:
+      //  - a MARKER under that id. Kept as a room, the id would count as known, the marker would
+      //    never be added, and the next Save — which sends only point units — would DELETE that
+      //    marker from the org. So the marker takes the room's place, in `units` and `savedUnits`
+      //    both (it is what the org holds), and its id is not a pooled room's either.
+      //  - an UNPLACED record under that id (no marker, or its marker page failed). The room goes
+      //    and the record goes to the pool, where it can be placed — kept, the room held the id as
+      //    placed and the pool never offered the desk.
+      //  - nothing under that id: the record is placed by a marker with another id (one drawn in
+      //    Facilio's editor, geoId "3fp"). The room goes; the marker arrives below as `added`.
+      // Either way the stand-in room leaves `units`, `savedUnits` and the pool.
+      const fullById = new Map(action.units.map((u) => [u.id, u]));
+      const roomLike = [...state.units, ...state.savedUnits, ...state.unplacedUnits].filter((u) => isRoomLike(u.type) && (u.unplaced || u.geom.kind === 'poly'));
+      const standIns = new Set(
+        roomLike
+          .filter((u) => {
+            const full = fullById.get(u.id);
+            return full ? !isRoomLike(full.type) : !!u.orgRoom;
+          })
+          .map((u) => u.id),
       );
+      const isStandIn = (u: Unit) => isRoomLike(u.type) && standIns.has(u.id);
       const takeovers = new Map(
-        action.units.filter((u) => !u.unplaced && !isRoomLike(u.type) && u.geom.kind === 'point' && roomLikeIds.has(u.id)).map((u) => [u.id, u]),
+        action.units.filter((u) => !u.unplaced && !isRoomLike(u.type) && u.geom.kind === 'point' && standIns.has(u.id)).map((u) => [u.id, u]),
       );
-      const pooledRoomIds = state.unplacedUnits.filter((u) => isRoomLike(u.type) && !takeovers.has(u.id)).map((u) => u.id);
-      const known = new Set([...[...state.units, ...state.savedUnits].map((u) => u.id).filter((id) => !takeovers.has(id)), ...pooledRoomIds]);
+      const pooledRoomIds = state.unplacedUnits.filter((u) => isRoomLike(u.type) && !standIns.has(u.id)).map((u) => u.id);
+      const known = new Set([...[...state.units, ...state.savedUnits].map((u) => u.id).filter((id) => !standIns.has(id)), ...pooledRoomIds]);
       const added = action.units.filter((u) => !u.unplaced && !known.has(u.id) && !takeovers.has(u.id));
       // A desk record on a later page carries the department for a marker already drawn.
       const deptOf = new Map(action.units.filter((u) => u.department).map((u) => [u.id, u]));
@@ -390,10 +405,10 @@ export function reducer(state: AppState, action: Action): AppState {
         const d = !u.department ? deptOf.get(u.id) : undefined;
         return d ? { ...u, department: d.department, departmentId: d.departmentId } : u;
       };
-      /** `list` with each taken-over room replaced by its marker — appended when the list lacks it. */
+      /** `list` less each stand-in room — replaced by its marker where there is one, appended when the list lacks it. */
       const withTakeovers = (list: Unit[]): Unit[] => {
-        if (!takeovers.size) return list;
-        const out = list.map((u) => takeovers.get(u.id) ?? u);
+        if (!standIns.size) return list;
+        const out = list.flatMap((u) => (!isStandIn(u) ? [u] : takeovers.has(u.id) ? [takeovers.get(u.id)!] : []));
         const have = new Set(out.map((u) => u.id));
         for (const [id, u] of takeovers) if (!have.has(id)) out.push(u);
         return out;
@@ -410,15 +425,15 @@ export function reducer(state: AppState, action: Action): AppState {
       const loadedPoolIds = new Set(loadedPool.map((u) => u.id));
       // Before these pages the pool holds only what the user put there (the first answer carries
       // placed units only), so a room there stays even once a save has dropped it from savedUnits.
-      const userPooled = state.unplacedUnits.filter((u) => (saved.has(u.id) || isRoomLike(u.type)) && !placedNow.has(u.id) && !loadedPoolIds.has(u.id));
+      const userPooled = state.unplacedUnits.filter((u) => (saved.has(u.id) || isRoomLike(u.type)) && !isStandIn(u) && !placedNow.has(u.id) && !loadedPoolIds.has(u.id));
       const savedUnits = [...withTakeovers(state.savedUnits).map(stamp), ...added];
       return {
         ...state,
         units,
         savedUnits,
         unplacedUnits: [...loadedPool, ...userPooled],
-        // A taken-over room edited meanwhile was an edit of the wrong thing; the count follows.
-        ...(takeovers.size ? { unsavedChanges: countUnsavedChanges(units, savedUnits) } : {}),
+        // A stand-in room edited meanwhile was an edit of the wrong thing; the count follows.
+        ...(standIns.size ? { unsavedChanges: countUnsavedChanges(units, savedUnits) } : {}),
       };
     }
     case 'FLOOR_ASSIGNMENTS_MORE': {
@@ -777,14 +792,32 @@ export function reducer(state: AppState, action: Action): AppState {
         const c = !u.department ? current.get(u.id) : undefined;
         return c?.department ? { ...u, department: c.department, departmentId: c.departmentId } : u;
       };
+      // And they may have replaced a room the first pages drew in a desk's, locker's or stall's place
+      // (FLOOR_UNITS_MORE): the baseline and the sent snapshot still hold that stand-in room, but the
+      // org holds the record — its marker, now in `savedUnits`, or nothing under that id. Taking the
+      // sent room back as saved would put the stand-in back, and a Discard would then restore the
+      // room and skip the marker's re-create.
+      const replaced = new Set(
+        before
+          .filter((b) => {
+            if (!isRoomLike(b.type)) return false;
+            const c = current.get(b.id);
+            return c ? !isRoomLike(c.type) : !!b.orgRoom;
+          })
+          .map((b) => b.id),
+      );
       const savedUnits: Unit[] = [];
       for (const u of action.units) {
+        if (replaced.has(u.id) && isRoomLike(u.type)) continue; // its replacement is kept below
         if (!retry.has(u.id)) savedUnits.push(stamp(u));
         else if (beforeById.has(u.id)) savedUnits.push(stamp(beforeById.get(u.id)!)); // failed: still as it was
         // failed and new since the baseline (a failed create): not saved at all
       }
-      for (const b of before) if (retry.has(b.id) && !sentIds.has(b.id)) savedUnits.push(stamp(b)); // a failed delete
-      for (const c of state.savedUnits) if (!beforeIds.has(c.id) && !sentIds.has(c.id)) savedUnits.push(c); // arrived during the save
+      for (const b of before) if (retry.has(b.id) && !sentIds.has(b.id) && !replaced.has(b.id)) savedUnits.push(stamp(b)); // a failed delete
+      for (const c of state.savedUnits) {
+        if (!beforeIds.has(c.id) && !sentIds.has(c.id)) savedUnits.push(c); // arrived during the save
+        else if (replaced.has(c.id) && !savedUnits.some((u) => u.id === c.id)) savedUnits.push(c); // took a stand-in room's place during the save
+      }
       return { ...state, savedUnits, unsavedChanges: countUnsavedChanges(state.units, savedUnits) };
     }
     case 'DISCARD_CHANGES': {

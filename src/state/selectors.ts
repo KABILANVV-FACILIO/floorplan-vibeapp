@@ -1,6 +1,7 @@
 import { isModuleEnabled, isRoomLike, unitOnPlan } from '../lib/types';
 import { SUB_MAX_CHARS } from '../lib/labelLayout';
-import type { MarkerLabelInput } from '../lib/labelLayout';
+import type { MarkerLabelInput, RoomLabelInput } from '../lib/labelLayout';
+import { polygonCentroid } from '../lib/geometry';
 import type { Booking, Employee, Unit, UnitType } from '../lib/types';
 import type { AppState } from './types';
 import { departmentDisplayName, personDisplayName, personInitials, shortPersonName } from '../lib/displayNames';
@@ -102,8 +103,16 @@ export function floorMeta(state: AppState, floorId: string) {
   return null;
 }
 
+/**
+ * The name a newly drawn unit gets: `<prefix>-<n>`, n one past the units of that type on the floor.
+ * Rooms read from the org (`orgRoom`) are not counted — they carry the org's own names, and since
+ * the floor load draws every org outline as a placed room, counting them would name a room traced
+ * on a floor with 12 outlines "RM-13" where it has always been "RM-01" (and send that name to the
+ * connector's create-space). The one remaining difference: a pool room traced this session no
+ * longer counts either.
+ */
 export function nextLabel(state: AppState, type: Unit['type'], prefix: string): string {
-  const count = state.units.filter((u) => u.type === type).length;
+  const count = state.units.filter((u) => u.type === type && !u.orgRoom).length;
   return `${prefix}-${String(count + 1).padStart(2, '0')}`;
 }
 
@@ -141,6 +150,22 @@ export function markerSubTexts(state: AppState, unit: Unit): { holder: string | 
   if (!name) return { holder: null, dept: null };
   const dept = departmentDisplayName(unit.department?.trim() || contact?.department);
   return { holder: shortPersonName(name, SUB_MAX_CHARS), dept: dept || null };
+}
+
+/**
+ * What planRoomLabels needs for each drawn room: its outline, the centroid RoomLabel draws its
+ * name at, and the line under the name (the area in Edit, "Available" in Book). Shared by the
+ * canvas and the print sheet, so paper shows the room names the screen shows at the same zoom.
+ */
+export function roomLabelInputs(state: AppState, rooms: Unit[]): RoomLabelInput[] {
+  const subHeight = state.mode === 'edit' || state.mode === 'book' ? 16 : 0;
+  return rooms
+    .filter((r) => r.geom.kind === 'poly' && r.geom.pts.length >= 3)
+    .map((r) => {
+      const pts = (r.geom as { pts: [number, number][] }).pts;
+      const c = polygonCentroid(pts);
+      return { id: r.id, pts, x: c.x, y: c.y, name: r.label, must: r.id === state.selected, subHeight };
+    });
 }
 
 /**

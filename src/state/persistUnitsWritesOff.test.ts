@@ -449,6 +449,96 @@ describe('a zone never takes the id of a desk — not even on a floor that loads
   });
 });
 
+describe('a zone tied to a desk on a later page of `desks` leaves the plan once that page lands', () => {
+  /**
+   * 600 desks: desk 1001's record is on the second page of `desks`, so the first pages read an
+   * editor zone (geoId not `space-…`) tied to it as room 1001. The full load knows better and drops
+   * the zone. The room must go with it — kept, it held the id as placed: the desk was left out of
+   * "Available to place" (when it has no marker) or drawn beside its marker (when the marker has an
+   * id of its own), on every load.
+   */
+  const fillers = () =>
+    Array.from({ length: 500 }, (_, i) => ({ ...deskMarker(), id: i + 1, geoId: `f-${i + 1}`, label: `F-${i + 1}`, recordId: null, markerModuleId: null }));
+
+  async function loadPaged() {
+    const m = await fresh();
+    expect(m.ROOM_OUTLINE_WRITES).toBe(false);
+    let rest: Unit[] = [];
+    let arrived!: () => void;
+    const more = new Promise<void>((r) => (arrived = r));
+    const first = await new m.FacilioApiDataSource().getUnits(FLOOR, (u) => {
+      rest = u;
+      arrived();
+    });
+    const start = { ...m.buildInitialState(), mode: 'edit' as const, floorId: FLOOR, planId: 'workstation' as const };
+    const drawn = m.reducer(start, { type: 'SELECT_FLOOR_DONE', floorId: FLOOR, units: first, assignments: {}, bookings: [] });
+    await more;
+    return { m, first, drawn, rest };
+  }
+
+  beforeEach(() => {
+    org.tables.desks = [...Array.from({ length: 599 }, (_, i) => ({ id: 20_000 + i, name: `D-${i}` })), { id: 1001, name: 'WS-1' }];
+    org.tables.floorplanmarkedzone = [zoneRecord(4948, 1001, 'Desk zone', { geoId: 'k5v' })];
+  });
+
+  it('an unmarked desk: the room goes, and the desk is offered in the pool', async () => {
+    org.tables.floorplanmarker = fillers(); // desk 1001 has no marker
+    const { m, first, drawn, rest } = await loadPaged();
+    expect(first.find((u) => u.id === '1001')?.type).toBe('room'); // what the first pages could see
+    const state = m.reducer(drawn, { type: 'FLOOR_UNITS_MORE', floorId: FLOOR, units: rest });
+    expect(state.units.find((u) => u.id === '1001')).toBeUndefined();
+    expect(state.savedUnits.find((u) => u.id === '1001')).toBeUndefined();
+    expect(state.unplacedUnits.filter((u) => u.id === '1001').map((u) => u.type)).toEqual(['workstation']);
+    expect(state.unplacedUnits.filter((u) => u.type === 'workstation')).toHaveLength(600); // every desk, as main lists them
+    expect(state.unsavedChanges).toBe(0);
+  });
+
+  it('an unmarked desk whose room was deleted meanwhile: the pooled room goes too, and the desk takes its row', async () => {
+    org.tables.floorplanmarker = fillers();
+    const { m, drawn, rest } = await loadPaged();
+    const deleted = m.reducer(drawn, { type: 'DELETE_UNIT', id: '1001' });
+    expect(deleted.unplacedUnits.find((u) => u.id === '1001')?.type).toBe('room');
+    const state = m.reducer(deleted, { type: 'FLOOR_UNITS_MORE', floorId: FLOOR, units: rest });
+    expect(state.unplacedUnits.filter((u) => u.id === '1001').map((u) => u.type)).toEqual(['workstation']);
+    expect(state.unsavedChanges).toBe(0);
+  });
+
+  it('a desk whose marker has another geoId ("3fp"): the room goes, the marker is drawn alone, and Save deletes nothing', async () => {
+    org.tables.floorplanmarker = [...fillers(), { ...deskMarker(), id: 778, geoId: '3fp' }]; // page 2, recordId 1001
+    const { m, drawn, rest } = await loadPaged();
+    const state = m.reducer(drawn, { type: 'FLOOR_UNITS_MORE', floorId: FLOOR, units: rest });
+    expect(state.units.find((u) => u.id === '1001')).toBeUndefined();
+    expect(state.savedUnits.find((u) => u.id === '1001')).toBeUndefined();
+    expect(state.units.find((u) => u.id === '3fp')).toMatchObject({ type: 'workstation', geom: { kind: 'point' } });
+    expect(state.unplacedUnits.find((u) => u.id === '1001')).toBeUndefined(); // placed, by its marker
+    expect(state.unsavedChanges).toBe(0);
+    org.log = [];
+    await m.persistUnits(state.floorId, state.units, state.savedUnits);
+    expect(markerWrites()).toEqual([]);
+  });
+
+  it('a Save that the page lands during keeps the desk marker as saved, so Discard re-creates it', async () => {
+    org.tables.floorplanmarker = [...fillers(), deskMarker()]; // desk 1001's marker: page 2
+    const { m, drawn, rest } = await loadPaged();
+    expect(drawn.units.find((u) => u.id === '1001')?.type).toBe('room');
+    // Move a desk and press Save before page 2 lands: the snapshot holds the stand-in room.
+    const moved = m.reducer(drawn, { type: 'UPDATE_UNIT', id: 'f-1', patch: { geom: { kind: 'point', x: 0.6, y: 0.6 } } });
+    const { floorId, units, savedUnits } = moved;
+    const outcome = await m.persistUnits(floorId, units, savedUnits);
+    // Page 2 lands while the save is out; then the save finishes.
+    let state = m.reducer(moved, { type: 'FLOOR_UNITS_MORE', floorId, units: rest });
+    state = m.reducer(state, { type: 'MARK_SAVED', floorId, units, baseline: savedUnits, retry: outcome.roomsToRetry });
+    expect(state.savedUnits.filter((u) => u.id === '1001').map((u) => u.type)).toEqual(['workstation']);
+    expect(state.units.filter((u) => u.id === '1001').map((u) => u.type)).toEqual(['workstation']);
+    expect(state.unsavedChanges).toBe(0);
+    // Discard's housekeeping re-persists the saved snapshot: the marker the save took out comes back.
+    state = m.reducer(state, { type: 'DISCARD_CHANGES' });
+    await m.persistUnits(state.floorId, state.savedUnits, state.savedUnits);
+    expect(org.tables.floorplanmarker.some((r) => String(r.geoId) === '1001')).toBe(true);
+    expect(org.tables.floorplanmarker).toHaveLength(501);
+  });
+});
+
 describe('org rooms are not offered for booking or assignment while room booking is not wired', () => {
   it('a loaded org room carries the zone\'s isReservable, and is neither bookable nor assignable', async () => {
     const m = await fresh();
@@ -467,5 +557,24 @@ describe('org rooms are not offered for booking or assignment while room booking
     const demo: Unit = { id: 'r1', type: 'room', label: 'Demo', room: null, geom: { kind: 'poly', pts: SQUARE }, floor: FLOOR, plan: 'workstation' };
     expect(selectors.isBookable(demo)).toBe(true);
     expect(selectors.isAssignable({ ...demo, isReservable: false })).toBe(true);
+  });
+});
+
+describe('a room traced on a floor with org outlines gets the name it always did', () => {
+  it('RM-01 on a floor of three org rooms — the outlines drawn from the load are not counted', async () => {
+    const m = await fresh();
+    const selectors = await import('./selectors');
+    const state = await loadFloor(m);
+    expect(state.units.filter((u) => u.type === 'room')).toHaveLength(3); // the org's outlines, drawn
+    // What closeDraft names the traced room, and so what create-space sends as its name.
+    expect(selectors.nextLabel(state, 'room', 'RM')).toBe('RM-01');
+    // A room traced here (not an org room) still counts, as it always has.
+    const traced = m.reducer(state, {
+      type: 'ADD_UNIT',
+      unit: { id: 'u1', type: 'room', label: 'RM-01', room: null, geom: { kind: 'poly', pts: SQUARE }, floor: FLOOR, plan: 'workstation' },
+    });
+    expect(selectors.nextLabel(traced, 'room', 'RM')).toBe('RM-02');
+    // Desks are numbered as before.
+    expect(selectors.nextLabel(state, 'workstation', 'WS')).toBe('WS-02');
   });
 });

@@ -2,12 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import type { Ref } from 'react';
 import { flushSync } from 'react-dom';
 import { useFloorplan } from '../../state/FloorplanContext';
-import { bookedUnitIds, floorMeta, markerLabelInputs, planMarkers, planRooms, visibleUnits } from '../../state/selectors';
+import { bookedUnitIds, floorMeta, markerLabelInputs, planMarkers, planRooms, roomLabelInputs, visibleUnits } from '../../state/selectors';
 import { floorImageKey, unitOnPlan } from '../../lib/types';
 import type { Unit } from '../../lib/types';
 import type { AppState } from '../../state/types';
 import { IMG_H, IMG_W } from '../../lib/mockData';
-import { planMarkerLabels } from '../../lib/labelLayout';
+import { planMarkerLabels, planRoomLabels } from '../../lib/labelLayout';
 import { FloorplanBackground } from '../canvas/FloorplanBackground';
 import { RoomPolygon } from '../canvas/RoomPolygon';
 import { RoomLabel } from '../canvas/Canvas';
@@ -279,6 +279,13 @@ function PrintZoomedPlan({ cx, cy, zoom, labelScale = 1 }: { cx: number; cy: num
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [zoom, labelScale],
   );
+  // Room names as the screen keeps them at this zoom (see Canvas' roomLabelIds): drawn unfiltered,
+  // an onboarded floor's dozens of small org rooms print as a pile of overlapping name boxes.
+  const roomLabelIds = useMemo(
+    () => planRoomLabels(roomLabelInputs(state, rooms), { planW: IMG_W, planH: IMG_H, zoom: zoom / labelScale }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [zoom, labelScale],
+  );
   const invZ = labelScale / zoom;
   const ox = VIEW_FRAME_W / 2 - cx * zoom;
   const oy = VIEW_FRAME_H / 2 - cy * zoom;
@@ -292,9 +299,11 @@ function PrintZoomedPlan({ cx, cy, zoom, labelScale = 1 }: { cx: number; cy: num
       {rooms.map((r) => (
         <RoomPolygon key={r.id} unit={r} />
       ))}
-      {rooms.map((r) => (
-        <RoomLabel key={`l-${r.id}`} unit={r} />
-      ))}
+      {rooms
+        .filter((r) => roomLabelIds.has(r.id))
+        .map((r) => (
+          <RoomLabel key={`l-${r.id}`} unit={r} />
+        ))}
       {markers.map((m) => (
         <Marker key={m.id} unit={m} invZ={invZ} personal={false} labels={labelPlan.get(m.id)} />
       ))}
@@ -375,6 +384,11 @@ function PrintPlan() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
+  const roomLabelIds = useMemo(
+    () => planRoomLabels(roomLabelInputs(state, rooms), { planW: IMG_W, planH: IMG_H, zoom: PRINT_ZOOM }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
   const invZ = 1 / PRINT_ZOOM;
 
   return (
@@ -386,9 +400,11 @@ function PrintPlan() {
       {rooms.map((r) => (
         <RoomPolygon key={r.id} unit={r} />
       ))}
-      {rooms.map((r) => (
-        <RoomLabel key={`l-${r.id}`} unit={r} />
-      ))}
+      {rooms
+        .filter((r) => roomLabelIds.has(r.id))
+        .map((r) => (
+          <RoomLabel key={`l-${r.id}`} unit={r} />
+        ))}
       {markers.map((m) => (
         <Marker key={m.id} unit={m} invZ={invZ} personal={false} labels={labelPlan.get(m.id)} />
       ))}

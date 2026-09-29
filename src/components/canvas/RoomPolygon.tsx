@@ -8,14 +8,21 @@ import type { PolyGeom, Unit } from '../../lib/types';
 export function RoomPolygon({
   unit,
   onEditDown,
+  clickSuppressed,
 }: {
   unit: Unit;
   onEditDown?: (unit: Unit, e: ReactMouseEvent) => void;
+  /** True while the click ending a gesture (a pan or drag that started inside this room) is to be ignored. */
+  clickSuppressed?: () => boolean;
 }) {
   const { state, actions } = useFloorplan();
   const geom = unit.geom as PolyGeom;
   const selected = state.selected === unit.id;
-  const movable = state.mode === 'edit' && state.tool === 'select';
+  // An armed "Available to place" desk, locker or stall places where the plan is clicked — inside a
+  // room too (a desk in a private office). While one is armed a room is not a target at all: its
+  // click and mousedown fall through to the canvas, which places the record.
+  const placing = state.mode === 'edit' && !!state.placingUnitId;
+  const movable = state.mode === 'edit' && state.tool === 'select' && !placing;
 
   let fill: string;
   if (state.mode === 'edit') {
@@ -42,16 +49,19 @@ export function RoomPolygon({
   }
 
   function onClick(e: ReactMouseEvent) {
-    if (state.mode === 'edit' && state.tool !== 'select') return;
+    if (state.mode === 'edit' && (state.tool !== 'select' || placing)) return;
+    // A press inside a room that panned the plan (see Canvas.startRoomDrag) is a pan, not a click.
+    if (clickSuppressed?.()) return;
     e.stopPropagation();
     actions.selectUnit(unit.id);
   }
 
   return (
     <div
+      data-room-id={unit.id}
       onClick={onClick}
       onMouseDown={movable && onEditDown ? (e) => onEditDown(unit, e) : undefined}
-      style={{ position: 'absolute', inset: 0, clipPath: clipPathFor(geom), background: fill, cursor: movable ? 'move' : 'pointer' }}
+      style={{ position: 'absolute', inset: 0, clipPath: clipPathFor(geom), background: fill, cursor: placing ? 'crosshair' : movable && selected ? 'move' : 'pointer' }}
     />
   );
 }

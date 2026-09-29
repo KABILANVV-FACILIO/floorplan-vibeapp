@@ -11,7 +11,7 @@ import { Legend } from './Legend';
 import { ZoomControls } from './ZoomControls';
 import { Tooltip } from './Tooltip';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
-import { isBookable, markerLabelInputs, myAssignedUnit, planMarkers, planRooms, visibleUnits } from '../../state/selectors';
+import { isBookable, markerLabelInputs, myAssignedUnit, planMarkers, planRooms, roomLabelInputs, visibleUnits } from '../../state/selectors';
 import { planMarkerLabels, planRoomLabels } from '../../lib/labelLayout';
 import { floorImageKey, isRoomLike, isZoneTool, unitOnPlan } from '../../lib/types';
 import type { PolyGeom, Unit, UnitGeom } from '../../lib/types';
@@ -302,16 +302,26 @@ export function Canvas() {
     }
   }
 
-  /** Whole-room drag (edit + select): translate every vertex, commit on release. */
+  /**
+   * Whole-room drag (edit + select): translate every vertex, commit on release — of a room already
+   * selected (or of a marquee selection it is part of). An onboarded floor is covered in org room
+   * outlines, so any other press inside one is left to the canvas: Shift+drag still starts a
+   * marquee, a plain drag still pans, and an armed desk still places (RoomPolygon passes that one
+   * through before it gets here). A click still selects the room (RoomPolygon's onClick); drag it
+   * once it is selected.
+   */
   function startRoomDrag(unit: Unit, e: ReactMouseEvent) {
     if (!isEditSelect || unit.geom.kind !== 'poly') return;
-    e.stopPropagation();
-    e.preventDefault();
+    if (e.shiftKey || state.placingUnitId) return;
     if (multiSel.size > 1 && multiSel.has(unit.id)) {
+      e.stopPropagation();
+      e.preventDefault();
       startGroupDrag(e);
       return;
     }
-    actions.selectUnit(unit.id);
+    if (state.selected !== unit.id) return;
+    e.stopPropagation();
+    e.preventDefault();
     gestureRef.current = { kind: 'room', id: unit.id, sx: e.clientX, sy: e.clientY };
     window.addEventListener('mousemove', onRoomDragMove);
     window.addEventListener('mouseup', onRoomDragUp);
@@ -523,17 +533,7 @@ export function Canvas() {
   // floor (dozens of small org rooms) they would otherwise pile up into one unreadable block (see
   // planRoomLabels). A room without its name still shows it once selected, and once zoomed in.
   const roomLabelIds = useMemo(() => {
-    const subHeight = state.mode === 'edit' || state.mode === 'book' ? 16 : 0;
-    return planRoomLabels(
-      rooms
-        .filter((r) => r.geom.kind === 'poly' && r.geom.pts.length >= 3)
-        .map((r) => {
-          const pts = (r.geom as PolyGeom).pts;
-          const c = polygonCentroid(pts);
-          return { id: r.id, pts, x: c.x, y: c.y, name: r.label, must: r.id === state.selected, subHeight };
-        }),
-      { planW: IMG_W, planH: IMG_H, zoom: state.view.z },
-    );
+    return planRoomLabels(roomLabelInputs(state, rooms), { planW: IMG_W, planH: IMG_H, zoom: state.view.z });
     // Deliberately NOT `rooms` (rebuilt every render, as `markers` is above) — what it is built from.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.units, state.enabledModules, state.planId, editPreview, state.selected, state.mode, state.view.z]);
@@ -584,7 +584,7 @@ export function Canvas() {
       >
         <FloorplanBackground imageUrl={state.floorImages[floorImageKey(state.floorId, state.planId)]} />
         {rooms.map((r) => (
-          <RoomPolygon key={r.id} unit={r} onEditDown={startRoomDrag} />
+          <RoomPolygon key={r.id} unit={r} onEditDown={startRoomDrag} clickSuppressed={() => suppressClickRef.current} />
         ))}
         <DraftOverlay draft={state.draft} calib={state.calib} />
         {rooms
