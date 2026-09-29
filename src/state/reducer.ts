@@ -259,6 +259,21 @@ function resetSelectionState(_s: AppState): Partial<AppState> {
   return { selected: null, multiSelected: [], placingUnitId: null, draft: [], calib: [], calibLen: '', dragOverId: null };
 }
 
+/**
+ * What a deleted unit leaves in "Available to place", or null when it leaves nothing.
+ *
+ * Desks, lockers and stalls return as they were (unchanged behaviour). A room whose id is a real
+ * org record id — every room read from the org's marked zones, and any pool room traced onto the
+ * plan — is a record, not just a shape: it returns to the pool with its outline cleared, flagged
+ * `unplaced` so the sidebar offers to trace it again, rather than vanishing from the floor until
+ * the next reload. A zone minted only in this app has no record behind it and deletes outright.
+ */
+function poolEntryFor(u: Unit): Unit | null {
+  if (!isRoomLike(u.type)) return u;
+  if (!/^\d+$/.test(u.id)) return null;
+  return { ...u, geom: { kind: 'poly', pts: [] }, plan: 'custom', unplaced: true };
+}
+
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case 'SET_MODE':
@@ -455,8 +470,10 @@ export function reducer(state: AppState, action: Action): AppState {
         units,
         // Deleting a desk/locker/parking marker un-places the record rather than destroying it —
         // it lands in the unplaced pool, where the map dialog / sidebar drag can put it back.
-        // Zones (rooms, delivery areas) are pure geometry, so they delete outright.
-        unplacedUnits: removed && !isRoomLike(removed.type) ? [...state.unplacedUnits, removed] : state.unplacedUnits,
+        // A zone drawn only here is pure geometry and deletes outright; a room that stands for an
+        // org space (its outline read from, or bound to, a real record) un-places the same way a
+        // desk does — the outline goes, the room stays in "Available to place" (see poolEntryFor).
+        unplacedUnits: removed && poolEntryFor(removed) ? [...state.unplacedUnits, poolEntryFor(removed)!] : state.unplacedUnits,
         assignments,
         bookings: state.bookings.filter((b) => b.unitId !== action.id),
         selected: state.selected === action.id ? null : state.selected,
@@ -470,7 +487,8 @@ export function reducer(state: AppState, action: Action): AppState {
       for (const u of state.units) {
         if (!ids.has(u.id)) continue;
         delete assignments[u.id];
-        if (!isRoomLike(u.type)) unplaced.push(u); // same un-place semantics as single delete
+        const pooled = poolEntryFor(u); // same un-place semantics as single delete
+        if (pooled) unplaced.push(pooled);
       }
       const units = state.units.filter((u) => !ids.has(u.id));
       return {
@@ -699,8 +717,13 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, saving: action.value };
     case 'MARK_SAVED':
       return { ...state, savedUnits: state.units, unsavedChanges: 0 };
-    case 'DISCARD_CHANGES':
-      return { ...state, units: state.savedUnits, unsavedChanges: 0, ...resetSelectionState(state) };
+    case 'DISCARD_CHANGES': {
+      // A record un-placed since the save (a deleted desk, or an org room whose outline was
+      // deleted) is back on the plan after the revert, so it must leave the pool it was put in —
+      // otherwise the edit sidebar lists it twice, once placed and once "Unplaced".
+      const restored = new Set(state.savedUnits.map((u) => u.id));
+      return { ...state, units: state.savedUnits, unplacedUnits: state.unplacedUnits.filter((u) => !restored.has(u.id)), unsavedChanges: 0, ...resetSelectionState(state) };
+    }
     case 'SET_PENDING_MODE_SWITCH':
       return { ...state, pendingModeSwitch: action.mode };
 

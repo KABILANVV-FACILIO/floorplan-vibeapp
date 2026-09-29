@@ -8,7 +8,7 @@ import type { AmenityIcon, Booking, FloorSearchHit, MarkerDef, ModuleKey, PlanId
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
-import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, saveFloorplanMarkers, vacateUnitReal } from '../lib/facilioApiDataSource';
+import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, saveFloorplanMarkers, saveFloorplanZones, vacateUnitReal } from '../lib/facilioApiDataSource';
 import { measureImageDataUrl } from '../lib/geoReference';
 import { listFloorplanFloorIds, loadFloorplanFile, persistFloorplanFile } from '../lib/floorplanFileStore';
 import { loadSettings, saveSettings, settingsFromState } from '../lib/settingsStore';
@@ -48,7 +48,7 @@ function viewInsets(state: AppState) {
 /**
  * Explicit-save chokepoint ONLY — local per-action edits (place/update/delete/close-draft) call
  * `dataSource.saveUnits` directly and stop there; this additionally pushes real
- * `floorplanmarker`/`indoorfloorplan` sync, and is deliberately reserved for "Save changes" /
+ * `floorplanmarker`/`floorplanmarkedzone`/`indoorfloorplan` sync, and is deliberately reserved for "Save changes" /
  * mode-switch confirm / discard / reset, not every micro-edit. Syncing markers on every drag or
  * click was real, measured overhead (re-fetching indoorfloorplan geometry + the full marker list
  * per configured plan type, on every single edit) with no benefit — the real backend only needs
@@ -65,11 +65,24 @@ async function persistUnits(floorId: string, units: Unit[]): Promise<void> {
   await dataSource.saveUnits(floorId, units);
   if (!isFacilioApiConfigured) return;
   const result = await saveFloorplanMarkers(floorId, units);
+  // Room outlines next: real `floorplanmarkedzone` records for rooms that stand for an org space.
+  // Run even when the markers were skipped — a floor can have its rooms' plan georeferenced and
+  // nothing else — and reported the same way, so a room that did not reach the org is never
+  // called saved.
+  const zones = await saveFloorplanZones(floorId, units);
   const hasPointUnits = units.some((u) => u.geom.kind === 'point' && u.type !== 'amenity');
   if (hasPointUnits && result.plansSynced === 0 && result.skipped.length) {
     // eslint-disable-next-line no-console
     console.warn(`[facilio-api] Save changes wrote NO markers to the org — ${result.skipped.join('; ')}. Positions are kept in this browser only.`);
     throw new Error(`markers not written to the org: ${result.skipped.join('; ')}`);
+  }
+  if (zones.skipped.length) {
+    // eslint-disable-next-line no-console
+    console.warn(`[facilio-api] Save changes skipped some room outlines — ${zones.skipped.join('; ')}.`);
+  }
+  const hasOrgRooms = units.some((u) => isRoomLike(u.type) && !u.unplaced && u.geom.kind === 'poly' && u.geom.pts.length >= 3 && /^\d+$/.test(u.id));
+  if (hasOrgRooms && zones.plansSynced === 0 && zones.skipped.length) {
+    throw new Error(`room outlines not written to the org: ${zones.skipped.join('; ')}`);
   }
 }
 

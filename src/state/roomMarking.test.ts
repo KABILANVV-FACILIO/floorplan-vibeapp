@@ -147,3 +147,40 @@ describe('the traced outline binds to the armed record', () => {
     expect(placed.units.find((u) => u.id === '783701')!.plan).toBe('locker');
   });
 });
+
+describe('deleting a room that stands for an org space', () => {
+  const pts: [number, number][] = [
+    [0.1, 0.1],
+    [0.4, 0.1],
+    [0.4, 0.5],
+  ];
+  // Read back from the org's marked zones: a placed room under its space id.
+  const fromOrg = room({ id: '819848', label: 'MALE TOILET', geom: { kind: 'poly', pts }, plan: 'workstation', unplaced: undefined });
+  const local = room({ id: 'u1699000000', label: 'RM-01', geom: { kind: 'poly', pts }, plan: 'workstation', unplaced: undefined });
+  const planned = () => ({ ...withPool([]), units: [fromOrg, local], savedUnits: [fromOrg, local] });
+
+  it('returns the room to Available to place with its outline cleared, ready to trace again', () => {
+    const next = reducer(planned(), { type: 'DELETE_UNIT', id: '819848' });
+    expect(next.units.find((u) => u.id === '819848')).toBeUndefined();
+    const pooled = next.unplacedUnits.find((u) => u.id === '819848');
+    expect(pooled).toMatchObject({ unplaced: true, geom: { kind: 'poly', pts: [] }, label: 'MALE TOILET' });
+  });
+
+  it('still deletes a zone drawn only in the app outright', () => {
+    const next = reducer(planned(), { type: 'DELETE_UNIT', id: 'u1699000000' });
+    expect(next.unplacedUnits).toHaveLength(0);
+  });
+
+  it('un-places the same way in a bulk delete', () => {
+    const next = reducer(planned(), { type: 'DELETE_UNITS', ids: ['819848', 'u1699000000'] });
+    expect(next.units).toHaveLength(0);
+    expect(next.unplacedUnits.map((u) => u.id)).toEqual(['819848']);
+  });
+
+  it('discarding the delete puts the room back on the plan and out of the pool', () => {
+    const deleted = reducer(planned(), { type: 'DELETE_UNIT', id: '819848' });
+    const reverted = reducer(deleted, { type: 'DISCARD_CHANGES' });
+    expect(reverted.units.find((u) => u.id === '819848')?.geom).toEqual({ kind: 'poly', pts });
+    expect(reverted.unplacedUnits.find((u) => u.id === '819848')).toBeUndefined();
+  });
+});
