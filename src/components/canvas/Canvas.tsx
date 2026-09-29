@@ -11,8 +11,8 @@ import { Legend } from './Legend';
 import { ZoomControls } from './ZoomControls';
 import { Tooltip } from './Tooltip';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
-import { markerLabelInputs, myAssignedUnit, planMarkers, planRooms, visibleUnits } from '../../state/selectors';
-import { planMarkerLabels } from '../../lib/labelLayout';
+import { isBookable, markerLabelInputs, myAssignedUnit, planMarkers, planRooms, visibleUnits } from '../../state/selectors';
+import { planMarkerLabels, planRoomLabels } from '../../lib/labelLayout';
 import { floorImageKey, isRoomLike, isZoneTool, unitOnPlan } from '../../lib/types';
 import type { PolyGeom, Unit, UnitGeom } from '../../lib/types';
 import styles from './Canvas.module.css';
@@ -518,6 +518,26 @@ export function Canvas() {
     state.view.z,
   ]);
 
+  // Which room names fit — inside their own room, and clear of each other — at this zoom. Room
+  // names keep a constant screen size while the rooms shrink with the zoom, so on an onboarded
+  // floor (dozens of small org rooms) they would otherwise pile up into one unreadable block (see
+  // planRoomLabels). A room without its name still shows it once selected, and once zoomed in.
+  const roomLabelIds = useMemo(() => {
+    const subHeight = state.mode === 'edit' || state.mode === 'book' ? 16 : 0;
+    return planRoomLabels(
+      rooms
+        .filter((r) => r.geom.kind === 'poly' && r.geom.pts.length >= 3)
+        .map((r) => {
+          const pts = (r.geom as PolyGeom).pts;
+          const c = polygonCentroid(pts);
+          return { id: r.id, pts, x: c.x, y: c.y, name: r.label, must: r.id === state.selected, subHeight };
+        }),
+      { planW: IMG_W, planH: IMG_H, zoom: state.view.z },
+    );
+    // Deliberately NOT `rooms` (rebuilt every render, as `markers` is above) — what it is built from.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.units, state.enabledModules, state.planId, editPreview, state.selected, state.mode, state.view.z]);
+
   const selectedRoom = isEditSelect && multiSel.size === 0 ? rooms.find((r) => r.id === state.selected) : undefined;
 
   const armedRecordLabel = state.placingUnitId ? state.unplacedUnits.find((u) => u.id === state.placingUnitId)?.label : undefined;
@@ -567,9 +587,11 @@ export function Canvas() {
           <RoomPolygon key={r.id} unit={r} onEditDown={startRoomDrag} />
         ))}
         <DraftOverlay draft={state.draft} calib={state.calib} />
-        {rooms.map((r) => (
-          <RoomLabel key={r.id} unit={r} />
-        ))}
+        {rooms
+          .filter((r) => roomLabelIds.has(r.id))
+          .map((r) => (
+            <RoomLabel key={r.id} unit={r} />
+          ))}
         {markers.map((m) => (
           <Marker
             key={m.id}
@@ -683,7 +705,9 @@ export function RoomLabel({ unit }: { unit: Unit }) {
   if (state.mode === 'edit') {
     const area = polyAreaM2(geom.pts, state.pxPerMeter);
     sub = area != null ? `${area.toFixed(0)} m²` : '';
-  } else if (state.mode === 'book') {
+  } else if (state.mode === 'book' && isBookable(unit)) {
+    // Only a room that can be booked here says "Available" — an org room can't be yet (see
+    // isBookable), and calling it available would invite a booking that never reaches Facilio.
     const conflicts = state.bookings.filter((b) => b.unitId === unit.id && b.date === state.date && b.start < state.end && b.end > state.start);
     if (conflicts.length) {
       const b = conflicts[0];

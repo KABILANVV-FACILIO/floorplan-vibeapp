@@ -82,18 +82,45 @@ export async function persistUnits(floorId: string, units: Unit[], baseline?: Un
 }
 
 /**
+ * How long a toast that names unsaved room changes stays up, in ms. It has more to say than
+ * "Changes saved" — which rooms, and that their edits will be undone — and at the default 3.2 s a
+ * user reading the first half never reached the second.
+ */
+export const ROOM_NOTICE_MS = 8000;
+
+/**
  * The toast for a save that went through: plain "Changes saved", or — when some room outlines did
  * not reach the org (drawn in Facilio's editor, a failed write, a room this floor never loaded) —
  * which ones, so the user isn't told a room was saved that will be gone, or back, on reload.
  *
  * With room outline writes off (`writes` false, the flag's value by default) every listed room is
- * one the app did not even try to write, and the toast says that in so many words: the desks went
- * through, those room changes are not saved to Facilio.
+ * one the app did not even try to write, and the toast says that plainly, for someone who does not
+ * know what an "outline" or "the org" is: the desks were saved; the room changes were not, and will
+ * be undone on reload. It used to open with "Saved —" and then say "not saved", and never said the
+ * edits would be lost — so a user could keep tracing rooms and lose all of it on the next reload.
+ *
+ * One entry per room: two rooms that share a name are both counted and the name is shown once with
+ * how many ("Store ×2") — see roomOutlineChanges.
  */
 export function savedNotice(outcome: Pick<PersistOutcome, 'roomsNotWritten'>, writes: boolean = ROOM_OUTLINE_WRITES): string {
   const labels = outcome.roomsNotWritten;
   if (!labels.length) return 'Changes saved';
-  const named = labels.slice(0, 3).join(', ') + (labels.length > 3 ? ` +${labels.length - 3} more` : '');
-  if (!writes) return `Saved — ${labels.length} room change${labels.length === 1 ? '' : 's'} not saved to Facilio (room outlines are read-only for now): ${named}`;
+  const counts = new Map<string, number>();
+  for (const l of labels) counts.set(l, (counts.get(l) ?? 0) + 1);
+  const names = [...counts].map(([l, n]) => (n > 1 ? `${l} ×${n}` : l));
+  const named = names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3} more` : '');
+  if (!writes) {
+    const n = labels.length;
+    return `Desks saved. ${n === 1 ? "1 room change can't" : `${n} room changes can't`} be saved to Facilio yet and will be undone when you reload: ${named}`;
+  }
   return `Saved — ${labels.length} room outline${labels.length === 1 ? '' : 's'} not written to the org: ${named}`;
 }
+
+/**
+ * The one-time hint, with room outline writes off, the first time an org room is traced, reshaped,
+ * relabelled or deleted: said BEFORE the work is done, not only in the toast after a Save.
+ */
+export const ROOM_READ_ONLY_HINT = "Room changes can't be saved to Facilio yet — they stay on screen until you reload, then the org's rooms come back";
+
+/** The toast for a floor whose room outlines could not all be read (see takeRoomOutlineReadFailure). */
+export const ROOM_OUTLINES_FAILED_NOTICE = 'Room outlines could not be loaded — rooms show as Unplaced; try Refresh';

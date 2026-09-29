@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { planMarkerLabels } from './labelLayout';
-import type { MarkerLabelInput } from './labelLayout';
+import { planMarkerLabels, planRoomLabels } from './labelLayout';
+import type { MarkerLabelInput, RoomLabelInput } from './labelLayout';
 
 /**
  * Labels used to be gated on the zoom alone, which says nothing about whether a label fits: a bank
@@ -164,5 +164,43 @@ describe('the holder and the department', () => {
     );
     expect(plan.get('E-1-WS77')).toMatchObject({ name: true, sub: true });
     expect(plan.get('E-1-WS77')?.dept).toBeFalsy();
+  });
+});
+
+describe('room names are drawn only where they fit', () => {
+  /** A w x h room (normalized) whose top-left corner is at x, y, labelled at its centre. */
+  function room(id: string, x: number, y: number, w: number, h: number, over: Partial<RoomLabelInput> = {}): RoomLabelInput {
+    return { id, pts: [[x, y], [x + w, y], [x + w, y + h], [x, y + h]], x: x + w / 2, y: y + h / 2, name: id, ...over };
+  }
+  // The onboarded floors' plan size, at a typical fit-to-screen zoom with the side panels open.
+  const fit = { planW: 1492, planH: 1054, zoom: 0.4 };
+
+  it('drops the names of two small neighbouring rooms that would pile on each other — as on Block B 1F', () => {
+    // Two toilets side by side, each ~3% of the plan wide: ~18px on screen, for a name ~150px wide.
+    const shown = planRoomLabels([room('HQ-BKB-1F-Male Toilet', 0.4, 0.4, 0.03, 0.05), room('HQ-BKB-1F-Female Toilet', 0.43, 0.4, 0.03, 0.05)], fit);
+    expect([...shown]).toEqual([]);
+  });
+
+  it("draws a room's name once zoomed in far enough for it to fit inside the room", () => {
+    const toilet = room('WC', 0.4, 0.4, 0.03, 0.05);
+    expect(planRoomLabels([toilet], fit).has('WC')).toBe(false);
+    expect(planRoomLabels([toilet], { ...fit, zoom: 2 }).has('WC')).toBe(true);
+  });
+
+  it('keeps the bigger room when two names that fit their rooms would still overlap', () => {
+    // Two rooms that overlap on screen (a room outlined inside another): the names collide.
+    const shown = planRoomLabels([room('Open Office', 0.1, 0.1, 0.5, 0.5), room('Pod', 0.29, 0.32, 0.12, 0.06)], { ...fit, zoom: 1 });
+    expect([...shown]).toEqual(['Open Office']);
+  });
+
+  it('always shows the selected room, and everything else yields to it', () => {
+    const shown = planRoomLabels([room('Open Office', 0.1, 0.1, 0.5, 0.5), room('Pod', 0.29, 0.32, 0.12, 0.06, { must: true })], { ...fit, zoom: 1 });
+    expect([...shown]).toEqual(['Pod']);
+    expect(planRoomLabels([room('HQ-BKB-1F-Male Toilet', 0.4, 0.4, 0.03, 0.05, { must: true })], fit).size).toBe(1);
+  });
+
+  it('keeps every name on a roomy floor', () => {
+    const shown = planRoomLabels([room('Board Room', 0.1, 0.1, 0.3, 0.3), room('Pantry', 0.6, 0.6, 0.3, 0.3)], { ...fit, zoom: 1 });
+    expect([...shown].sort()).toEqual(['Board Room', 'Pantry']);
   });
 });

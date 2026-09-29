@@ -271,3 +271,72 @@ export function planMarkerLabels(inputs: MarkerLabelInput[], opts: LabelLayoutOp
 
   return out;
 }
+
+/**
+ * Room names, the same way: which ones can be drawn without landing on another.
+ *
+ * A room's name is drawn at its outline's centroid at a constant screen size (RoomLabel: 600 11px,
+ * 3px 8px padding, one line), while the outline itself scales with the zoom. With the org's own
+ * outlines now on the plan — every onboarded floor has dozens, many of them toilets, stores and
+ * janitor rooms a few metres wide, named like "HQ-BKB-1F-Male Toilet" — nearly every name at a
+ * fit-to-screen zoom is wider than its room, and neighbouring names pile into one unreadable block
+ * of white boxes. So a name is drawn only when it fits inside its room's on-screen bounds AND
+ * clears every name already kept; a room whose name doesn't fit shows its outline alone, and its
+ * name once selected (its card, and its label, which a selected room always keeps) or zoomed in
+ * far enough for it to fit.
+ *
+ * Bigger rooms go first — the larger the room, the more its name orients the reader — but the
+ * selected room's name always shows (`must`): it is the one the user is looking at, and editing
+ * a room whose name vanished would be editing blind.
+ */
+export interface RoomLabelInput {
+  id: string;
+  /** The outline, in normalized (0..1) plan coordinates. */
+  pts: [number, number][];
+  /** Where the name is drawn (the centroid RoomLabel uses), normalized. */
+  x: number;
+  y: number;
+  name: string;
+  /** Draw it whatever it covers — the selected room. It still reserves its space. */
+  must?: boolean;
+  /** Height of the line under the name (the area in Edit, "Available" in Book), in px; 0 for none. */
+  subHeight?: number;
+}
+
+/** RoomLabel's type: 600 11px, with 8px side padding and a 1px border — wider than a marker's. */
+const ROOM_FONT = 11;
+export function estimateRoomLabelWidth(text: string): number {
+  return Math.round(text.length * ROOM_FONT * 0.6) + 18;
+}
+/** Its height: the 11px line box (line-height 1), 3px padding top and bottom, and the border. */
+const ROOM_LABEL_H = ROOM_FONT + 8;
+
+export function planRoomLabels(inputs: RoomLabelInput[], opts: LabelLayoutOptions): Set<string> {
+  const out = new Set<string>();
+  if (inputs.length === 0) return out;
+  const { planW, planH, zoom } = opts;
+  const sized = inputs.map((i) => {
+    let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const [x, y] of i.pts) {
+      x0 = Math.min(x0, x);
+      y0 = Math.min(y0, y);
+      x1 = Math.max(x1, x);
+      y1 = Math.max(y1, y);
+    }
+    const roomW = (x1 - x0) * planW * zoom;
+    const roomH = (y1 - y0) * planH * zoom;
+    const w = estimateRoomLabelWidth(i.name);
+    const h = ROOM_LABEL_H + (i.subHeight ? i.subHeight + 2 : 0);
+    const cx = i.x * planW * zoom;
+    const cy = i.y * planH * zoom;
+    return { i, area: roomW * roomH, fits: w <= roomW && ROOM_LABEL_H <= roomH, box: { x: cx - w / 2, y: cy - h / 2, w, h } };
+  });
+  const order = sized.sort((a, b) => Number(!!b.i.must) - Number(!!a.i.must) || b.area - a.area || (a.i.id < b.i.id ? -1 : 1));
+  const grid = new BoxGrid(128);
+  for (const s of order) {
+    if (!s.i.must && (!s.fits || grid.hits(s.box))) continue;
+    grid.add(s.box);
+    out.add(s.i.id);
+  }
+  return out;
+}

@@ -259,6 +259,33 @@ describe('a floor load draws the org rooms', () => {
     expect(units.filter((u) => !u.unplaced)).toHaveLength(0);
   });
 
+  it('says the outlines failed to load — once — rather than passing the floor off as one with no rooms outlined', async () => {
+    org.failZones = true;
+    const { FacilioApiDataSource, takeRoomOutlineReadFailure } = await fresh();
+    await new FacilioApiDataSource().getUnits(FLOOR);
+    expect(takeRoomOutlineReadFailure(FLOOR)).toBe(true);
+    expect(takeRoomOutlineReadFailure(FLOOR)).toBe(false); // taken: one toast per load
+    // A read that works clears it; an outline list that is simply empty is no failure.
+    org.failZones = false;
+    await new FacilioApiDataSource().getUnits(FLOOR);
+    expect(takeRoomOutlineReadFailure(FLOOR)).toBe(false);
+    org.tables.floorplanmarkedzone = [];
+    await new FacilioApiDataSource().getUnits(FLOOR);
+    expect(takeRoomOutlineReadFailure(FLOOR)).toBe(false);
+  });
+
+  it('says so too when a LATER page of outlines fails, once the rest of the floor is in', async () => {
+    org.tables.space = Array.from({ length: 600 }, (_, i) => ({ id: 700000 + i, name: `R${i}`, spaceTypeEnum: 'SPACE' }));
+    org.tables.floorplanmarkedzone = org.tables.space.map((s, i) => zoneRecord({ id: 20000 + i, geoId: `space-${s.id}`, recordId: s.id, space: { id: s.id }, label: s.name }));
+    org.failPages = { floorplanmarkedzone: [2] };
+    const { FacilioApiDataSource, takeRoomOutlineReadFailure } = await fresh();
+    let more: Unit[] | null = null;
+    await new FacilioApiDataSource().getUnits(FLOOR, (u) => (more = u));
+    expect(takeRoomOutlineReadFailure(FLOOR)).toBe(false); // the first page came back
+    await vi.waitFor(() => expect(more).not.toBeNull());
+    expect(takeRoomOutlineReadFailure(FLOOR)).toBe(true);
+  });
+
   it('draws the first page of outlines at once and hands the rest over through onMore', async () => {
     // 600 rooms, each outlined: the zone list is longer than one related-list page (500).
     org.tables.space = Array.from({ length: 600 }, (_, i) => ({ id: 700000 + i, name: `R${i}`, spaceTypeEnum: 'SPACE' }));

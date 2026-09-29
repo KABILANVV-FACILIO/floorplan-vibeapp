@@ -203,6 +203,25 @@ describe('the pool stays whole around a background load and a discard', () => {
     expect(more.unplacedUnits.map((u) => u.id).sort()).toEqual(['5001', '819848']);
   });
 
+  it("lets a desk marker from the later pages take back an id the first pages drew as a room — never drops it as known", () => {
+    // The first pages drew a zone tied to desk 5001 as a room (its desk record was on a later page).
+    const wrongRoom = room({ id: '5001', label: 'Desk zone', geom: { kind: 'poly', pts }, plan: 'workstation', unplaced: undefined });
+    const marker = desk({ id: '5001', unplaced: undefined, geom: { kind: 'point', x: 0.5, y: 0.5 } });
+    const loaded = { ...withPool([]), units: [fromOrg, wrongRoom], savedUnits: [fromOrg, wrongRoom] };
+    const more = reducer(loaded, { type: 'FLOOR_UNITS_MORE', floorId: 'f1', units: [fromOrg, marker] });
+    expect(more.units.filter((u) => u.id === '5001')).toEqual([marker]);
+    expect(more.savedUnits.filter((u) => u.id === '5001')).toEqual([marker]);
+    expect(more.unsavedChanges).toBe(0);
+    // Deleted meanwhile — so the "room" sat in the pool — the marker is still the org's: back on the plan.
+    const deleted = reducer(loaded, { type: 'DELETE_UNIT', id: '5001' });
+    expect(deleted.unplacedUnits.some((u) => u.id === '5001')).toBe(true);
+    const after = reducer(deleted, { type: 'FLOOR_UNITS_MORE', floorId: 'f1', units: [fromOrg, marker] });
+    expect(after.units.filter((u) => u.id === '5001')).toEqual([marker]);
+    expect(after.unplacedUnits.some((u) => u.id === '5001')).toBe(false);
+    // Only the collided id is replaced: a real room from the same load stays a room.
+    expect(after.units.find((u) => u.id === '819848')?.type).toBe('room');
+  });
+
   it('puts a pool room traced since the save back in the pool on discard', () => {
     const traced = reducer(withPool([room()]), { type: 'PLACE_EXISTING_UNIT', unitId: '783701', geom: { kind: 'poly', pts }, room: null });
     expect(traced.unplacedUnits).toHaveLength(0);

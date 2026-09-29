@@ -152,7 +152,9 @@ export function Tooltip() {
       const deskType = DESK_TYPES.find((d) => d.id === (unit.deskType ?? 'ASSIGNED'));
       if (deskType) details.push({ label: 'Desk type', value: deskType.name });
     }
-    if (isRoomLike(unit.type)) details.push({ label: 'Reservable', value: unit.isReservable === false ? 'No' : 'Yes' });
+    // An org room can't be booked or assigned from here yet (see isBookable) — say that, rather
+    // than "Reservable: Yes" over a room whose booking would never reach Facilio.
+    if (isRoomLike(unit.type)) details.push({ label: 'Reservable', value: unit.orgRoom ? 'Not bookable here yet' : unit.isReservable === false ? 'No' : 'Yes' });
     if (unit.room) details.push({ label: 'Room', value: unit.room });
     if (todaysBooking) {
       details.push({ label: 'Booked', value: `${fmtTime(todaysBooking.start)}–${fmtTime(todaysBooking.end)}` });

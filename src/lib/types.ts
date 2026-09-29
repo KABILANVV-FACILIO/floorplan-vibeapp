@@ -212,6 +212,14 @@ export interface Unit {
   /** Rooms only — from the IWMS rooms module. true (or undefined) = bookable; false = assignable. */
   isReservable?: boolean;
   /**
+   * Rooms only — a room read from the org itself (a `floorplanmarkedzone` outline, or a `space`
+   * record in the "Available to place" pool), not one of the demo rooms. Booking or assigning such
+   * a room is not wired to Facilio yet — there is no spacebooking mapping for rooms, so a booking
+   * would be kept in this browser only — so it is neither bookable nor assignable here, whatever
+   * `isReservable` says (see isBookable / isAssignable).
+   */
+  orgRoom?: boolean;
+  /**
    * Desks only — the `department` field on the org's own desk record. Read for the whole floor in
    * `getUnits` (the desk rows are already fetched there), so the plan can be coloured by who sits
    * where rather than only by what is free.

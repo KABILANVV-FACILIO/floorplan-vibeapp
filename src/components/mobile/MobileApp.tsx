@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
-import { floorMeta, visibleUnits } from '../../state/selectors';
+import { floorMeta, isBookable, visibleUnits } from '../../state/selectors';
 import { isRoomLike } from '../../lib/types';
 import { fitView, fmtTime, polygonCentroid, zoomAt } from '../../lib/geometry';
 import type { ViewTransform } from '../../lib/geometry';
@@ -357,7 +357,7 @@ function MobileMap({
               <g key={r.id}>
                 <polygon
                   points={r.geom.pts.map(([x, y]) => `${x * IMG_W},${y * IMG_H}`).join(' ')}
-                  fill={roomFill(state.mobileTab, state.bookings, r.id, state.date, state.start, state.end, selected)}
+                  fill={roomFill(state.mobileTab, state.bookings, r.id, state.date, state.start, state.end, selected, isBookable(r))}
                   stroke={selected ? 'var(--blue-600)' : 'rgba(96,119,150,0.5)'}
                   strokeWidth={(selected ? 3 : 1.5) * scale}
                   style={{ cursor: 'pointer' }}
@@ -480,8 +480,10 @@ function fmtDuration(mins: number): string {
 
 // Matches the web RoomPolygon fills exactly (keyed on the mobile tab, which
 // is the mobile equivalent of the desktop mode).
-function roomFill(tab: string, bookings: any[], unitId: string, date: string, start: number, end: number, selected: boolean) {
-  if (tab === 'book') {
+function roomFill(tab: string, bookings: any[], unitId: string, date: string, start: number, end: number, selected: boolean, bookable: boolean) {
+  // A room that can't be booked here (an org room, for now — see isBookable) is never painted
+  // green for "free": it stays the neutral fill it has on the other tabs.
+  if (tab === 'book' && bookable) {
     const booked = bookings.some((b) => b.unitId === unitId && b.date === date && b.start < end && b.end > start);
     const base = booked ? '182,25,25' : '41,160,30';
     return `rgba(${base},${selected ? 0.26 : 0.14})`;

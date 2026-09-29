@@ -367,16 +367,38 @@ export function reducer(state: AppState, action: Action): AppState {
       // A ROOM the user took off the plan is known too, from the pool it went to: deleted and then
       // saved, it is in neither `units` nor `savedUnits`, and this older load — which still reads
       // it as placed (its zone) — would otherwise put it back on the plan as saved.
-      const pooledRoomIds = state.unplacedUnits.filter((u) => isRoomLike(u.type)).map((u) => u.id);
-      const known = new Set([...[...state.units, ...state.savedUnits].map((u) => u.id), ...pooledRoomIds]);
-      const added = action.units.filter((u) => !u.unplaced && !known.has(u.id));
+      //
+      // One exception to "never replaces": a desk, locker or stall MARKER in these pages whose id
+      // the first pages drew as a ROOM. The first pages can't always tell — a zone tied to a desk
+      // whose desk record (or marker) is on a later page reads as that desk's room — and the full
+      // load, which can, says the id is the marker's. Kept as a room, the id would count as known,
+      // the marker would never be added, and the next Save — which sends only point units — would
+      // DELETE that marker from the org. So the marker takes the room's place, in `units` and
+      // `savedUnits` both (it is what the org holds), and its id is not a pooled room's either.
+      const roomLikeIds = new Set(
+        [...state.units, ...state.savedUnits, ...state.unplacedUnits].filter((u) => isRoomLike(u.type) && (u.unplaced || u.geom.kind === 'poly')).map((u) => u.id),
+      );
+      const takeovers = new Map(
+        action.units.filter((u) => !u.unplaced && !isRoomLike(u.type) && u.geom.kind === 'point' && roomLikeIds.has(u.id)).map((u) => [u.id, u]),
+      );
+      const pooledRoomIds = state.unplacedUnits.filter((u) => isRoomLike(u.type) && !takeovers.has(u.id)).map((u) => u.id);
+      const known = new Set([...[...state.units, ...state.savedUnits].map((u) => u.id).filter((id) => !takeovers.has(id)), ...pooledRoomIds]);
+      const added = action.units.filter((u) => !u.unplaced && !known.has(u.id) && !takeovers.has(u.id));
       // A desk record on a later page carries the department for a marker already drawn.
       const deptOf = new Map(action.units.filter((u) => u.department).map((u) => [u.id, u]));
       const stamp = (u: Unit): Unit => {
         const d = !u.department ? deptOf.get(u.id) : undefined;
         return d ? { ...u, department: d.department, departmentId: d.departmentId } : u;
       };
-      const units = [...state.units.map(stamp), ...added];
+      /** `list` with each taken-over room replaced by its marker — appended when the list lacks it. */
+      const withTakeovers = (list: Unit[]): Unit[] => {
+        if (!takeovers.size) return list;
+        const out = list.map((u) => takeovers.get(u.id) ?? u);
+        const have = new Set(out.map((u) => u.id));
+        for (const [id, u] of takeovers) if (!have.has(id)) out.push(u);
+        return out;
+      };
+      const units = [...withTakeovers(state.units).map(stamp), ...added];
       const placedNow = new Set(units.map((u) => u.id));
       // The pool is the whole floor's now, less anything placed meanwhile — plus what the USER put
       // in it meanwhile. A record deleted off the plan before these pages landed (an org room whose
@@ -389,11 +411,14 @@ export function reducer(state: AppState, action: Action): AppState {
       // Before these pages the pool holds only what the user put there (the first answer carries
       // placed units only), so a room there stays even once a save has dropped it from savedUnits.
       const userPooled = state.unplacedUnits.filter((u) => (saved.has(u.id) || isRoomLike(u.type)) && !placedNow.has(u.id) && !loadedPoolIds.has(u.id));
+      const savedUnits = [...withTakeovers(state.savedUnits).map(stamp), ...added];
       return {
         ...state,
         units,
-        savedUnits: [...state.savedUnits.map(stamp), ...added],
+        savedUnits,
         unplacedUnits: [...loadedPool, ...userPooled],
+        // A taken-over room edited meanwhile was an edit of the wrong thing; the count follows.
+        ...(takeovers.size ? { unsavedChanges: countUnsavedChanges(units, savedUnits) } : {}),
       };
     }
     case 'FLOOR_ASSIGNMENTS_MORE': {

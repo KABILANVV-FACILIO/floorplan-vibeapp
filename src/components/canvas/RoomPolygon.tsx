@@ -1,7 +1,7 @@
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { clipPathFor } from '../../lib/geometry';
-import { conflictsFor, isAssignable } from '../../state/selectors';
+import { conflictsFor, isAssignable, isBookable } from '../../state/selectors';
 import { moduleColor } from '../../lib/unitStatus';
 import type { PolyGeom, Unit } from '../../lib/types';
 
@@ -29,6 +29,11 @@ export function RoomPolygon({
       const c = moduleColor(state, unit.type, assigned ? 'assigned' : 'free');
       fill = `color-mix(in srgb, ${c} ${selected ? 26 : 14}%, transparent)`;
     }
+  } else if (!isBookable(unit)) {
+    // A room that can't be booked here (an org room, while room booking isn't wired to Facilio; a
+    // not-reservable one) — the same neutral fill as a not-assignable room in Assign mode, never
+    // the green that reads "free to book".
+    fill = 'rgba(96,119,150,0.07)';
   } else {
     const booked = conflictsFor(state.bookings, unit.id, state.date, state.start, state.end).length > 0;
     const base = booked ? '182,25,25' : '41,160,30';

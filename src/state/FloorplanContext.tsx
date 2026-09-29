@@ -8,14 +8,15 @@ import type { AmenityIcon, Booking, FloorSearchHit, MarkerDef, ModuleKey, PlanId
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
-import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, vacateUnitReal } from '../lib/facilioApiDataSource';
+import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, takeRoomOutlineReadFailure, vacateUnitReal } from '../lib/facilioApiDataSource';
+import { ROOM_OUTLINE_WRITES } from '../lib/featureFlags';
 import { measureImageDataUrl } from '../lib/geoReference';
 import { listFloorplanFloorIds, loadFloorplanFile, persistFloorplanFile } from '../lib/floorplanFileStore';
 import { loadSettings, saveSettings, settingsFromState } from '../lib/settingsStore';
 import { loadDepartmentColors, saveDepartmentColor } from '../lib/departmentColorStore';
 import { pathForView, viewFromLocation } from '../lib/routes';
 import { bootFloorCandidates, readUrlFloorId, writeUrlFloorId } from '../lib/urlFloor';
-import { persistUnits, savedNotice } from './persistUnits';
+import { persistUnits, ROOM_NOTICE_MS, ROOM_OUTLINES_FAILED_NOTICE, ROOM_READ_ONLY_HINT, savedNotice } from './persistUnits';
 import { buildInitialState, reducer } from './reducer';
 import type { Action } from './reducer';
 import type { AppState } from './types';
@@ -30,6 +31,8 @@ interface Ctx {
 const FloorplanCtx = createContext<Ctx | null>(null);
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
+/** Whether this session has shown the "room changes can't be saved yet" hint (see roomReadOnlyHint). */
+let roomReadOnlyHintShown = false;
 
 /**
  * Overlay chrome the auto-fit must clear so plan content never hides under
@@ -291,10 +294,32 @@ function roomLabelAt(state: AppState, x: number, y: number): string | null {
 }
 
 function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef: MutableRefObject<DOMRect | null>) {
-  const showToast = (message: string) => {
+  /** A toast for `ms` (3.2 s by default — longer for one that has more to say, see ROOM_NOTICE_MS). */
+  const showToast = (message: string, ms: number = 3200) => {
     dispatch({ type: 'SHOW_TOAST', message });
     if (toastTimer) clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => dispatch({ type: 'SHOW_TOAST', message: null }), 3200);
+    toastTimer = setTimeout(() => dispatch({ type: 'SHOW_TOAST', message: null }), ms);
+  };
+  /** The toast for a Save that went through — held longer when it names room changes left behind. */
+  const showSavedNotice = (outcome: Awaited<ReturnType<typeof persistUnits>>) =>
+    showToast(savedNotice(outcome), outcome.roomsNotWritten.length ? ROOM_NOTICE_MS : undefined);
+  /**
+   * With room outline writes off, the FIRST time this session an org room (`orgRoom`) is traced,
+   * reshaped, relabelled or deleted: say, before the work piles up, that it will not reach
+   * Facilio. Otherwise the only word is the toast after a Save, by which time a user may have
+   * traced a whole floor of rooms that a reload undoes. Once per session — the Save toast still
+   * names the rooms every time. True when it showed (the caller's own toast then stands down).
+   */
+  const roomReadOnlyHint = (units: (Unit | null | undefined)[]): boolean => {
+    if (ROOM_OUTLINE_WRITES || !isFacilioApiConfigured || roomReadOnlyHintShown) return false;
+    if (!units.some((u) => u && isRoomLike(u.type) && u.orgRoom)) return false;
+    roomReadOnlyHintShown = true;
+    showToast(ROOM_READ_ONLY_HINT, ROOM_NOTICE_MS);
+    return true;
+  };
+  /** After a floor load (or its later pages): say so if some of its room outlines could not be read. */
+  const noteRoomOutlineFailure = (floorId: string) => {
+    if (isFacilioApiConfigured && takeRoomOutlineReadFailure(floorId)) showToast(ROOM_OUTLINES_FAILED_NOTICE, ROOM_NOTICE_MS);
   };
 
   async function loadFloor(floorId: string): Promise<Unit[]> {
@@ -336,12 +361,18 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     // A big floor draws from its first pages; the rest merges in when it arrives (floorMore).
     const more = floorMore(dispatch, floorId);
     const [units, assignments, bookings] = await Promise.all([
-      dataSource.getUnits(floorId, more.units),
+      dataSource.getUnits(floorId, (rest) => {
+        more.units(rest);
+        noteRoomOutlineFailure(floorId);
+      }),
       dataSource.getAssignments(floorId, more.assignments),
       dataSource.getBookings(floorId, state.date),
     ]);
     dispatch({ type: 'SELECT_FLOOR_DONE', floorId, units, assignments, bookings });
     more.release();
+    // The floor loads without outlines a zone list failed to give; the user is told, once, rather
+    // than left to take a floor of "Unplaced" rooms for rooms never onboarded (see loadPlanZones).
+    noteRoomOutlineFailure(floorId);
     loadFloorPlanTypesAndImage(dispatch, floorId, state.planId);
     return units;
   }
@@ -380,7 +411,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       try {
         const outcome = await persistUnits(floorId, units, savedUnits);
         dispatch({ type: 'MARK_SAVED', floorId, units, baseline: savedUnits, retry: outcome.roomsToRetry });
-        if (outcome.roomsNotWritten.length) showToast(savedNotice(outcome));
+        if (outcome.roomsNotWritten.length) showSavedNotice(outcome);
       } catch {
         showToast('Could not save changes');
       } finally {
@@ -797,7 +828,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
           ...state.units,
           { ...pooled, geom, room: null, floor: state.floorId, plan: planForPlacement(state.planId, pooled.type), unplaced: undefined },
         ]);
-        showToast(`${pooled.label} marked on the plan`);
+        if (!roomReadOnlyHint([pooled])) showToast(`${pooled.label} marked on the plan`);
         return;
       }
 
@@ -918,11 +949,13 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
 
     updateUnit: (id: string, patch: Partial<Unit>) => {
       dispatch({ type: 'UPDATE_UNIT', id, patch });
+      if ('geom' in patch || 'label' in patch || 'type' in patch || 'plan' in patch) roomReadOnlyHint([unitById(state, id)]);
       dataSource.saveUnits(state.floorId, state.units.map((u) => (u.id === id ? { ...u, ...patch } : u)));
     },
     /** Bulk patch — one dispatch + one persist, for group moves (marquee multi-select). */
     updateUnits: (updates: { id: string; patch: Partial<Unit> }[]) => {
       dispatch({ type: 'UPDATE_UNITS', updates });
+      roomReadOnlyHint(updates.map((u) => unitById(state, u.id)));
       const patches = new Map(updates.map((u) => [u.id, u.patch]));
       dataSource.saveUnits(state.floorId, state.units.map((u) => (patches.has(u.id) ? { ...u, ...patches.get(u.id)! } : u)));
     },
@@ -930,7 +963,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       const u = unitById(state, id);
       dispatch({ type: 'DELETE_UNIT', id });
       dataSource.saveUnits(state.floorId, state.units.filter((x) => x.id !== id));
-      if (u) showToast(`${u.label} deleted`);
+      if (u && !roomReadOnlyHint([u])) showToast(`${u.label} deleted`);
     },
     /** Bulk delete (marquee multi-select) — one dispatch + one persist. */
     deleteUnits: (ids: string[]) => {
@@ -938,7 +971,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       const set = new Set(ids);
       dispatch({ type: 'DELETE_UNITS', ids });
       dataSource.saveUnits(state.floorId, state.units.filter((x) => !set.has(x.id)));
-      showToast(`${ids.length} unit${ids.length === 1 ? '' : 's'} deleted`);
+      if (!roomReadOnlyHint(ids.map((id) => unitById(state, id)))) showToast(`${ids.length} unit${ids.length === 1 ? '' : 's'} deleted`);
     },
 
     setContactSearch: (value: string) => dispatch({ type: 'SET_CONTACT_SEARCH', value }),
@@ -1336,7 +1369,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       try {
         const outcome = await persistUnits(floorId, units, savedUnits);
         dispatch({ type: 'MARK_SAVED', floorId, units, baseline: savedUnits, retry: outcome.roomsToRetry });
-        showToast(savedNotice(outcome));
+        showSavedNotice(outcome);
       } catch (err) {
         showToast('Could not save changes');
       } finally {

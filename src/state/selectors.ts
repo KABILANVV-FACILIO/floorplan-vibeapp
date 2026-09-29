@@ -67,17 +67,22 @@ export function bookedUnitIds(state: AppState): Set<string> {
  * stays bookable; lockers stay assignment-only. Rooms follow their own `isReservable` flag (from
  * the IWMS rooms module): bookable unless explicitly marked not-reservable, in which case they're
  * assignable instead — mutually exclusive, same as desks.
+ *
+ * A room read from the org (`orgRoom`: its outline zone, or its `space` record) is NEITHER, for
+ * now: a booking of it has no spacebooking mapping (createRealBooking), and an assignment none
+ * either, so both would be kept in this browser only while the plan called the room booked or
+ * assigned. Its `isReservable` is carried as read, but says nothing about what this app can do.
  */
 export function isBookable(u: Unit): boolean {
   if (u.type === 'locker' || u.type === 'amenity') return false;
   if (u.type === 'workstation') return u.deskType === 'HOT' || u.deskType === 'HOTEL';
-  if (isRoomLike(u.type)) return u.isReservable !== false;
+  if (isRoomLike(u.type)) return !u.orgRoom && u.isReservable !== false;
   return true;
 }
 
 export function isAssignable(u: Unit): boolean {
   if (u.type === 'workstation') return (u.deskType ?? 'ASSIGNED') === 'ASSIGNED';
-  if (isRoomLike(u.type)) return u.isReservable === false;
+  if (isRoomLike(u.type)) return !u.orgRoom && u.isReservable === false;
   return u.type === 'locker' || u.type === 'parking';
 }
 

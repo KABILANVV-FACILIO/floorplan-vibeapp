@@ -432,7 +432,7 @@ function Inspector() {
         {isRoomLike(sel.type) && (
           <div className={card.statRow}>
             <span className={card.statLabel}>Is Reservable</span>
-            <span className={card.statValue}>{sel.isReservable === false ? 'No — assignable' : 'Yes — bookable'}</span>
+            <span className={card.statValue}>{sel.orgRoom ? 'Not bookable here yet' : sel.isReservable === false ? 'No — assignable' : 'Yes — bookable'}</span>
           </div>
         )}
         {sel.room && (
