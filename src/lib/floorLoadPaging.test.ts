@@ -28,7 +28,9 @@ const markers = desks.slice(0, MARKERS).map((d, i) => {
 // `space` is the base table desks live in too, and it pages in its own order: desks 700–1199
 // come first here, so its first page holds desk rows whose desk records are on later pages.
 const spaces = [...desks.slice(MARKERS), ...desks.slice(0, MARKERS)].map((d) => ({ id: d.id, name: d.name, spaceTypeEnum: 'SPACE' }));
-const tables: Record<string, unknown[]> = { desks, lockers: [], parkingstall: [], space: spaces, floorplanmarker: markers };
+// No room outlines on this plan — but a real (empty) list, so the zone read takes its normal path
+// rather than failing and being swallowed by loadPlanZones.
+const tables: Record<string, unknown[]> = { desks, lockers: [], parkingstall: [], space: spaces, floorplanmarker: markers, floorplanmarkedzone: [] };
 
 const calls: string[] = [];
 let releasePageTwo: () => void = () => {};
@@ -61,6 +63,7 @@ vi.mock('./facilioApi', () => ({
 vi.mock('./pdfPreview', () => ({ renderPdfToDataUrl: vi.fn() }));
 vi.mock('./cadPreview', () => ({ renderCadToDataUrl: vi.fn() }));
 vi.spyOn(console, 'info').mockImplementation(() => {});
+const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
 const { FacilioApiDataSource } = await import('./facilioApiDataSource');
 
@@ -98,5 +101,8 @@ describe('loading a floor bigger than one page', () => {
     expect(calls.filter((c) => c === 'floorplanmarker p2')).toHaveLength(1);
     await vi.waitFor(() => expect(moreHolders).not.toBeNull());
     expect(Object.keys(moreHolders!)).toHaveLength(233); // holders among desks 501–1200
+    // The zone list was read, and read cleanly — no failure quietly absorbed on the way.
+    expect(calls.filter((c) => c === 'floorplanmarkedzone p1')).toHaveLength(1);
+    expect(warn.mock.calls.filter((c) => String(c[0]).includes('floorplanmarkedzone'))).toHaveLength(0);
   });
 });

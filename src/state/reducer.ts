@@ -369,12 +369,20 @@ export function reducer(state: AppState, action: Action): AppState {
       };
       const units = [...state.units.map(stamp), ...added];
       const placedNow = new Set(units.map((u) => u.id));
+      // The pool is the whole floor's now, less anything placed meanwhile — plus what the USER put
+      // in it meanwhile. A record deleted off the plan before these pages landed (an org room whose
+      // outline went, a desk un-placed) still reads as placed in this older load, so the load's
+      // pool doesn't hold it and `added` skips it as known: dropping the user's entry would leave
+      // it in neither list until a reload.
+      const saved = new Set(state.savedUnits.map((u) => u.id));
+      const loadedPool = action.units.filter((u) => u.unplaced && !placedNow.has(u.id));
+      const loadedPoolIds = new Set(loadedPool.map((u) => u.id));
+      const userPooled = state.unplacedUnits.filter((u) => saved.has(u.id) && !placedNow.has(u.id) && !loadedPoolIds.has(u.id));
       return {
         ...state,
         units,
         savedUnits: [...state.savedUnits.map(stamp), ...added],
-        // The pool is the whole floor's now, less anything placed meanwhile.
-        unplacedUnits: action.units.filter((u) => u.unplaced && !placedNow.has(u.id)),
+        unplacedUnits: [...loadedPool, ...userPooled],
       };
     }
     case 'FLOOR_ASSIGNMENTS_MORE': {
@@ -721,8 +729,22 @@ export function reducer(state: AppState, action: Action): AppState {
       // A record un-placed since the save (a deleted desk, or an org room whose outline was
       // deleted) is back on the plan after the revert, so it must leave the pool it was put in —
       // otherwise the edit sidebar lists it twice, once placed and once "Unplaced".
+      //
+      // And the reverse: a record placed FROM the pool since the save (a traced pool room, a desk
+      // dropped on the plan, a record swapped in by REPLACE_UNIT_AT) leaves the plan with the revert,
+      // so it goes back to the pool rather than vanishing from both lists until a reload. Only real
+      // records (numeric ids) return there; a unit minted in this app since the save was never in
+      // the pool, and the revert simply drops it.
       const restored = new Set(state.savedUnits.map((u) => u.id));
-      return { ...state, units: state.savedUnits, unplacedUnits: state.unplacedUnits.filter((u) => !restored.has(u.id)), unsavedChanges: 0, ...resetSelectionState(state) };
+      const kept = state.unplacedUnits.filter((u) => !restored.has(u.id));
+      const pooledIds = new Set(kept.map((u) => u.id));
+      const returned: Unit[] = [];
+      for (const u of state.units) {
+        if (restored.has(u.id) || pooledIds.has(u.id) || !/^\d+$/.test(u.id)) continue;
+        const entry = isRoomLike(u.type) ? poolEntryFor(u) : { ...u, unplaced: true };
+        if (entry) returned.push(entry);
+      }
+      return { ...state, units: state.savedUnits, unplacedUnits: [...kept, ...returned], unsavedChanges: 0, ...resetSelectionState(state) };
     }
     case 'SET_PENDING_MODE_SWITCH':
       return { ...state, pendingModeSwitch: action.mode };

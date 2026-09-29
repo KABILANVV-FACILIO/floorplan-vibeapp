@@ -8,13 +8,14 @@ import type { AmenityIcon, Booking, FloorSearchHit, MarkerDef, ModuleKey, PlanId
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
-import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, saveFloorplanMarkers, saveFloorplanZones, vacateUnitReal } from '../lib/facilioApiDataSource';
+import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, vacateUnitReal } from '../lib/facilioApiDataSource';
 import { measureImageDataUrl } from '../lib/geoReference';
 import { listFloorplanFloorIds, loadFloorplanFile, persistFloorplanFile } from '../lib/floorplanFileStore';
 import { loadSettings, saveSettings, settingsFromState } from '../lib/settingsStore';
 import { loadDepartmentColors, saveDepartmentColor } from '../lib/departmentColorStore';
 import { pathForView, viewFromLocation } from '../lib/routes';
 import { bootFloorCandidates, readUrlFloorId, writeUrlFloorId } from '../lib/urlFloor';
+import { persistUnits, savedNotice } from './persistUnits';
 import { buildInitialState, reducer } from './reducer';
 import type { Action } from './reducer';
 import type { AppState } from './types';
@@ -43,47 +44,6 @@ function viewInsets(state: AppState) {
     top: 64,
     bottom: 84,
   };
-}
-
-/**
- * Explicit-save chokepoint ONLY — local per-action edits (place/update/delete/close-draft) call
- * `dataSource.saveUnits` directly and stop there; this additionally pushes real
- * `floorplanmarker`/`floorplanmarkedzone`/`indoorfloorplan` sync, and is deliberately reserved for "Save changes" /
- * mode-switch confirm / discard / reset, not every micro-edit. Syncing markers on every drag or
- * click was real, measured overhead (re-fetching indoorfloorplan geometry + the full marker list
- * per configured plan type, on every single edit) with no benefit — the real backend only needs
- * to reflect the floor once the user is done editing, same mental model as the "unsaved changes"
- * bar itself.
- *
- * The org write is AWAITED, and a write that persisted nothing throws. "Save changes" is the one
- * moment the user is explicitly waiting on the backend — the button shows a loader for exactly
- * that — so it must not report "Changes saved" while the write is still in flight, or after it
- * silently skipped every plan for lack of a georeference. The local (browser) copy is written
- * first regardless, so a failed org write never loses the edit; it just isn't called a save.
- */
-async function persistUnits(floorId: string, units: Unit[]): Promise<void> {
-  await dataSource.saveUnits(floorId, units);
-  if (!isFacilioApiConfigured) return;
-  const result = await saveFloorplanMarkers(floorId, units);
-  // Room outlines next: real `floorplanmarkedzone` records for rooms that stand for an org space.
-  // Run even when the markers were skipped — a floor can have its rooms' plan georeferenced and
-  // nothing else — and reported the same way, so a room that did not reach the org is never
-  // called saved.
-  const zones = await saveFloorplanZones(floorId, units);
-  const hasPointUnits = units.some((u) => u.geom.kind === 'point' && u.type !== 'amenity');
-  if (hasPointUnits && result.plansSynced === 0 && result.skipped.length) {
-    // eslint-disable-next-line no-console
-    console.warn(`[facilio-api] Save changes wrote NO markers to the org — ${result.skipped.join('; ')}. Positions are kept in this browser only.`);
-    throw new Error(`markers not written to the org: ${result.skipped.join('; ')}`);
-  }
-  if (zones.skipped.length) {
-    // eslint-disable-next-line no-console
-    console.warn(`[facilio-api] Save changes skipped some room outlines — ${zones.skipped.join('; ')}.`);
-  }
-  const hasOrgRooms = units.some((u) => isRoomLike(u.type) && !u.unplaced && u.geom.kind === 'poly' && u.geom.pts.length >= 3 && /^\d+$/.test(u.id));
-  if (hasOrgRooms && zones.plansSynced === 0 && zones.skipped.length) {
-    throw new Error(`room outlines not written to the org: ${zones.skipped.join('; ')}`);
-  }
 }
 
 /** Walk the portfolio tree to find which site/building a floor belongs to — create-space needs the
@@ -416,8 +376,9 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       // saving must complete before the switch, unlike discard, which is instant.
       dispatch({ type: 'SET_SAVING', value: true });
       try {
-        await persistUnits(state.floorId, state.units);
+        const outcome = await persistUnits(state.floorId, state.units, state.savedUnits);
         dispatch({ type: 'MARK_SAVED' });
+        if (outcome.roomsNotWritten.length) showToast(savedNotice(outcome));
       } catch {
         showToast('Could not save changes');
       } finally {
@@ -1366,9 +1327,9 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     saveChanges: async () => {
       dispatch({ type: 'SET_SAVING', value: true });
       try {
-        await persistUnits(state.floorId, state.units);
+        const outcome = await persistUnits(state.floorId, state.units, state.savedUnits);
         dispatch({ type: 'MARK_SAVED' });
-        showToast('Changes saved');
+        showToast(savedNotice(outcome));
       } catch (err) {
         showToast('Could not save changes');
       } finally {

@@ -217,12 +217,17 @@ export class FacilioApiDataSource implements FloorplanDataSource {
    * Each plan's room outlines (`floorplanmarkedzone`) are read in the same pass and the same way —
    * first page now, the rest through `onMore` — and become placed rooms (see buildFloorUnits). A
    * zone list that fails is logged and the floor loads without outlines (see loadPlanZones).
+   *
+   * Which org rooms this read produced is recorded per floor (see orgRoomIdsByFloor) — cleared
+   * here before anything is awaited, so a read that fails part-way leaves nothing from an earlier
+   * one behind for the save path to act on.
    */
   async getUnits(floorId: string, onMore?: (units: Unit[]) => void): Promise<Unit[]> {
     this.assertConfigured();
     // Throw rather than return [] — a demo floor's units belong to the local tier, and the
     // composite only falls through on a rejection. Returning empty would strand the canvas.
     if (!isRealFloorId(floorId)) throw new Error(`facilio-api: ${floorId} is not an org floor id`);
+    orgRoomIdsByFloor.delete(floorId);
 
     // Everything the floor needs, asked for at once: the floor's desks, lockers, stalls and spaces
     // (started before anything is awaited, so getAssignments — asked for alongside — shares these
@@ -262,26 +267,23 @@ export class FacilioApiDataSource implements FloorplanDataSource {
             `[facilio-api] getUnits: plan ${planId} (#${planRecordId}) -> ${zones.first.length}${zones.hasMore ? ` of ${zones.total ?? '?'} (rest loading)` : ''} room outlines`,
           );
         }
-        return { planId, planRecordId: Number(planRecordId), quad, markers, zones };
+        return { planId, quad, markers, zones };
       }),
     );
     const [lists, plansRaw] = await Promise.all([listsP, plansP]);
     const plans = plansRaw.filter((p): p is NonNullable<typeof p> => !!p);
     const [desks, lockers, stalls, spaces] = lists;
 
-    const units = buildFloorUnits(
-      floorId,
-      {
-        plans: plans.map((p) => ({ planId: p.planId, planRecordId: p.planRecordId, quad: p.quad, markers: p.markers.first, zones: p.zones.first })),
-        desks: desks.first,
-        lockers: lockers.first,
-        stalls: stalls.first,
-        spaces: spaces.first,
-      },
-      rememberSessionZone,
-    );
+    const units = buildFloorUnits(floorId, {
+      plans: plans.map((p) => ({ planId: p.planId, quad: p.quad, markers: p.markers.first, zones: p.zones.first })),
+      desks: desks.first,
+      lockers: lockers.first,
+      stalls: stalls.first,
+      spaces: spaces.first,
+    });
 
     const pending = [...plans.map((p) => p.markers), ...plans.map((p) => p.zones), ...lists].filter((l) => l.hasMore);
+    rememberFloorRooms(floorId, units, !pending.length);
     if (pending.length) {
       // What is placed can be drawn from the first pages; what is NOT placed can't be told yet — a
       // desk whose marker is on a later page would read as unplaced, and a desk row on the first
@@ -298,23 +300,19 @@ export class FacilioApiDataSource implements FloorplanDataSource {
         // the floor — the same rule as the first page (see loadPlanZones).
         Promise.all(plans.map((p) => p.zones.rest.catch(() => [] as any[]))),
       ]).then(([markerRests, listRests, zoneRests]) => {
-        const all = buildFloorUnits(
-          floorId,
-          {
-            plans: plans.map((p, i) => ({
-              planId: p.planId,
-              planRecordId: p.planRecordId,
-              quad: p.quad,
-              markers: [...p.markers.first, ...markerRests[i]],
-              zones: [...p.zones.first, ...zoneRests[i]],
-            })),
-            desks: [...desks.first, ...listRests[0]],
-            lockers: [...lockers.first, ...listRests[1]],
-            stalls: [...stalls.first, ...listRests[2]],
-            spaces: [...spaces.first, ...listRests[3]],
-          },
-          rememberSessionZone,
-        );
+        const all = buildFloorUnits(floorId, {
+          plans: plans.map((p, i) => ({
+            planId: p.planId,
+            quad: p.quad,
+            markers: [...p.markers.first, ...markerRests[i]],
+            zones: [...p.zones.first, ...zoneRests[i]],
+          })),
+          desks: [...desks.first, ...listRests[0]],
+          lockers: [...lockers.first, ...listRests[1]],
+          stalls: [...stalls.first, ...listRests[2]],
+          spaces: [...spaces.first, ...listRests[3]],
+        });
+        rememberFloorRooms(floorId, all, true);
         // eslint-disable-next-line no-console
         console.info(`[facilio-api] getUnits floor ${floorId}: rest of the floor loaded in the background — ${units.length} → ${all.length} units`);
         return all;
@@ -478,19 +476,16 @@ const DESK_TYPE_INT: Record<NonNullable<Unit['deskType']>, number> = { ASSIGNED:
  * 353 of them on this org, written by onboarding), read in the same pass: every zone that converts
  * cleanly becomes a PLACED room on the plan it sits on, and its space leaves the pool. Before this,
  * every room read as "Unplaced" and no outline was ever drawn, though the org had them all.
- * `onZoneUnit` hears which zone records became units, so the save path knows which zones this
- * session actually showed the user (see sessionZones).
  */
 function buildFloorUnits(
   floorId: string,
   rows: {
-    plans: { planId: PlanId; planRecordId?: number; quad: NonNullable<ReturnType<typeof geometryStringToQuad>>; markers: any[]; zones?: any[] }[];
+    plans: { planId: PlanId; quad: NonNullable<ReturnType<typeof geometryStringToQuad>>; markers: any[]; zones?: any[] }[];
     desks: any[];
     lockers: any[];
     stalls: any[];
     spaces: any[];
   },
-  onZoneUnit?: (planRecordId: number, zoneRecordId: number) => void,
 ): Unit[] {
   const units: Unit[] = [];
   // Real records already represented by a marker — matched on the marker's `recordId`, which this
@@ -546,7 +541,7 @@ function buildFloorUnits(
   let zonesOutOfFrame = 0;
   let zonesMalformed = 0;
   let zonesDuplicate = 0;
-  for (const { planId, planRecordId, quad, zones } of rows.plans) {
+  for (const { planId, quad, zones } of rows.plans) {
     for (const zone of zones ?? []) {
       const read = markedZoneToUnit(zone, quad, floorId, planId, spaceNames);
       if ('skipped' in read) {
@@ -563,7 +558,6 @@ function buildFloorUnits(
       const spaceId = zoneSpaceId(zone);
       if (spaceId) placedRecordIds.add(spaceId);
       units.push(unit);
-      if (planRecordId != null && zone?.id != null) onZoneUnit?.(planRecordId, Number(zone.id));
     }
   }
 
@@ -1154,24 +1148,28 @@ function loadPlanZones(planRecordId: string | number): Promise<RelatedLoad<any>>
 }
 
 /**
- * The zone records THIS SESSION turned into units, per `indoorfloorplan` record id — what the
- * user has actually been shown. The zone sync deletes a zone only if it is in here (and carries the
- * app's geoId, and its room is gone from the units): a room the user never saw — on a page that
- * hadn't arrived, skipped as out of frame, drawn by someone else since — cannot be "removed in the
- * app", so it is never deleted by it. Zones this app creates are added; zones it deletes, dropped.
+ * The org rooms each floor's LATEST read produced, by floor id: the space ids of the rooms drawn
+ * from its marked zones, plus — once the whole floor is in — the room records in its "Available to
+ * place" pool. The zone sync writes an outline only for a room in here (see saveFloorplanZones):
+ * a numeric id alone is not enough, because a room created through the connector tier's
+ * `create-space` also gets one, and that record may not sit on this floor at all.
  *
- * Deliberately NOT cleared by `invalidateOrgCaches`: it is not a memo of the org's answer, and the
- * floor re-read behind Refresh repopulates it anyway.
+ * Replaced, never added to, on every read (see getUnits), and cleared when a read starts, so it
+ * never outlives the load that is on screen. It only ever ALLOWS a write; nothing is deleted on
+ * its say-so — deletes are decided from the units themselves (the saved snapshot against the one
+ * being saved), not from any memory kept here.
  */
-const sessionZones = new Map<number, Set<number>>();
-function rememberSessionZone(planRecordId: number, zoneRecordId: number): void {
-  if (!Number.isFinite(planRecordId) || !Number.isFinite(zoneRecordId)) return;
-  const set = sessionZones.get(planRecordId) ?? new Set<number>();
-  set.add(zoneRecordId);
-  sessionZones.set(planRecordId, set);
-}
-function forgetSessionZone(planRecordId: number, zoneRecordId: number): void {
-  sessionZones.get(planRecordId)?.delete(zoneRecordId);
+const orgRoomIdsByFloor = new Map<string, Set<string>>();
+function rememberFloorRooms(floorId: string, units: Unit[], includePool: boolean): void {
+  const ids = new Set<string>();
+  for (const u of units) {
+    if (!isRoomLike(u.type) || !/^\d+$/.test(u.id)) continue;
+    // The pool is only trustworthy once every page is in: on a first page, a desk whose desk record
+    // is on a later page of `desks` still reads as a room (see getUnits).
+    if (u.unplaced && !includePool) continue;
+    ids.add(u.id);
+  }
+  orgRoomIdsByFloor.set(floorId, ids);
 }
 
 function sortByName<T extends { name?: string }>(rows: T[]): T[] {
@@ -1275,6 +1273,7 @@ export function invalidateOrgCaches(): void {
   floorPlanTypeCache.clear();
   realSpaceRecordCache.clear();
   moduleIdCache.clear();
+  spaceModuleIdCache.id = null;
   bookingFormListCache.clear();
   bookingFormDetailCache.clear();
   floorIndex = null;
@@ -1684,6 +1683,8 @@ async function syncMarkersForIndoorFloorPlan(indoorFloorPlanId: number, units: (
  * What a room-outline save did — reported next to `MarkerSaveResult` so a skipped room is as
  * visible as a skipped plan of markers. `skipped` names each plan or room that was NOT written and
  * why; a room minted in this app (no org record id yet) is not a skip, it is simply local.
+ * `roomsNotWritten` is the same news per room, by label — what the save toast names, so a room
+ * whose outline did not reach the org is never simply called "saved".
  */
 export interface ZoneSaveResult {
   /** Plans whose zones were diffed against the org and written. */
@@ -1692,10 +1693,18 @@ export interface ZoneSaveResult {
   updated: number;
   deleted: number;
   skipped: string[];
+  /** Plan-level failures (no plan, no georeference, the zone list unreadable) — not per-room skips. */
+  plansSkipped: number;
+  roomsNotWritten: string[];
 }
 
-/** Room-like, placed, traced (3+ points), and standing for a real org record — the rooms the org can hold. */
-function isOrgZoneUnit(u: Unit): u is Unit & { geom: PolyGeom } {
+/**
+ * Room-like, placed, traced (3+ points), and carrying a real org record id — a room the org COULD
+ * hold. Whether this floor's read actually produced that room is a second question, asked by the
+ * zone sync itself (see orgRoomIdsByFloor). Shared with `persistUnits`, so "is there an org room
+ * on this save" has one answer.
+ */
+export function isOrgZoneUnit(u: Unit): u is Unit & { geom: PolyGeom } {
   return isRoomLike(u.type) && !u.unplaced && u.geom.kind === 'poly' && u.geom.pts.length >= 3 && /^\d+$/.test(u.id) && Number(u.id) > 0;
 }
 
@@ -1722,53 +1731,85 @@ function sameZoneRing(storedGeometry: unknown, nextGeometry: string): boolean {
   return a.every((p, i) => Math.abs(p[0] - b[i][0]) < 1e-9 && Math.abs(p[1] - b[i][1]) < 1e-9);
 }
 
+/** Placed room outlines in `units` on `floorId`, by plan -> id -> label. */
+function roomOutlinesByPlan(floorId: string, units: Unit[]): Map<PlanId, Map<string, string>> {
+  const out = new Map<PlanId, Map<string, string>>();
+  for (const u of units) {
+    if (u.floor !== floorId || !isRoomLike(u.type) || u.unplaced || u.geom.kind !== 'poly') continue;
+    const plan = zonePlan(u.plan);
+    out.set(plan, (out.get(plan) ?? new Map<string, string>()).set(u.id, u.label));
+  }
+  return out;
+}
+
 /**
  * Room outlines -> real `floorplanmarkedzone` records, at the explicit-save chokepoint only
  * (`persistUnits`), next to `saveFloorplanMarkers`. Before this a room traced in the app lived in
  * browser storage and was never read back on a real floor.
  *
- * Per plan, for each placed room whose id is a real org record id:
+ * Per plan, for each placed room whose id is a real org record id AND that this floor's latest read
+ * produced (a zone it drew, or a room in its pool — see orgRoomIdsByFloor):
  *  - no zone for that space on the plan -> CREATE one (geoId `space-<id>`, `isReservable: false` —
- *    true would make Facilio create a bookable Facility for the space);
- *  - the app's own zone for it (geoId `space-…`) -> UPDATE geometry/label when they changed, and
- *    never send `isReservable` on an update;
+ *    true would make Facilio create a bookable Facility for the space) — only once the record is
+ *    confirmed to be a plain space, never a desk/locker/stall;
+ *  - the app's own zone(s) for it (geoId `space-…`) -> UPDATE geometry/label when they changed,
+ *    every copy alike, and never send `isReservable` on an update;
  *  - only a zone drawn in Facilio's editor for it -> left exactly as it is, and reported.
- * A zone is DELETED only when all three hold: it carries the app's geoId, this session loaded it
- * as a unit on that plan (`sessionZones`), and its room is no longer among the floor's units — the
- * user removed that room here. Nothing else is ever deleted; no space is ever created.
+ *
+ * DELETES are decided from the units alone — `baseline`, the snapshot the user last had on screen
+ * as saved (`state.savedUnits`), against `units`, the one being saved. A room outlined on plan P in
+ * the baseline and outlined nowhere on P now is a room the user removed here; only THEN are its
+ * zones on P deleted, and only those carrying the app's geoId. There is no memory of "zones shown"
+ * to go stale: a re-read that failed to draw the outlines leaves them out of the baseline too, so a
+ * save after it deletes nothing. Without a baseline (a caller that isn't diffing a saved snapshot)
+ * nothing is deleted; no space is ever created.
  *
  * Rooms with app-local ids stay in browser storage, as before. Desks/lockers/stalls are untouched:
  * they are `saveFloorplanMarkers`' business, and it never sees a polygon.
  */
-export async function saveFloorplanZones(floorId: string, units: Unit[]): Promise<ZoneSaveResult> {
-  const result: ZoneSaveResult = { plansSynced: 0, created: 0, updated: 0, deleted: 0, skipped: [] };
+export async function saveFloorplanZones(floorId: string, units: Unit[], baseline: Unit[] = []): Promise<ZoneSaveResult> {
+  const result: ZoneSaveResult = { plansSynced: 0, created: 0, updated: 0, deleted: 0, skipped: [], plansSkipped: 0, roomsNotWritten: [] };
   if (!isFacilioApiConfigured) return result;
-  // Snapshot what this session has shown BEFORE the first await: a later page of outlines landing
-  // mid-save must not count as "shown" against a units list that predates it.
-  const shown = new Map([...sessionZones].map(([plan, ids]) => [plan, new Set(ids)]));
   if (!isRealFloorId(floorId)) {
-    if (units.some(isOrgZoneUnit)) result.skipped.push(`${floorId} is not an org floor — room outlines stay in this browser`);
+    if (units.some(isOrgZoneUnit)) {
+      result.skipped.push(`${floorId} is not an org floor — room outlines stay in this browser`);
+      result.plansSkipped++;
+    }
     return result;
   }
+  const notWritten = (label: string, why: string) => {
+    result.skipped.push(`"${label}": ${why}`);
+    result.roomsNotWritten.push(label);
+  };
 
   // Only this floor's units speak for this floor. A list that holds units but none of this floor's
   // (a demo seed saved over a real floor) says nothing about which rooms the user removed, so it
   // may create/update but never delete.
   const floorUnits = units.filter((u) => u.floor === floorId);
   const mayDelete = !(units.length > 0 && floorUnits.length === 0);
-  const rooms = floorUnits.filter(isOrgZoneUnit);
+  const known = orgRoomIdsByFloor.get(floorId) ?? new Set<string>();
   const byPlan = new Map<PlanId, (Unit & { geom: PolyGeom })[]>();
-  for (const u of rooms) {
+  for (const u of floorUnits.filter(isOrgZoneUnit)) {
+    if (!known.has(u.id)) {
+      // A numeric id this floor never read as a room — a record the connector tier created, or a
+      // desk that read as a room while its desk page failed. Not written as a zone.
+      notWritten(u.label, `#${u.id} is not a room this floor loaded from the org — outline kept in this browser`);
+      continue;
+    }
     const plan = zonePlan(u.plan);
     byPlan.set(plan, [...(byPlan.get(plan) ?? []), u]);
   }
   // Every room-like outline still on a plan, by id — local ones included, so a zone is never
   // deleted for a room that is still there under an id this sync doesn't write.
-  const presentByPlan = new Map<PlanId, Set<string>>();
-  for (const u of floorUnits) {
-    if (!isRoomLike(u.type) || u.unplaced || u.geom.kind !== 'poly') continue;
-    const plan = zonePlan(u.plan);
-    presentByPlan.set(plan, (presentByPlan.get(plan) ?? new Set<string>()).add(u.id));
+  const presentByPlan = roomOutlinesByPlan(floorId, floorUnits);
+  // Rooms the baseline had outlined on a plan that no longer have an outline there.
+  const removedByPlan = new Map<PlanId, Map<string, string>>();
+  if (mayDelete) {
+    for (const [plan, before] of roomOutlinesByPlan(floorId, baseline)) {
+      const now = presentByPlan.get(plan);
+      const gone = new Map([...before].filter(([id]) => /^\d+$/.test(id) && !now?.has(id)));
+      if (gone.size) removedByPlan.set(plan, gone);
+    }
   }
 
   const byType = await getFloorplanDetailsByType(floorId).catch(() => ({}) as Record<string, any>);
@@ -1777,19 +1818,25 @@ export async function saveFloorplanZones(floorId: string, units: Unit[]): Promis
     .filter((p): p is PlanId => !!p);
   for (const planId of new Set<PlanId>([...byPlan.keys(), ...configuredPlanIds])) {
     const wanted = byPlan.get(planId) ?? [];
+    const removed = removedByPlan.get(planId) ?? new Map<string, string>();
     const summary = byType[String(FLOOR_PLAN_TYPE[planId])];
     if (!summary?.id) {
-      if (wanted.length) result.skipped.push(`${planId}: no plan configured — ${wanted.length} room outline(s) not written`);
+      if (wanted.length) {
+        result.skipped.push(`${planId}: no plan configured — ${wanted.length} room outline(s) not written`);
+        result.plansSkipped++;
+        result.roomsNotWritten.push(...wanted.map((u) => u.label));
+      }
       continue;
     }
     const planRecordId = Number(summary.id);
-    const deletable = mayDelete ? (shown.get(planRecordId) ?? new Set<number>()) : new Set<number>();
-    // Nothing to write and nothing this session could have removed: no request at all.
-    if (!wanted.length && !deletable.size) continue;
+    // Nothing to write and nothing the user removed here: no request at all.
+    if (!wanted.length && !removed.size) continue;
     try {
-      const r = await syncZonesForIndoorFloorPlan(planRecordId, wanted, presentByPlan.get(planId) ?? new Set<string>(), deletable);
+      const r = await syncZonesForIndoorFloorPlan(planRecordId, wanted, presentByPlan.get(planId) ?? new Map<string, string>(), removed);
       if (!r.synced) {
         result.skipped.push(`${planId}: plan #${planRecordId} has no georeference — room outlines not written`);
+        result.plansSkipped++;
+        result.roomsNotWritten.push(...wanted.map((u) => u.label), ...removed.values());
         continue;
       }
       result.plansSynced++;
@@ -1797,8 +1844,11 @@ export async function saveFloorplanZones(floorId: string, units: Unit[]): Promis
       result.updated += r.updated;
       result.deleted += r.deleted;
       result.skipped.push(...r.skipped.map((s) => `${planId}: ${s}`));
+      result.roomsNotWritten.push(...r.roomsNotWritten);
     } catch (err) {
       result.skipped.push(`${planId}: ${(err as Error)?.message ?? err}`);
+      result.plansSkipped++;
+      result.roomsNotWritten.push(...wanted.map((u) => u.label), ...removed.values());
       // eslint-disable-next-line no-console
       console.warn(`[facilio-api] room outline sync failed for plan ${planId}`, err);
     }
@@ -1812,17 +1862,45 @@ export async function saveFloorplanZones(floorId: string, units: Unit[]): Promis
 }
 
 /**
- * One plan's zone diff. `present` is every room outline id still on this plan; `deletable` the zone
- * record ids this session loaded as units here. Throws when the existing list can't be read —
- * writing blind would create a second zone for a room that already has one.
+ * The module id a new zone's `zoneModuleId` names — the org's `space` module — resolved without
+ * trusting a record that might not be a plain space. First choice: the value already on one of the
+ * app's own zones on this plan (onboarding wrote every one of them with it). Otherwise the room's
+ * own record, read through `space` and accepted only when it IS a plain space: a desk, locker or
+ * stall read through `space` answers with its own module's id, and one wrong value cached here
+ * would stamp every zone created after it. Only a confirmed value is cached.
+ */
+const spaceModuleIdCache: { id: number | null } = { id: null };
+async function zoneModuleIdFor(existing: any[], spaceId: number): Promise<{ moduleId: number } | { skipped: string }> {
+  // The room itself must be a plain space whichever way the module id is found — a desk that read
+  // as a room gets no outline.
+  const res = await facilioApi.fetchRecord<any>('space', { id: spaceId }).catch(() => null);
+  const record = res && !res.error ? recordOf<any>(res, 'space') : null;
+  if (!record) return { skipped: 'its space record could not be read — space module id could not be resolved, outline not created' };
+  if ((record.spaceTypeEnum ?? 'SPACE') !== 'SPACE') return { skipped: `it is a ${String(record.spaceTypeEnum).toLowerCase()}, not a room — outline not created` };
+  const fromZone = existing.find((z) => isAppZoneGeoId(z?.geoId) && typeof z?.zoneModuleId === 'number' && z.zoneModuleId > 0)?.zoneModuleId;
+  if (typeof fromZone === 'number') return { moduleId: fromZone };
+  if (spaceModuleIdCache.id) return { moduleId: spaceModuleIdCache.id };
+  if (typeof record.moduleId !== 'number') return { skipped: 'space module id could not be resolved — outline not created' };
+  spaceModuleIdCache.id = record.moduleId;
+  return { moduleId: record.moduleId };
+}
+
+/**
+ * One plan's zone diff. `present` is every room outline id (-> label) still on this plan; `removed`
+ * the org rooms the user took off this plan since the saved snapshot. Throws when the existing list
+ * can't be read — writing blind would create a second zone for a room that already has one.
  */
 async function syncZonesForIndoorFloorPlan(
   indoorFloorPlanId: number,
   rooms: (Unit & { geom: PolyGeom })[],
-  present: Set<string>,
-  deletable: Set<number>,
-): Promise<{ synced: boolean; created: number; updated: number; deleted: number; skipped: string[] }> {
-  const out = { synced: false, created: 0, updated: 0, deleted: 0, skipped: [] as string[] };
+  present: Map<string, string>,
+  removed: Map<string, string>,
+): Promise<{ synced: boolean; created: number; updated: number; deleted: number; skipped: string[]; roomsNotWritten: string[] }> {
+  const out = { synced: false, created: 0, updated: 0, deleted: 0, skipped: [] as string[], roomsNotWritten: [] as string[] };
+  const notWritten = (label: string, id: string, why: string) => {
+    out.skipped.push(`"${label}" (#${id}): ${why}`);
+    out.roomsNotWritten.push(label);
+  };
   const recordRes = await facilioApi.fetchRecord<any>('indoorfloorplan', { id: indoorFloorPlanId });
   const quad = geometryStringToQuad(recordOf<any>(recordRes, 'indoorfloorplan')?.geometry);
   if (recordRes.error || !quad) return out;
@@ -1845,34 +1923,39 @@ async function syncZonesForIndoorFloorPlan(
     const sid = zoneSpaceId(z);
     if (sid) bySpace.set(sid, [...(bySpace.get(sid) ?? []), z]);
   }
+  const errText = (e: any) => `${e?.code ?? '?'} ${e?.message ?? ''}`.trim();
 
   for (const room of rooms) {
     const geometry = zoneGeometryString(quad, room.geom.pts);
     const properties = JSON.stringify({ unitType: room.type, secondary: room.secondary ?? null });
     const zones = bySpace.get(room.id) ?? [];
-    const own = zones.find((z) => z.geoId === `${APP_ZONE_GEOID_PREFIX}${room.id}`) ?? zones.find((z) => isAppZoneGeoId(z.geoId));
-    if (own) {
-      if (sameZoneRing(own.geometry, geometry) && own.label === room.label) continue;
-      // No `isReservable` here, ever — an update must not flip the space's bookability either way.
-      const res = await facilioApi.updateRecord('floorplanmarkedzone', { id: own.id, data: { geometry, label: room.label, properties } });
-      if (res.error) {
-        out.skipped.push(`"${room.label}" (#${room.id}): update failed (${res.error.code ?? '?'} ${res.error.message ?? ''})`.trim());
-        // eslint-disable-next-line no-console
-        console.warn(`[facilio-api] room outline update failed for ${room.id}`, res.error);
-      } else out.updated++;
+    // Every app-geoId zone for this space on this plan is the same room — onboarding run twice
+    // leaves two — so they are all kept to the one outline; rewriting only the first would leave a
+    // stale copy that draws the old shape again on the next read.
+    const own = zones.filter((z) => isAppZoneGeoId(z.geoId));
+    if (own.length) {
+      for (const z of own) {
+        if (sameZoneRing(z.geometry, geometry) && z.label === room.label) continue;
+        // No `isReservable` here, ever — an update must not flip the space's bookability either way.
+        const res = await facilioApi.updateRecord('floorplanmarkedzone', { id: z.id, data: { geometry, label: room.label, properties } });
+        if (res.error) {
+          notWritten(room.label, room.id, `update failed (${errText(res.error)})`);
+          // eslint-disable-next-line no-console
+          console.warn(`[facilio-api] room outline update failed for ${room.id}`, res.error);
+        } else out.updated++;
+      }
       continue;
     }
     if (zones.length) {
       // Only a zone someone drew in Facilio's editor: not ours to rewrite, and a second zone for the
       // same space would leave the org with two outlines for one room.
-      out.skipped.push(`"${room.label}" (#${room.id}): its outline on this plan was drawn in Facilio — left unchanged`);
+      notWritten(room.label, room.id, 'its outline on this plan was drawn in Facilio — left unchanged');
       continue;
     }
     const spaceId = Number(room.id);
-    // The space module's id, read off the room's own record — the way markers resolve theirs.
-    const zoneModuleId = await moduleIdFor('space', spaceId).catch(() => null);
-    if (!zoneModuleId) {
-      out.skipped.push(`"${room.label}" (#${room.id}): space module id could not be resolved — outline not created`);
+    const moduleId = await zoneModuleIdFor(existing, spaceId);
+    if ('skipped' in moduleId) {
+      notWritten(room.label, room.id, moduleId.skipped);
       continue;
     }
     const res = await facilioApi.createRecord<any>('floorplanmarkedzone', {
@@ -1885,34 +1968,37 @@ async function syncZonesForIndoorFloorPlan(
         indoorfloorplan: { id: indoorFloorPlanId },
         space: { id: spaceId },
         recordId: spaceId,
-        zoneModuleId,
+        zoneModuleId: moduleId.moduleId,
         isReservable: false,
       },
     });
-    const created = recordOf<any>(res, 'floorplanmarkedzone');
     if (res.error) {
-      out.skipped.push(`"${room.label}" (#${room.id}): create failed (${res.error.code ?? '?'} ${res.error.message ?? ''})`.trim());
+      notWritten(room.label, room.id, `create failed (${errText(res.error)})`);
       // eslint-disable-next-line no-console
       console.warn(`[facilio-api] room outline create failed for ${room.id}`, res.error);
       continue;
     }
     out.created++;
-    // Created here, so shown here: removing the room later in this session removes its zone too.
-    if (created?.id != null) rememberSessionZone(indoorFloorPlanId, Number(created.id));
   }
 
-  for (const z of existing) {
-    const unitId = zoneUnitId(z);
-    if (!isAppZoneGeoId(z.geoId) || !deletable.has(Number(z.id)) || !unitId || present.has(unitId)) continue;
-    const res = await facilioApi.deleteRecord('floorplanmarkedzone', z.id);
-    if (res.error) {
-      out.skipped.push(`zone #${z.id}: delete failed (${res.error.code ?? '?'} ${res.error.message ?? ''})`.trim());
-      // eslint-disable-next-line no-console
-      console.warn(`[facilio-api] room outline delete failed for zone ${z.id}`, res.error);
-      continue;
+  // Removed rooms: every app-geoId zone of theirs on this plan goes (duplicates too — leaving one
+  // would draw the room again on the next read). A zone drawn in Facilio's editor is never
+  // deleted; the room it outlines comes back on the next read, and the user is told so.
+  for (const [spaceId, label] of removed) {
+    if (present.has(spaceId)) continue;
+    const zones = bySpace.get(spaceId) ?? [];
+    for (const z of zones) {
+      if (!isAppZoneGeoId(z.geoId)) continue;
+      const res = await facilioApi.deleteRecord('floorplanmarkedzone', z.id);
+      if (res.error) {
+        notWritten(label, spaceId, `zone #${z.id}: delete failed (${errText(res.error)})`);
+        // eslint-disable-next-line no-console
+        console.warn(`[facilio-api] room outline delete failed for zone ${z.id}`, res.error);
+        continue;
+      }
+      out.deleted++;
     }
-    out.deleted++;
-    forgetSessionZone(indoorFloorPlanId, Number(z.id));
+    if (zones.some((z) => !isAppZoneGeoId(z.geoId))) notWritten(label, spaceId, 'its outline on this plan was drawn in Facilio — not deleted');
   }
   return out;
 }

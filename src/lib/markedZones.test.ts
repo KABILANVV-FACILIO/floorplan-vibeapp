@@ -61,8 +61,12 @@ const foreignOutOfFrame = () =>
 
 const org = vi.hoisted(() => ({
   tables: {} as Record<string, any[]>,
+  /** Plan type -> indoorfloorplan record id, as getFloorplanDetailsByType answers. */
+  plans: { '1': { id: 26 } } as Record<string, { id: number }>,
   failZones: false,
   spaceModuleId: 128279 as number | null,
+  /** A space record's own type, when it is not a plain space (a desk read through `space`). */
+  spaceTypes: {} as Record<number, { spaceTypeEnum: string; moduleId: number }>,
   nextId: 9000,
   create: [] as { module: string; data: any }[],
   update: [] as { module: string; id: number; data: any }[],
@@ -75,19 +79,21 @@ vi.mock('./facilioApi', () => ({
   fetchFilePreview: vi.fn(),
   isFacilioApiConfigured: true,
   customGet: vi.fn(async (path: string) => {
-    if (path === 'v3/floorplan/getFloorplanDetailsByType') return { code: 0, data: { indoorFloorPlans: { '1': { id: 26 } } } };
+    if (path === 'v3/floorplan/getFloorplanDetailsByType') return { code: 0, data: { indoorFloorPlans: org.plans } };
     return { code: 1, message: `no count for ${path}` }; // counts unavailable: the loader pages on
   }),
   facilioApi: {
     fetchAll: vi.fn(),
     fetchRecord: vi.fn(async (module: string, { id }: { id: number }) => {
       if (module === 'indoorfloorplan') return { indoorfloorplan: { id, geometry: PLAN_GEOMETRY } };
+      if (module === 'space' && org.spaceTypes[id]) return { space: { id, ...org.spaceTypes[id] } };
       if (module === 'space') return org.spaceModuleId ? { space: { id, moduleId: org.spaceModuleId } } : { error: { code: 1, message: 'nope' } };
       return { error: { code: 1, message: `unexpected ${module}` } };
     }),
-    fetchAllRelatedList: vi.fn(async (opts: { relatedModuleName: string }, params: { page: number; perPage: number }) => {
+    fetchAllRelatedList: vi.fn(async (opts: { relatedModuleName: string; id: number }, params: { page: number; perPage: number }) => {
       if (opts.relatedModuleName === 'floorplanmarkedzone' && org.failZones) return { error: { code: 500, message: 'zone list down' }, list: null };
-      const all = org.tables[opts.relatedModuleName] ?? [];
+      // Zones belong to one plan each — a floor with two plans answers each plan with its own.
+      const all = (org.tables[opts.relatedModuleName] ?? []).filter((r) => opts.relatedModuleName !== 'floorplanmarkedzone' || Number(r.indoorfloorplan?.id) === Number(opts.id));
       return { error: null, list: all.slice((params.page - 1) * params.perPage, params.page * params.perPage) };
     }),
     createRecord: vi.fn(async (module: string, { data }: { data: any }) => {
@@ -110,7 +116,7 @@ vi.mock('./cadPreview', () => ({ renderCadToDataUrl: vi.fn() }));
 vi.spyOn(console, 'info').mockImplementation(() => {});
 vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-/** A fresh copy of the data source — its session memory (which zones were shown) starts empty. */
+/** A fresh copy of the data source — its per-floor memory (which rooms a read produced) starts empty. */
 async function fresh() {
   vi.resetModules();
   return import('./facilioApiDataSource');
@@ -129,8 +135,10 @@ beforeEach(() => {
     floorplanmarker: [],
     floorplanmarkedzone: [zoneRecord()],
   };
+  org.plans = { '1': { id: PLAN } };
   org.failZones = false;
   org.spaceModuleId = SPACE_MODULE_ID;
+  org.spaceTypes = {};
   org.create = [];
   org.update = [];
   org.remove = [];
@@ -175,6 +183,10 @@ describe('a marked zone reads back as a placed room', () => {
       expect(y).toBeGreaterThanOrEqual(0);
       expect(y).toBeLessThanOrEqual(1);
     }
+    // Literal, not derived through geoReference — a frame error there (a flipped y axis, tl/bl read
+    // wrong from the ring) must fail here rather than cancel out.
+    expect(unit.geom.pts[0][0]).toBeCloseTo(0.786552, 5);
+    expect(unit.geom.pts[0][1]).toBeCloseTo(0.243668, 5);
     const [x0, y0] = lngLatToQuadFraction(quad, -122.41886365321331, 37.774807231822805);
     expect(unit.geom.pts[0][0]).toBeCloseTo(x0, 9);
     expect(unit.geom.pts[0][1]).toBeCloseTo(y0, 9);
@@ -246,15 +258,58 @@ describe('a floor load draws the org rooms', () => {
   });
 });
 
-describe('saving room outlines', () => {
-  it('creates a zone for a room traced onto the plan — app geoId, closed ring, never reservable', async () => {
+describe('one room, more than one zone', () => {
+  it('draws a room outlined on two plans once, from the first plan in type order', async () => {
+    org.plans = { '1': { id: PLAN }, '2': { id: 27 } };
+    org.tables.floorplanmarkedzone = [zoneRecord(), zoneRecord({ id: 4946, indoorfloorplan: { id: 27 } })];
     const { FacilioApiDataSource, saveFloorplanZones } = await fresh();
     const loaded = await new FacilioApiDataSource().getUnits(FLOOR);
+    const rooms = loaded.filter((u) => u.id === '819848');
+    expect(rooms).toHaveLength(1);
+    expect(rooms[0].plan).toBe('workstation');
+
+    // Saved back unchanged: the locker plan's copy is neither rewritten nor deleted.
+    const placed = loaded.filter((u) => !u.unplaced);
+    await saveFloorplanZones(FLOOR, placed, placed);
+    expect(org.update.length + org.remove.length + org.create.length).toBe(0);
+
+    // Removed: only the zone on the plan the room was shown on goes.
+    await saveFloorplanZones(FLOOR, [], placed);
+    expect(org.remove).toEqual([{ module: 'floorplanmarkedzone', id: 4945 }]);
+  });
+
+  it('keeps duplicate app zones on one plan to one outline, and deletes them all with the room', async () => {
+    org.tables.floorplanmarkedzone = [zoneRecord(), zoneRecord({ id: 4947 })]; // onboarding ran twice
+    const { FacilioApiDataSource, saveFloorplanZones } = await fresh();
+    const loaded = await new FacilioApiDataSource().getUnits(FLOOR);
+    expect(loaded.filter((u) => u.id === '819848')).toHaveLength(1);
     const placed = loaded.filter((u) => !u.unplaced);
 
-    const result = await saveFloorplanZones(FLOOR, [...placed, traced('819849', SQUARE, { label: 'Meeting Room 2' })]);
+    const reshaped = placed.map((u) => (u.id === '819848' ? { ...u, geom: { kind: 'poly' as const, pts: SQUARE } } : u));
+    const r1 = await saveFloorplanZones(FLOOR, reshaped, placed);
+    expect(r1.updated).toBe(2);
+    expect(zones(org.update).map((u) => u.id).sort()).toEqual([4945, 4947]);
 
-    expect(result).toMatchObject({ plansSynced: 1, created: 1, updated: 0, deleted: 0, skipped: [] });
+    const r2 = await saveFloorplanZones(FLOOR, [], reshaped);
+    expect(r2.deleted).toBe(2);
+    expect(org.remove.map((r) => r.id).sort()).toEqual([4945, 4947]);
+  });
+});
+
+describe('saving room outlines', () => {
+  /** Load the floor the way the app does; `placed` is what SELECT_FLOOR_DONE makes the saved snapshot. */
+  async function loadFloor() {
+    const mod = await fresh();
+    const loaded = await new mod.FacilioApiDataSource().getUnits(FLOOR);
+    return { ...mod, loaded, placed: loaded.filter((u) => !u.unplaced) };
+  }
+
+  it('creates a zone for a room traced onto the plan — app geoId, closed ring, never reservable', async () => {
+    const { saveFloorplanZones, placed } = await loadFloor();
+
+    const result = await saveFloorplanZones(FLOOR, [...placed, traced('819849', SQUARE, { label: 'Meeting Room 2' })], placed);
+
+    expect(result).toMatchObject({ plansSynced: 1, created: 1, updated: 0, deleted: 0, skipped: [], plansSkipped: 0, roomsNotWritten: [] });
     const [create] = zones(org.create);
     expect(create.data).toMatchObject({
       geoId: 'space-819849',
@@ -271,6 +326,9 @@ describe('saving room outlines', () => {
     expect(JSON.parse(create.data.geometry).type).toBe('Polygon');
     expect(ring).toHaveLength(5);
     expect(ring[4]).toEqual(ring[0]); // closed
+    // (0.3, 0.3) of the plan, by hand from the quad: 0.3 of its width east of tl, 0.3 of its height south.
+    expect(ring[2][0]).toBeCloseTo(-122.4194 + 0.3 * 0.00068189616, 10);
+    expect(ring[2][1]).toBeCloseTo(37.7749 - 0.3 * 0.00038071547, 10);
     const [x, y] = lngLatToQuadFraction(quad, ring[2][0], ring[2][1]);
     expect(x).toBeCloseTo(0.3, 9);
     expect(y).toBeCloseTo(0.3, 9);
@@ -280,20 +338,25 @@ describe('saving room outlines', () => {
     expect(org.create.filter((c) => c.module !== 'floorplanmarkedzone')).toHaveLength(0);
   });
 
+  it('takes zoneModuleId from the app zones already on the plan, over a record read', async () => {
+    const { saveFloorplanZones, placed } = await loadFloor();
+    org.spaceModuleId = 55555; // what a record read would say — not used while a zone of ours has it
+    await saveFloorplanZones(FLOOR, [...placed, traced('819849', SQUARE)], placed);
+    expect(zones(org.create)[0].data.zoneModuleId).toBe(SPACE_MODULE_ID);
+  });
+
   it('writes nothing for a room read back and saved unchanged', async () => {
-    const { FacilioApiDataSource, saveFloorplanZones } = await fresh();
-    const loaded = await new FacilioApiDataSource().getUnits(FLOOR);
-    const result = await saveFloorplanZones(FLOOR, loaded.filter((u) => !u.unplaced));
+    const { saveFloorplanZones, placed } = await loadFloor();
+    const result = await saveFloorplanZones(FLOOR, placed, placed);
     expect(result).toMatchObject({ plansSynced: 1, created: 0, updated: 0, deleted: 0 });
     expect(org.create.length + org.update.length + org.remove.length).toBe(0);
   });
 
-  it('updates the geometry and label of the room\'s own zone, and never sends isReservable', async () => {
-    const { FacilioApiDataSource, saveFloorplanZones } = await fresh();
-    const loaded = await new FacilioApiDataSource().getUnits(FLOOR);
-    const room = loaded.find((u) => u.id === '819848')!;
+  it("updates the geometry and label of the room's own zone, and never sends isReservable", async () => {
+    const { saveFloorplanZones, placed } = await loadFloor();
+    const room = placed.find((u) => u.id === '819848')!;
 
-    const result = await saveFloorplanZones(FLOOR, [{ ...room, label: 'Male Toilet', geom: { kind: 'poly', pts: SQUARE } }]);
+    const result = await saveFloorplanZones(FLOOR, [{ ...room, label: 'Male Toilet', geom: { kind: 'poly', pts: SQUARE } }], placed);
 
     expect(result).toMatchObject({ created: 0, updated: 1, deleted: 0 });
     const [update] = zones(org.update);
@@ -305,93 +368,151 @@ describe('saving room outlines', () => {
   });
 
   it('deletes the zone of a room the user removed in the app', async () => {
-    const { FacilioApiDataSource, saveFloorplanZones } = await fresh();
-    await new FacilioApiDataSource().getUnits(FLOOR);
+    const { saveFloorplanZones, placed } = await loadFloor();
 
-    const result = await saveFloorplanZones(FLOOR, []);
+    const result = await saveFloorplanZones(FLOOR, [], placed);
 
     expect(result.deleted).toBe(1);
     expect(org.remove).toEqual([{ module: 'floorplanmarkedzone', id: 4945 }]);
   });
 
-  it('never deletes a zone drawn in Facilio, even one this session showed', async () => {
-    // In frame, so it loads as a room — but its geoId is the editor's, not ours.
-    org.tables.floorplanmarkedzone = [zoneRecord({ id: 6000, geoId: 'x7q', recordId: 819850, space: { id: 819850 }, label: 'Pantry' })];
-    const { FacilioApiDataSource, saveFloorplanZones } = await fresh();
-    const loaded = await new FacilioApiDataSource().getUnits(FLOOR);
-    expect(loaded.find((u) => u.id === '819850')?.unplaced).toBeUndefined();
+  it('deletes nothing after a re-read that failed to load the outlines', async () => {
+    // First read: the room is drawn. Then Refresh — and this time the zone list is down, so the
+    // room reads as Unplaced and the new saved snapshot has no outline in it.
+    const { FacilioApiDataSource, saveFloorplanZones, placed: first } = await loadFloor();
+    expect(first.some((u) => u.id === '819848')).toBe(true);
+    org.failZones = true;
+    const again = await new FacilioApiDataSource().getUnits(FLOOR);
+    const saved = again.filter((u) => !u.unplaced);
+    expect(saved.some((u) => u.id === '819848')).toBe(false);
+    org.failZones = false; // back up by the time the user saves
 
-    const result = await saveFloorplanZones(FLOOR, []);
+    const desk: Unit = { id: '1001', type: 'workstation', label: 'WS-1', room: null, geom: { kind: 'point', x: 0.5, y: 0.5 }, floor: FLOOR, plan: 'workstation' };
+    const result = await saveFloorplanZones(FLOOR, [...saved, desk], saved);
     expect(result.deleted).toBe(0);
     expect(org.remove).toHaveLength(0);
+  });
+
+  it('never deletes a zone drawn in Facilio, even one this session showed — and says so', async () => {
+    // In frame, so it loads as a room — but its geoId is the editor's, not ours.
+    org.tables.floorplanmarkedzone = [zoneRecord({ id: 6000, geoId: 'x7q', recordId: 819850, space: { id: 819850 }, label: 'Pantry' })];
+    const { saveFloorplanZones, loaded, placed } = await loadFloor();
+    expect(loaded.find((u) => u.id === '819850')?.unplaced).toBeUndefined();
+
+    const result = await saveFloorplanZones(FLOOR, [], placed);
+    expect(result.deleted).toBe(0);
+    expect(org.remove).toHaveLength(0);
+    expect(result.roomsNotWritten).toEqual(['Pantry']);
+    expect(result.skipped.join(' ')).toMatch(/drawn in Facilio — not deleted/);
   });
 
   it('never deletes a zone this session did not load', async () => {
-    const { FacilioApiDataSource, saveFloorplanZones } = await fresh();
-    await new FacilioApiDataSource().getUnits(FLOOR);
+    const { saveFloorplanZones, placed } = await loadFloor();
     // Written by someone else after this floor was read: ours by convention, but never shown here.
     org.tables.floorplanmarkedzone.push(zoneRecord({ id: 4950, geoId: 'space-819850', recordId: 819850, space: { id: 819850 } }));
 
-    await saveFloorplanZones(FLOOR, []);
+    await saveFloorplanZones(FLOOR, [], placed);
     expect(org.remove).toEqual([{ module: 'floorplanmarkedzone', id: 4945 }]); // the one it showed, only
   });
 
-  it('never deletes anything when the floor was never read in this session', async () => {
-    const { saveFloorplanZones } = await fresh();
+  it('never deletes anything without a saved snapshot to diff against', async () => {
+    const { saveFloorplanZones } = await loadFloor();
     const result = await saveFloorplanZones(FLOOR, []);
     expect(result.deleted).toBe(0);
     expect(org.remove).toHaveLength(0);
+  });
+
+  it('never deletes when the units saved are none of this floor (a demo seed over a real floor)', async () => {
+    const { saveFloorplanZones, placed } = await loadFloor();
+    const seed = [traced('rm1', SQUARE, { floor: 'hqA3' }), traced('819849', SQUARE, { floor: 'hqA3' })];
+    const result = await saveFloorplanZones(FLOOR, seed, placed);
+    expect(result.deleted).toBe(0);
+    expect(org.remove).toHaveLength(0);
+  });
+
+  it('does delete when the save holds other units of this floor (the guard is about the floor, not rooms)', async () => {
+    const { saveFloorplanZones, placed } = await loadFloor();
+    const desk: Unit = { id: '1001', type: 'workstation', label: 'WS-1', room: null, geom: { kind: 'point', x: 0.5, y: 0.5 }, floor: FLOOR, plan: 'workstation' };
+    const result = await saveFloorplanZones(FLOOR, [desk], placed);
+    expect(result.deleted).toBe(1);
+    expect(org.remove).toEqual([{ module: 'floorplanmarkedzone', id: 4945 }]);
   });
 
   it('leaves a room that already has an editor-drawn outline alone, and says so', async () => {
     org.tables.floorplanmarkedzone = [foreignOutOfFrame()]; // space 819860, drawn in the editor
-    const { saveFloorplanZones } = await fresh();
+    org.tables.space.push({ id: 819860, name: 'Editor room', spaceTypeEnum: 'SPACE' });
+    const { saveFloorplanZones, loaded } = await loadFloor();
+    expect(loaded.find((u) => u.id === '819860')?.unplaced).toBe(true); // out of frame: in the pool
+
     const result = await saveFloorplanZones(FLOOR, [traced('819860', SQUARE)]);
     expect(result.created + result.updated + result.deleted).toBe(0);
     expect(result.skipped.join(' ')).toMatch(/drawn in Facilio/);
+    expect(result.roomsNotWritten).toEqual(['Room 819860']);
     expect(org.create.length + org.update.length + org.remove.length).toBe(0);
   });
 
+  it('writes no zone for a numeric id this floor never read as a room', async () => {
+    // e.g. a room the connector tier minted through create-space, which may not be on this floor.
+    const { saveFloorplanZones, placed } = await loadFloor();
+    const result = await saveFloorplanZones(FLOOR, [...placed, traced('4242424', SQUARE, { label: 'New room' })], placed);
+    expect(result.created).toBe(0);
+    expect(result.roomsNotWritten).toEqual(['New room']);
+    expect(org.create).toHaveLength(0);
+  });
+
+  it('writes no zone for a record that is not a plain space, and never caches its module id', async () => {
+    org.tables.floorplanmarkedzone = []; // no app zone to take zoneModuleId from
+    org.tables.space.push({ id: 819851, name: 'WS-9', spaceTypeEnum: 'SPACE' }); // read as a room…
+    org.spaceTypes[819851] = { spaceTypeEnum: 'DESK', moduleId: 99999 }; // …but its record is a desk
+    const { saveFloorplanZones } = await loadFloor();
+
+    const result = await saveFloorplanZones(FLOOR, [traced('819851', SQUARE, { label: 'WS-9' }), traced('819849', SQUARE)]);
+
+    expect(result.created).toBe(1);
+    expect(result.roomsNotWritten).toEqual(['WS-9']);
+    expect(zones(org.create).map((c) => [c.data.recordId, c.data.zoneModuleId])).toEqual([[819849, SPACE_MODULE_ID]]);
+  });
+
   it('skips — and reports — a create whose space module id cannot be resolved', async () => {
+    org.tables.floorplanmarkedzone = [];
     org.spaceModuleId = null;
-    const { saveFloorplanZones } = await fresh();
+    const { saveFloorplanZones } = await loadFloor();
     const result = await saveFloorplanZones(FLOOR, [traced('819849', SQUARE)]);
     expect(result.created).toBe(0);
     expect(result.skipped.join(' ')).toMatch(/module id/);
+    expect(result.roomsNotWritten).toEqual(['Room 819849']);
     expect(org.create).toHaveLength(0);
   });
 
   it('keeps rooms minted in the app local — no create for a non-numeric id', async () => {
-    const { saveFloorplanZones } = await fresh();
+    const { saveFloorplanZones } = await loadFloor();
     const result = await saveFloorplanZones(FLOOR, [traced('u1699000000', SQUARE)]);
-    expect(result).toMatchObject({ created: 0, skipped: [] });
+    expect(result).toMatchObject({ created: 0, skipped: [], roomsNotWritten: [] });
     expect(org.create).toHaveLength(0);
   });
 
   it('never sends isReservable: true, on any write', async () => {
-    const { FacilioApiDataSource, saveFloorplanZones } = await fresh();
-    const loaded = await new FacilioApiDataSource().getUnits(FLOOR);
-    const room = loaded.find((u) => u.id === '819848')!;
-    await saveFloorplanZones(FLOOR, [
-      { ...room, geom: { kind: 'poly', pts: SQUARE } },
-      traced('819849', SQUARE, { isReservable: true }),
-      traced('819850', SQUARE, { type: 'delivery' }),
-    ]);
+    const { saveFloorplanZones, placed } = await loadFloor();
+    const room = placed.find((u) => u.id === '819848')!;
+    await saveFloorplanZones(
+      FLOOR,
+      [{ ...room, geom: { kind: 'poly', pts: SQUARE } }, traced('819849', SQUARE, { isReservable: true }), traced('819850', SQUARE, { type: 'delivery' })],
+      placed,
+    );
     expect(zones(org.create)).toHaveLength(2);
     for (const c of zones(org.create)) expect(c.data.isReservable).toBe(false);
     for (const u of zones(org.update)) expect('isReservable' in u.data).toBe(false);
   });
 
   it('the marker sync is unmoved by rooms — no marker is deleted because rooms are on the floor', async () => {
-    const { FacilioApiDataSource, saveFloorplanMarkers } = await fresh();
-    const loaded = await new FacilioApiDataSource().getUnits(FLOOR);
+    const { saveFloorplanMarkers, placed } = await loadFloor();
     // One desk marker already on the plan, saved back where it is.
     const [lng, lat] = [-122.419, 37.7747];
     const [x, y] = lngLatToQuadFraction(quad, lng, lat);
     org.tables.floorplanmarker = [{ id: 777, geoId: '1001', label: 'WS-1', geometry: JSON.stringify({ type: 'Point', coordinates: [lng, lat] }) }];
     const desk: Unit = { id: '1001', type: 'workstation', label: 'WS-1', room: null, geom: { kind: 'point', x, y }, floor: FLOOR, plan: 'workstation' };
 
-    const result = await saveFloorplanMarkers(FLOOR, [...loaded.filter((u) => !u.unplaced), traced('819849', SQUARE), desk]);
+    const result = await saveFloorplanMarkers(FLOOR, [...placed, traced('819849', SQUARE), desk]);
 
     expect(result.plansSynced).toBe(1);
     expect(org.remove).toHaveLength(0); // the desk's marker stays; rooms never count against markers

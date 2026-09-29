@@ -184,3 +184,38 @@ describe('deleting a room that stands for an org space', () => {
     expect(reverted.unplacedUnits.find((u) => u.id === '819848')).toBeUndefined();
   });
 });
+
+describe('the pool stays whole around a background load and a discard', () => {
+  const pts: [number, number][] = [
+    [0.1, 0.1],
+    [0.4, 0.1],
+    [0.4, 0.5],
+  ];
+  const fromOrg = room({ id: '819848', label: 'MALE TOILET', geom: { kind: 'poly', pts }, plan: 'workstation', unplaced: undefined });
+
+  it('keeps a room deleted before the rest of the floor arrived in Available to place', () => {
+    const loaded = { ...withPool([]), units: [fromOrg], savedUnits: [fromOrg] };
+    const deleted = reducer(loaded, { type: 'DELETE_UNIT', id: '819848' });
+    // The background load predates the delete: it still reads the room as placed (its zone).
+    const more = reducer(deleted, { type: 'FLOOR_UNITS_MORE', floorId: 'f1', units: [fromOrg, desk({ id: '5001' })] });
+    expect(more.units.find((u) => u.id === '819848')).toBeUndefined();
+    expect(more.unplacedUnits.find((u) => u.id === '819848')).toMatchObject({ unplaced: true, geom: { kind: 'poly', pts: [] } });
+    expect(more.unplacedUnits.map((u) => u.id).sort()).toEqual(['5001', '819848']);
+  });
+
+  it('puts a pool room traced since the save back in the pool on discard', () => {
+    const traced = reducer(withPool([room()]), { type: 'PLACE_EXISTING_UNIT', unitId: '783701', geom: { kind: 'poly', pts }, room: null });
+    expect(traced.unplacedUnits).toHaveLength(0);
+    const reverted = reducer(traced, { type: 'DISCARD_CHANGES' });
+    expect(reverted.units).toHaveLength(0);
+    expect(reverted.unplacedUnits).toEqual([expect.objectContaining({ id: '783701', unplaced: true, geom: { kind: 'poly', pts: [] } })]);
+  });
+
+  it('puts a desk dropped from the pool since the save back too, and drops an app-minted unit', () => {
+    const dropped = reducer(withPool([desk()]), { type: 'PLACE_EXISTING_UNIT', unitId: '1676023', geom: { kind: 'point', x: 0.5, y: 0.5 }, room: null });
+    const minted = reducer(dropped, { type: 'CLOSE_DRAFT', unit: room({ id: 'u1699000001', geom: { kind: 'poly', pts }, plan: 'workstation', unplaced: undefined }) });
+    const reverted = reducer(minted, { type: 'DISCARD_CHANGES' });
+    expect(reverted.units).toHaveLength(0);
+    expect(reverted.unplacedUnits.map((u) => u.id)).toEqual(['1676023']);
+  });
+});
