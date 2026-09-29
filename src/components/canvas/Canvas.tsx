@@ -39,12 +39,22 @@ function translateGeom(geom: UnitGeom, dx: number, dy: number): UnitGeom {
   return { kind: 'poly', pts: geom.pts.map(([x, y]) => [clamp(x + dx, 0, 1), clamp(y + dy, 0, 1)] as [number, number]) };
 }
 
+/**
+ * How far (px) a press may wander and still count as a click on a room. The pan marks itself
+ * `moved` past 2px, which is what ignores the click ending it on the bare plan (as on main), but a
+ * room is a click target a hand holding a mouse jitters on — a click that shook 3–5px still selects
+ * the room (or opens its Book/Assign popover), as desk markers still do.
+ */
+const ROOM_CLICK_SLOP = 5;
+
 export function Canvas() {
   const { state, actions } = useFloorplan();
   const wrapRef = useRef<HTMLDivElement>(null);
   const [rect, setRect] = useState({ w: 1200, h: 700 });
-  const panRef = useRef<{ sx: number; sy: number; otx: number; oty: number; moved: boolean } | null>(null);
+  const panRef = useRef<{ sx: number; sy: number; otx: number; oty: number; moved: boolean; far: boolean } | null>(null);
   const suppressClickRef = useRef(false);
+  /** Set with suppressClickRef when the gesture that just ended was a pan within ROOM_CLICK_SLOP. */
+  const jitterPanRef = useRef(false);
   const dragUnitIdRef = useRef<string | null>(null);
   const lastDragClientRef = useRef<{ x: number; y: number } | null>(null);
   const [dragPreview, setDragPreview] = useState<{ id: string; x: number; y: number } | null>(null);
@@ -190,7 +200,7 @@ export function Canvas() {
       e.preventDefault();
       return;
     }
-    panRef.current = { sx: e.clientX, sy: e.clientY, otx: state.view.tx, oty: state.view.ty, moved: false };
+    panRef.current = { sx: e.clientX, sy: e.clientY, otx: state.view.tx, oty: state.view.ty, moved: false, far: false };
     window.addEventListener('mousemove', onPanMove);
     window.addEventListener('mouseup', onPanUp);
   }
@@ -200,6 +210,7 @@ export function Canvas() {
     const dx = e.clientX - p.sx;
     const dy = e.clientY - p.sy;
     if (Math.abs(dx) > 2 || Math.abs(dy) > 2) p.moved = true;
+    if (Math.abs(dx) > ROOM_CLICK_SLOP || Math.abs(dy) > ROOM_CLICK_SLOP) p.far = true;
     actions.setView({ ...state.view, tx: p.otx + dx, ty: p.oty + dy });
   }
   function onPanUp() {
@@ -207,7 +218,11 @@ export function Canvas() {
     window.removeEventListener('mouseup', onPanUp);
     if (panRef.current?.moved) {
       suppressClickRef.current = true;
-      setTimeout(() => (suppressClickRef.current = false), 0);
+      jitterPanRef.current = !panRef.current.far;
+      setTimeout(() => {
+        suppressClickRef.current = false;
+        jitterPanRef.current = false;
+      }, 0);
     }
     panRef.current = null;
   }
@@ -319,9 +334,13 @@ export function Canvas() {
       startGroupDrag(e);
       return;
     }
-    if (state.selected !== unit.id) return;
+    // A room marquee-selected on its own is selected too (the marquee cleared `selected`): drag it,
+    // as a lone marquee-selected desk drags, and make it the selection as main did.
+    const loneMultiSel = multiSel.size === 1 && multiSel.has(unit.id);
+    if (state.selected !== unit.id && !loneMultiSel) return;
     e.stopPropagation();
     e.preventDefault();
+    if (loneMultiSel) actions.selectUnit(unit.id);
     gestureRef.current = { kind: 'room', id: unit.id, sx: e.clientX, sy: e.clientY };
     window.addEventListener('mousemove', onRoomDragMove);
     window.addEventListener('mouseup', onRoomDragUp);
@@ -584,7 +603,7 @@ export function Canvas() {
       >
         <FloorplanBackground imageUrl={state.floorImages[floorImageKey(state.floorId, state.planId)]} />
         {rooms.map((r) => (
-          <RoomPolygon key={r.id} unit={r} onEditDown={startRoomDrag} clickSuppressed={() => suppressClickRef.current} />
+          <RoomPolygon key={r.id} unit={r} onEditDown={startRoomDrag} clickSuppressed={() => suppressClickRef.current && !jitterPanRef.current} />
         ))}
         <DraftOverlay draft={state.draft} calib={state.calib} />
         {rooms

@@ -50,7 +50,8 @@ export function RoomPolygon({
 
   function onClick(e: ReactMouseEvent) {
     if (state.mode === 'edit' && (state.tool !== 'select' || placing)) return;
-    // A press inside a room that panned the plan (see Canvas.startRoomDrag) is a pan, not a click.
+    // A press inside a room that panned the plan past the click slop (see Canvas.startRoomDrag and
+    // ROOM_CLICK_SLOP) is a pan, not a click; a click that only jittered still selects the room.
     if (clickSuppressed?.()) return;
     e.stopPropagation();
     actions.selectUnit(unit.id);

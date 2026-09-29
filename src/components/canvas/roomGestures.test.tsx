@@ -124,3 +124,40 @@ describe('an org room outline in Edit mode leaves desk gestures to the canvas', 
     expect(actions.setView).not.toHaveBeenCalled();
   });
 });
+
+describe('room selection gestures that main honoured', () => {
+  it('a room marquee-selected on its own drags (and becomes the selection), rather than panning the plan', () => {
+    // A Shift+drag marquee that caught only this room: SET_MULTI_SELECTED cleared `selected`.
+    const room = renderEdit({ multiSelected: ['9001'], selected: null });
+    press(room, { dx: 40, dy: 40 });
+    expect(actions.selectUnit).toHaveBeenCalledWith('9001');
+    expect(actions.updateUnit).toHaveBeenCalledTimes(1);
+    expect(actions.updateUnit.mock.calls[0][0]).toBe('9001');
+    expect(actions.setView).not.toHaveBeenCalled();
+  });
+
+  it('a room in a larger marquee selection still drags the group', () => {
+    const desk: Unit = { id: '1002', type: 'workstation', label: 'WS-2', room: null, geom: { kind: 'point', x: 0.8, y: 0.8 }, floor: 'f1', plan: 'workstation' };
+    const room = renderEdit({ units: [orgRoom, desk], savedUnits: [orgRoom, desk], multiSelected: ['9001', '1002'], selected: null });
+    press(room, { dx: 40, dy: 40 });
+    expect(actions.updateUnits).toHaveBeenCalledTimes(1);
+    expect(actions.updateUnit).not.toHaveBeenCalled();
+    expect(actions.setView).not.toHaveBeenCalled();
+  });
+
+  for (const mode of ['edit', 'book', 'assign'] as const) {
+    for (const dx of [3, 5]) {
+      it(`${mode} mode: a click that jitters ${dx}px still selects the room`, () => {
+        const room = renderEdit({ mode });
+        press(room, { dx });
+        expect(actions.selectUnit).toHaveBeenCalledWith('9001');
+      });
+    }
+    it(`${mode} mode: a press that pans the plan past the click slop does not select the room`, () => {
+      const room = renderEdit({ mode });
+      press(room, { dx: 6 });
+      expect(actions.setView).toHaveBeenCalled();
+      expect(actions.selectUnit).not.toHaveBeenCalledWith('9001');
+    });
+  }
+});
