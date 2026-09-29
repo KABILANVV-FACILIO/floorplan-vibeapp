@@ -8,8 +8,8 @@
  * department never reached, and chip initials taken from "251850" and "-" — "2-".
  *
  * These split each name into what a person reads (the name) and what a lookup needs (the code).
- * The code is not thrown away: the Seating list prints it in its own column, and search still
- * matches the raw record.
+ * The code is not thrown away: the people lists show the employee number under the name, and
+ * search still matches the raw record.
  */
 
 /** "251850 - Name", "00250001 - Name", "22250606 - Name": a number of 3+ digits, then a dash. */

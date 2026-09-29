@@ -6,7 +6,7 @@ import { Modal, ModalFooter, ModalHeader } from '../primitives/Modal';
 import { Button } from '../primitives/Button';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
 import { PrintSheet, printFileName } from './PrintSheet';
-import { downloadBlob, sheetToPdfBlob } from './sheetPdf';
+import { downloadBlob, printImages, sheetToImages, sheetToPdfBlob } from './sheetPdf';
 import styles from './PrintViewer.module.css';
 
 /** The page's layout size in CSS px — letter landscape at 96px per inch. */
@@ -21,12 +21,11 @@ const GUTTER = 24;
  * without a detour through "Save as PDF", and on some setups prints the page without its colours.
  *
  * The page on screen IS the sheet (PrintSheet in `preview` mode, same component, same styles),
- * drawn at its physical size and scaled to fit. Print hands over to the browser, which prints the
- * app's hidden paper copy of the same sheet — this dialog is portaled to <body>, and the print
- * stylesheet hides everything there. Download rasterises the pages shown here, one PDF page each.
+ * drawn at its physical size and scaled to fit. Both buttons work from pictures of the pages shown
+ * here: Download puts one on each PDF page, Print puts one on each sheet, fitted to the paper.
  *
- * The plan page comes first; after it, as many Seating list pages as the floor needs (every desk,
- * who is placed there, department). The grey area scrolls through them, one page fitting in view.
+ * The whole floor comes first; in "Floor + details" a zoomed page for every area of desks follows
+ * it. The grey area scrolls through them, one page fitting in view.
  */
 export function PrintViewer({ onClose }: { onClose: () => void }) {
   const { state, actions } = useFloorplan();
@@ -36,10 +35,11 @@ export function PrintViewer({ onClose }: { onClose: () => void }) {
   const areaRef = useRef<HTMLDivElement>(null);
   const pagesRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(0);
-  // The pages' unscaled height (the plan page plus however many Seating list pages the floor
-  // needs), so the frame can take the scaled size and the grey area scrolls through them.
+  // The pages' unscaled height (the plan page plus however many detail pages the floor needs), so
+  // the frame can take the scaled size and the grey area scrolls through them.
   const [pagesH, setPagesH] = useState(PAGE_H);
-  const [downloading, setDownloading] = useState(false);
+  // Building the page pictures, for the PDF or for printing — a few seconds on a big floor.
+  const [busy, setBusy] = useState<'pdf' | 'print' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Fit the whole page in the preview area, never larger than life.
@@ -72,10 +72,30 @@ export function PrintViewer({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  // Print the pages as drawn here — pictures of them, fitted to whatever paper the printer holds —
+  // so the printout is the preview (see printImages). Should the pictures fail, the browser prints
+  // the live page instead.
+  async function onPrint() {
+    const pages = Array.from(pagesRef.current?.querySelectorAll<HTMLElement>('[data-print-page]') ?? []);
+    if (!pages.length || busy) return;
+    setBusy('print');
+    setError(null);
+    try {
+      await printImages(await sheetToImages(pages));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[print] page images failed; printing the live page', err);
+      await document.fonts?.ready;
+      window.print();
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function onDownload() {
     const pages = Array.from(pagesRef.current?.querySelectorAll<HTMLElement>('[data-print-page]') ?? []);
-    if (!pages.length || downloading) return;
-    setDownloading(true);
+    if (!pages.length || busy) return;
+    setBusy('pdf');
     setError(null);
     try {
       const blob = await sheetToPdfBlob(pages);
@@ -85,13 +105,13 @@ export function PrintViewer({ onClose }: { onClose: () => void }) {
       console.warn('[print] PDF download failed', err);
       setError('The PDF could not be created here. Print, then choose “Save as PDF”, gives the same page.');
     } finally {
-      setDownloading(false);
+      setBusy(null);
     }
   }
 
   return (
     <Modal onClose={onClose} width={1180}>
-      <ModalHeader title="Print preview" subtitle={`${floorTitle} · Letter, landscape`} onClose={onClose} />
+      <ModalHeader title="Print preview" subtitle={`${floorTitle} · Landscape`} onClose={onClose} />
       <div ref={areaRef} className={styles.area}>
         {/* The frame takes the SCALED size, so the area lays out around what is visible; the page
             inside keeps its full size and is scaled from its corner. */}
@@ -102,9 +122,9 @@ export function PrintViewer({ onClose }: { onClose: () => void }) {
         </div>
       </div>
       <ModalFooter>
-        {/* What the plan pages show. Floor + details: the numbered whole floor, then a zoomed page
-            for every area of desks, each labelled as on screen. Current view: the screen as it is.
-            Whole floor: the numbered floor alone. The Seating list follows in every case. */}
+        {/* What the pages show. Floor + details: the whole floor, then a zoomed page for every area
+            of desks, each desk labelled in full. Current view: the screen as it is. Whole floor:
+            the floor alone. */}
         <div className={styles.scope} role="group" aria-label="Plan on page 1">
           <span className={styles.scopeLabel}>Plan</span>
           <button type="button" className={styles.scopeBtn} aria-pressed={state.printScope === 'detail'} onClick={() => actions.setPrintScope('detail')}>
@@ -118,11 +138,11 @@ export function PrintViewer({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         {error && <span className={styles.error}>{error}</span>}
-        <Button variant="secondary" onClick={() => void onDownload()} disabled={downloading} icon={downloading ? <ButtonSpinner /> : <DownloadIcon />}>
-          {downloading ? 'Preparing PDF…' : 'Download PDF'}
+        <Button variant="secondary" onClick={() => void onDownload()} disabled={!!busy} icon={busy === 'pdf' ? <ButtonSpinner /> : <DownloadIcon />}>
+          {busy === 'pdf' ? 'Preparing PDF…' : 'Download PDF'}
         </Button>
-        <Button variant="primary" onClick={() => window.print()} disabled={downloading} icon={<PrintIcon />}>
-          Print
+        <Button variant="primary" onClick={() => void onPrint()} disabled={!!busy} icon={busy === 'print' ? <ButtonSpinner /> : <PrintIcon />}>
+          {busy === 'print' ? 'Preparing…' : 'Print'}
         </Button>
       </ModalFooter>
     </Modal>

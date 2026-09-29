@@ -1,10 +1,9 @@
 /**
- * The print sheet as a downloadable PDF, made in the browser without a print dialog.
+ * The print sheet as pictures of its pages — for the downloadable PDF, and for printing.
  *
- * The page is rasterised (html-to-image draws the DOM through an SVG foreignObject, so the plane's
- * `scale()` and every chip's counter-scale come out exactly as on screen) and placed full-bleed on
- * a letter-landscape PDF page. It is a picture of the page, not vector text: printing through the
- * browser stays the sharp path, and this is the one that hands over a file.
+ * Each page is rasterised (html-to-image draws the DOM through an SVG foreignObject, so the plane's
+ * `scale()` and every chip's counter-scale come out exactly as on screen). The PDF places them
+ * full-bleed on letter-landscape pages; printing places one per sheet, scaled to the paper.
  *
  * Both libraries are imported on first use. Together they are several times the size of
  * everything else the print viewer needs, and most people who open it only print.
@@ -20,24 +19,30 @@ const PAGE_H_IN = 8.5;
  */
 const PIXEL_RATIO = 2.5;
 
-export async function sheetToPdfBlob(pages: HTMLElement[]): Promise<Blob> {
-  const [{ toPng }, { jsPDF }] = await Promise.all([import('html-to-image'), import('jspdf')]);
+/**
+ * Each page as a PNG data URL, drawn exactly as the viewer shows it. The PDF and the printout are
+ * both made from these, so neither can differ from the preview.
+ */
+export async function sheetToImages(pages: HTMLElement[]): Promise<string[]> {
+  const { toPng } = await import('html-to-image');
   // Roboto comes from Google Fonts. Until it has loaded, the raster would be drawn in the
   // fallback face, so wait for it rather than capture a page that differs from the screen.
   await document.fonts?.ready;
+  const out: string[] = [];
+  for (const page of pages) {
+    out.push(await toPng(page, { pixelRatio: PIXEL_RATIO, backgroundColor: '#ffffff', width: page.offsetWidth, height: page.offsetHeight }));
+  }
+  return out;
+}
+
+export async function sheetToPdfBlob(pages: HTMLElement[]): Promise<Blob> {
+  const [images, { jsPDF }] = await Promise.all([sheetToImages(pages), import('jspdf')]);
   const pdf = new jsPDF({ orientation: 'landscape', unit: 'in', format: 'letter', compress: true });
-  // One raster per page — the plan, then each Seating list page — each full-bleed on its own sheet.
-  for (let i = 0; i < pages.length; i++) {
-    const page = pages[i];
-    const png = await toPng(page, {
-      pixelRatio: PIXEL_RATIO,
-      backgroundColor: '#ffffff',
-      width: page.offsetWidth,
-      height: page.offsetHeight,
-    });
+  // One raster per page — the whole floor, then each detail page — each full-bleed on its own sheet.
+  images.forEach((png, i) => {
     if (i > 0) pdf.addPage('letter', 'landscape');
     pdf.addImage(png, 'PNG', 0, 0, PAGE_W_IN, PAGE_H_IN, undefined, 'FAST');
-  }
+  });
   return pdf.output('blob');
 }
 
@@ -52,4 +57,37 @@ export function downloadBlob(blob: Blob, fileName: string): void {
   // Revoked later, not synchronously: some browsers start reading the URL only after the click
   // handler has returned, and a revoked URL downloads nothing.
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/**
+ * Print the pages as the pictures `sheetToImages` makes — one per sheet, each scaled to fit
+ * whatever paper the printer holds (A4 or Letter, either way round) — instead of handing the
+ * browser the live page to lay out again.
+ *
+ * Laid out again at print time, the page followed the paper rather than the preview: on a narrower
+ * sheet its bar wrapped and the zoomed plans came out cropped, and Chrome shrank a whole floor
+ * plan onto two thirds of the sheet because the plan's clipped layers still counted as overflow.
+ * A picture has none of that: what prints is the page in the preview. (Cmd+P without the viewer
+ * still prints the live page — see PrintSheet.)
+ */
+export async function printImages(images: string[]): Promise<void> {
+  document.querySelector('.fp-print-images')?.remove();
+  const holder = document.createElement('div');
+  holder.className = 'fp-print-images';
+  for (const src of images) {
+    const img = document.createElement('img');
+    img.src = src;
+    img.alt = '';
+    holder.appendChild(img);
+  }
+  document.body.appendChild(holder);
+  document.body.classList.add('fp-printing-images');
+  await Promise.all([...holder.querySelectorAll('img')].map((img) => img.decode().catch(() => {})));
+  const done = () => {
+    window.removeEventListener('afterprint', done);
+    document.body.classList.remove('fp-printing-images');
+    holder.remove();
+  };
+  window.addEventListener('afterprint', done);
+  window.print();
 }

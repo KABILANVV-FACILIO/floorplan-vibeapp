@@ -126,8 +126,8 @@ export function planMarkers(state: AppState): Unit[] {
  *
  * The holder is the name without its employee number, shortened to first name + surname when it
  * would not fit a label ("Abdulrahman Abdullah Khalaf AlAnazi" → "Abdulrahman AlAnazi"); the full
- * name is on the chip's tooltip and in the Seating list. The department is the desk's own, else
- * the holder's — the same rule as the Seating list — without its cost-centre code.
+ * name is on the chip's tooltip. The department is the desk's own, else the holder's, without
+ * its cost-centre code.
  */
 export function markerSubTexts(state: AppState, unit: Unit): { holder: string | null; dept: string | null } {
   const holderId = state.mode === 'assign' ? state.assignments[unit.id] : undefined;

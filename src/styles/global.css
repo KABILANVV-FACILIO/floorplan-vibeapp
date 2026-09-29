@@ -155,9 +155,31 @@ button {
  * `print-color-adjust: exact` because the sheet IS its colours: drop them and the occupancy dots,
  * the legend and the module bars all print as the same grey.
  */
+/* The pages as pictures, while the print viewer's Print is printing them (sheetPdf.printImages). */
+.fp-print-images {
+  display: none;
+}
+
 @media print {
-  body > *:not(#root) {
+  body > *:not(#root):not(.fp-print-images) {
     display: none !important;
+  }
+  /* Printing the pictures: they are the whole print, one page per sheet, fitted to the paper. */
+  body.fp-printing-images > #root {
+    display: none !important;
+  }
+  .fp-print-images {
+    display: block;
+  }
+  .fp-print-images img {
+    display: block;
+    width: 100%;
+    height: 100vh;
+    object-fit: contain;
+    break-inside: avoid;
+  }
+  .fp-print-images img + img {
+    break-before: page;
   }
   html,
   body,

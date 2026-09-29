@@ -41,7 +41,7 @@
 }
 
 @media print {
-  /* Each page after the first starts a new sheet: the plan, then the Seating list pages. */
+  /* Each page after the first starts a new sheet: the plan, then the detail pages. */
   .page + .page {
     break-before: page;
   }
@@ -54,15 +54,32 @@
   .sheet {
     display: block;
   }
+  /*
+   * On paper the page keeps its own 11in × 8.5in layout — the one the viewer shows and the PDF
+   * holds — and is SCALED to the sheet, never reflowed to it. Laid out at the paper's width, an A4
+   * or portrait sheet squeezed it: the bar's text wrapped ("Detail 2 of / 2"), labels clipped, and
+   * the detail plans (positioned for an 11in frame) came out cut off. `zoom` shrinks the page as a
+   * whole, so what prints is what the preview showed, on Letter or A4 alike.
+   *
+   * 0.96 fits both landscape sheets (Letter 11 × 8.5in, A4 11.69 × 8.27in) with room to spare;
+   * a portrait sheet takes the landscape page at 0.74 (8.1in across).
+   */
   .page {
-    width: 100%;
-    height: 100vh;
+    width: 11in;
+    height: 8.5in;
+    margin: 0 auto;
+    zoom: 0.96;
+  }
+}
+@media print and (orientation: portrait) {
+  .page {
+    zoom: 0.74;
   }
 }
 
-/* Letter landscape, edge to edge — the sheet paints its own margins above. */
+/* Landscape, on whichever sheet the printer holds, edge to edge — the page paints its own margins. */
 @page {
-  size: letter landscape;
+  size: landscape;
   margin: 0;
 }
 
@@ -95,9 +112,12 @@
 .barLabel {
   font: 500 14px/1 var(--font-sans);
   color: var(--ink-600);
+  white-space: nowrap;
 }
 .statPlain,
 .stat {
+  flex: none;
+  white-space: nowrap;
   display: inline-flex;
   align-items: baseline;
   gap: 12px;
@@ -149,10 +169,6 @@
 }
 .spacer {
   flex: 1;
-}
-.totalLine {
-  font: 400 11.5px/1 var(--font-sans);
-  color: var(--ink-600);
 }
 
 /* ---- the plan -----------------------------------------------------------
@@ -210,106 +226,4 @@
   font: 400 10px/1.3 var(--font-sans);
   color: var(--ink-600);
   white-space: nowrap;
-}
-
-/* ---- Seating list pages ---------------------------------------------------
- * Every desk, in two side-by-side columns. Every cell is ONE clipped line so each row is exactly
- * 20px: the page break is computed from that (SEATING_ROWS_PER_COLUMN in PrintSheet.tsx), which
- * is what keeps the viewer, the paper and the PDF breaking in the same place.
- */
-.seatCols {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 28px;
-  align-content: start;
-  /* Each table its own height: stretched to its taller neighbour, its rows grew past 20/32px. */
-  align-items: start;
-}
-.seatTable {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
-  font: 400 11px/1 var(--font-sans);
-}
-.seatTable th {
-  height: 24px;
-  padding: 0 8px;
-  text-align: left;
-  vertical-align: bottom;
-  padding-bottom: 6px;
-  font: 600 9.5px/1 var(--font-sans);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ink-600);
-  border-bottom: 1px solid var(--ink-200);
-}
-.seatTable td {
-  height: 20px;
-  padding: 0 8px;
-  vertical-align: middle;
-  border-bottom: 1px solid var(--ink-100);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--ink-700);
-}
-/* A row whose department or name is too long for one line gets two — the row is taller (32px,
-   counted by the page break), and the text wraps instead of ending in "…". Two lines at most. */
-.seatTable tr.rowTwo td {
-  height: 32px;
-  white-space: normal;
-}
-.rowTwo .cellText {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-  line-height: 13px;
-}
-.seatTable tbody tr:nth-child(even) td {
-  background: #f7f9fc;
-}
-.cellDesk {
-  font-weight: 600;
-  color: var(--ink-900) !important;
-}
-.cellHolder {
-  color: var(--ink-900) !important;
-}
-.cellQuiet {
-  color: var(--ink-500) !important;
-}
-.cellDept {
-  color: var(--ink-700);
-}
-.cellEmpNo {
-  color: var(--ink-500) !important;
-  font-variant-numeric: tabular-nums;
-}
-.deptDot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  margin-right: 6px;
-  border-radius: 999px;
-  vertical-align: -0.5px;
-}
-
-/* The desk's number, drawn like its chip on the plan (colours come from markerStyle, inline). */
-.cellNo {
-  padding-right: 0 !important;
-}
-.noChip {
-  display: inline-block;
-  min-width: 22px;
-  height: 15px;
-  box-sizing: border-box;
-  padding: 0 4px;
-  border-radius: 4px;
-  border: 1.5px solid var(--ink-300);
-  font: 700 9.5px/12px var(--font-sans);
-  text-align: center;
-  font-variant-numeric: tabular-nums;
 }
