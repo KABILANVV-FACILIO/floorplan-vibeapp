@@ -7,6 +7,7 @@ import { computeSyntheticGeometry, geometryStringToQuad, lngLatToQuadFraction, q
 import type { CreateSpaceLoc, FloorplanDataSource } from './dataSource';
 import type { Asset } from './assets';
 import { isRoomLike, TYPE_META } from './types';
+import { ROOM_OUTLINE_WRITES } from './featureFlags';
 import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, PlanId, PointGeom, PolyGeom, Site, Unit, UnitType } from './types';
 import { buildEmployeeFilters, mapFilterFields } from './employeeFilters';
 import { byDepartmentName, byPersonName } from './displayNames';
@@ -58,7 +59,8 @@ const PLAN_NAME_BY_TYPE: Record<number, string> = { 1: 'Workstations', 2: 'Locke
  * (`persistUnits` -> `saveFloorplanMarkers`) writes them. `ensurePlanGeoreference` seeds the quad
  * for plans created in Facilio's editor, which arrive without one. Room OUTLINES live in
  * `floorplanmarkedzone` (Polygon) records in the same georeferenced frame: `getUnits` reads them as
- * placed rooms, and the same chokepoint writes them back (`saveFloorplanZones`).
+ * placed rooms, and the same chokepoint writes them back (`saveFloorplanZones`) — only once
+ * `ROOM_OUTLINE_WRITES` (featureFlags.ts) is on; it ships off, so for now outlines are read-only.
  *
  * Still not wired here: assignments (Moves-derived —
  * the WRITE path exists as `assignUnitReal`/`vacateUnitReal`, called separately by the context, but
@@ -1787,6 +1789,33 @@ function sameOutline(a: Unit, b: Unit): boolean {
 }
 
 /**
+ * The rooms whose ORG outline differs between `baseline` (the saved snapshot) and `units` (what is
+ * being saved), by label: traced or placed since, reshaped, relabelled, retyped, moved to another
+ * plan, deleted, or rebound to another record (the old record's outline reads as deleted, the new
+ * one's as added). An org outline is a placed room standing for a real space (`isOrgZoneUnit`) or
+ * one read from a zone that names no room (`zone-…`); rooms minted in the app are browser-only
+ * either way and are not listed.
+ *
+ * This is what a save with ROOM_OUTLINE_WRITES off has to own up to: none of these reached
+ * Facilio, and a reload will draw the org's outline again. Same per-room test as the zone sync
+ * (`sameOutline`), so "changed" has one answer whichever way the flag is set. Discard (units ===
+ * baseline) lists nothing.
+ */
+export function roomOutlineChanges(floorId: string, units: Unit[], baseline: Unit[] = []): string[] {
+  const isOrgOutline = (u: Unit) =>
+    u.floor === floorId && (isOrgZoneUnit(u) || (isRoomLike(u.type) && !u.unplaced && u.geom.kind === 'poly' && u.geom.pts.length >= 3 && u.id.startsWith('zone-')));
+  const now = new Map(units.filter(isOrgOutline).map((u) => [u.id, u]));
+  const before = new Map(baseline.filter(isOrgOutline).map((u) => [u.id, u]));
+  const labels: string[] = [];
+  for (const [id, u] of now) {
+    const b = before.get(id);
+    if (!b || !sameOutline(b, u)) labels.push(u.label);
+  }
+  for (const [id, b] of before) if (!now.has(id)) labels.push(b.label);
+  return [...new Set(labels)];
+}
+
+/**
  * Room outlines -> real `floorplanmarkedzone` records, at the explicit-save chokepoint only
  * (`persistUnits`), next to `saveFloorplanMarkers`. Before this a room traced in the app lived in
  * browser storage and was never read back on a real floor.
@@ -1818,6 +1847,13 @@ function sameOutline(a: Unit, b: Unit): boolean {
 export async function saveFloorplanZones(floorId: string, units: Unit[], baseline: Unit[] = []): Promise<ZoneSaveResult> {
   const result: ZoneSaveResult = { plansSynced: 0, created: 0, updated: 0, deleted: 0, skipped: [], plansSkipped: 0, roomsNotWritten: [], retryIds: [] };
   if (!isFacilioApiConfigured) return result;
+  // Belt and braces: `persistUnits` does not call this at all while room outline writes are off
+  // (see featureFlags.ts), and nothing else may write zones either. Not one request — no plan
+  // read, no zone list, no `space` probe — only the rooms whose changes did not reach the org.
+  if (!ROOM_OUTLINE_WRITES) {
+    result.roomsNotWritten = roomOutlineChanges(floorId, units, baseline);
+    return result;
+  }
   if (!isRealFloorId(floorId)) {
     if (units.some(isOrgZoneUnit)) {
       result.skipped.push(`${floorId} is not an org floor — room outlines stay in this browser`);

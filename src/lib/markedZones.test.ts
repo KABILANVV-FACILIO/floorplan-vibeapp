@@ -121,6 +121,9 @@ vi.mock('./facilioApi', () => ({
     }),
   },
 }));
+// Room outline WRITES ship off (featureFlags.ts); the write path is pinned here with them forced on,
+// so it stays tested until the flag flips. The read path does not look at the flag.
+vi.mock('./featureFlags', () => ({ ROOM_OUTLINE_WRITES: true }));
 vi.mock('./pdfPreview', () => ({ renderPdfToDataUrl: vi.fn() }));
 vi.mock('./cadPreview', () => ({ renderCadToDataUrl: vi.fn() }));
 vi.spyOn(console, 'info').mockImplementation(() => {});

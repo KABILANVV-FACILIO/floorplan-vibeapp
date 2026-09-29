@@ -1,6 +1,7 @@
 import { dataSource } from '../lib/dataSource';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
-import { isOrgZoneUnit, saveFloorplanMarkers, saveFloorplanZones } from '../lib/facilioApiDataSource';
+import { isOrgZoneUnit, roomOutlineChanges, saveFloorplanMarkers, saveFloorplanZones } from '../lib/facilioApiDataSource';
+import { ROOM_OUTLINE_WRITES } from '../lib/featureFlags';
 import type { Unit } from '../lib/types';
 
 /** What an explicit save could not get into the org although the save as a whole went through. */
@@ -41,6 +42,12 @@ export interface PersistOutcome {
  * Room outlines are written only once the markers went through (or there were none to write): a
  * save reported as failed must not have changed the org's outlines behind the user's back — they
  * would then be out of step with what a Discard puts back on screen.
+ *
+ * With ROOM_OUTLINE_WRITES off (the default for now — see featureFlags.ts) the zone sync is not
+ * called at all: the save is the markers exactly as before rooms were read, and no request goes to
+ * `floorplanmarkedzone` or `space`. The rooms whose outline the user changed anyway are handed back
+ * in `roomsNotWritten` — never in `roomsToRetry`, which would keep them unsaved and have every
+ * later Save report them again — so the toast can say their changes did not reach Facilio.
  */
 export async function persistUnits(floorId: string, units: Unit[], baseline?: Unit[]): Promise<PersistOutcome> {
   await dataSource.saveUnits(floorId, units);
@@ -52,6 +59,9 @@ export async function persistUnits(floorId: string, units: Unit[], baseline?: Un
     console.warn(`[facilio-api] Save changes wrote NO markers to the org — ${result.skipped.join('; ')}. Positions are kept in this browser only.`);
     throw new Error(`markers not written to the org: ${result.skipped.join('; ')}`);
   }
+  // Room outline writes are off: nothing more goes to the org. Only say which room changes stayed
+  // behind; a reload draws the org's outline for them again.
+  if (!ROOM_OUTLINE_WRITES) return { roomsNotWritten: roomOutlineChanges(floorId, units, baseline), roomsToRetry: [] };
   // Room outlines next: real `floorplanmarkedzone` records for rooms that stand for an org space.
   // Run when the markers were skipped for want of any to write — a floor can have its rooms' plan
   // georeferenced and nothing else — and reported the same way, so a room that did not reach the
@@ -75,10 +85,15 @@ export async function persistUnits(floorId: string, units: Unit[], baseline?: Un
  * The toast for a save that went through: plain "Changes saved", or — when some room outlines did
  * not reach the org (drawn in Facilio's editor, a failed write, a room this floor never loaded) —
  * which ones, so the user isn't told a room was saved that will be gone, or back, on reload.
+ *
+ * With room outline writes off (`writes` false, the flag's value by default) every listed room is
+ * one the app did not even try to write, and the toast says that in so many words: the desks went
+ * through, those room changes are not saved to Facilio.
  */
-export function savedNotice(outcome: Pick<PersistOutcome, 'roomsNotWritten'>): string {
+export function savedNotice(outcome: Pick<PersistOutcome, 'roomsNotWritten'>, writes: boolean = ROOM_OUTLINE_WRITES): string {
   const labels = outcome.roomsNotWritten;
   if (!labels.length) return 'Changes saved';
   const named = labels.slice(0, 3).join(', ') + (labels.length > 3 ? ` +${labels.length - 3} more` : '');
+  if (!writes) return `Saved — ${labels.length} room change${labels.length === 1 ? '' : 's'} not saved to Facilio (room outlines are read-only for now): ${named}`;
   return `Saved — ${labels.length} room outline${labels.length === 1 ? '' : 's'} not written to the org: ${named}`;
 }

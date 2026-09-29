@@ -16,6 +16,9 @@ const sync = vi.hoisted(() => ({
 
 vi.mock('../lib/dataSource', () => ({ dataSource: { saveUnits: vi.fn(async () => {}) } }));
 vi.mock('../lib/facilioApi', () => ({ isFacilioApiConfigured: true }));
+// The write path is pinned here with room outline writes ON — it ships off (featureFlags.ts), and
+// persistUnitsWritesOff.test.ts pins that default; this keeps the code behind the flag tested.
+vi.mock('../lib/featureFlags', () => ({ ROOM_OUTLINE_WRITES: true }));
 vi.mock('../lib/pdfPreview', () => ({ renderPdfToDataUrl: vi.fn() }));
 vi.mock('../lib/cadPreview', () => ({ renderCadToDataUrl: vi.fn() }));
 vi.mock('../lib/facilioApiDataSource', async () => {
@@ -23,6 +26,7 @@ vi.mock('../lib/facilioApiDataSource', async () => {
   const actual = await vi.importActual<typeof import('../lib/facilioApiDataSource')>('../lib/facilioApiDataSource');
   return {
     isOrgZoneUnit: actual.isOrgZoneUnit,
+    roomOutlineChanges: actual.roomOutlineChanges,
     saveFloorplanMarkers: vi.fn(async () => sync.markers),
     saveFloorplanZones: vi.fn(async () => sync.zones),
   };
