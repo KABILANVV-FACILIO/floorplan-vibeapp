@@ -375,9 +375,11 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       // The modal stays up with a loader on the Save button while persisting (saving flag) —
       // saving must complete before the switch, unlike discard, which is instant.
       dispatch({ type: 'SET_SAVING', value: true });
+      // What is sent is what is marked saved — see MARK_SAVED.
+      const { floorId, units, savedUnits } = state;
       try {
-        const outcome = await persistUnits(state.floorId, state.units, state.savedUnits);
-        dispatch({ type: 'MARK_SAVED' });
+        const outcome = await persistUnits(floorId, units, savedUnits);
+        dispatch({ type: 'MARK_SAVED', floorId, units, baseline: savedUnits, retry: outcome.roomsToRetry });
         if (outcome.roomsNotWritten.length) showToast(savedNotice(outcome));
       } catch {
         showToast('Could not save changes');
@@ -390,7 +392,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     },
     confirmDiscardAndSwitch: () => {
       const target = state.pendingModeSwitch;
-      if (!target) return;
+      if (!target || state.saving) return;
       // Discard is local (revert to the saved snapshot) — close the popup and switch modes
       // IMMEDIATELY; the store re-persist below is backend housekeeping the user shouldn't
       // wait on (it used to hold the modal open for the full round trip).
@@ -399,18 +401,22 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       if (target === 'assign' || target === 'book') dispatch({ type: 'SET_PANEL_OPEN', id: 'details', open: true });
       dispatch({ type: 'SET_PENDING_MODE_SWITCH', mode: null });
       // Auto-save already pushed the now-discarded edits per action — re-persist the reverted
-      // snapshot in the background so the store matches what's shown.
-      void persistUnits(state.floorId, state.savedUnits).catch(() => {});
+      // snapshot in the background so the store matches what's shown. The saved snapshot is its own
+      // baseline: nothing the user changed is left, so no room outline is written.
+      void persistUnits(state.floorId, state.savedUnits, state.savedUnits).catch(() => {});
     },
     /**
      * In-place discard (the ✕ on the unsaved-changes bar): revert to the last-saved snapshot and
      * STAY in edit mode — unlike confirmDiscardAndSwitch, which discards on the way out.
      */
     discardChanges: () => {
+      // Not while a save is in flight: its result is about to become the saved snapshot, and a
+      // housekeeping write racing it could leave the org and the screen disagreeing.
+      if (state.saving) return;
       dispatch({ type: 'DISCARD_CHANGES' });
       showToast('Changes discarded');
       // Background housekeeping, same as confirmDiscardAndSwitch.
-      void persistUnits(state.floorId, state.savedUnits).catch(() => {});
+      void persistUnits(state.floorId, state.savedUnits, state.savedUnits).catch(() => {});
     },
     setTool: (tool: AppState['tool']) => dispatch({ type: 'SET_TOOL', tool }),
     /** Arm the amenity tool with a marker-library entry (built-in or custom). */
@@ -1326,9 +1332,10 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
      */
     saveChanges: async () => {
       dispatch({ type: 'SET_SAVING', value: true });
+      const { floorId, units, savedUnits } = state;
       try {
-        const outcome = await persistUnits(state.floorId, state.units, state.savedUnits);
-        dispatch({ type: 'MARK_SAVED' });
+        const outcome = await persistUnits(floorId, units, savedUnits);
+        dispatch({ type: 'MARK_SAVED', floorId, units, baseline: savedUnits, retry: outcome.roomsToRetry });
         showToast(savedNotice(outcome));
       } catch (err) {
         showToast('Could not save changes');

@@ -248,7 +248,12 @@ export type Action =
   | { type: 'SET_FLOOR_PLAN_TYPES'; floorId: string; types: AppState['floorPlanTypes'][string] }
   | { type: 'SET_FLOOR_IMAGE_LOADING'; value: boolean }
   | { type: 'SET_MY_DESK'; myDesk: AppState['myDesk'] }
-  | { type: 'MARK_SAVED' }
+  /**
+   * A save finished. `units` is what was SENT (the snapshot taken when Save was pressed) and
+   * `baseline` the saved snapshot it was diffed against; `retry` the ids whose write failed, kept
+   * at their baseline so they stay unsaved. Bare, it marks what is on screen as saved.
+   */
+  | { type: 'MARK_SAVED'; floorId?: string; units?: Unit[]; baseline?: Unit[]; retry?: string[] }
   | { type: 'SET_SAVING'; value: boolean }
   | { type: 'SET_REFRESHING'; value: boolean }
   | { type: 'DISCARD_CHANGES' }
@@ -359,7 +364,11 @@ export function reducer(state: AppState, action: Action): AppState {
       // The rest of a big floor, arriving after it was drawn from its first pages. It ADDS to what
       // is on screen and never replaces it: a marker moved, placed or deleted in the seconds
       // between is the user's, and the load it came from is older than that.
-      const known = new Set([...state.units, ...state.savedUnits].map((u) => u.id));
+      // A ROOM the user took off the plan is known too, from the pool it went to: deleted and then
+      // saved, it is in neither `units` nor `savedUnits`, and this older load — which still reads
+      // it as placed (its zone) — would otherwise put it back on the plan as saved.
+      const pooledRoomIds = state.unplacedUnits.filter((u) => isRoomLike(u.type)).map((u) => u.id);
+      const known = new Set([...[...state.units, ...state.savedUnits].map((u) => u.id), ...pooledRoomIds]);
       const added = action.units.filter((u) => !u.unplaced && !known.has(u.id));
       // A desk record on a later page carries the department for a marker already drawn.
       const deptOf = new Map(action.units.filter((u) => u.department).map((u) => [u.id, u]));
@@ -377,7 +386,9 @@ export function reducer(state: AppState, action: Action): AppState {
       const saved = new Set(state.savedUnits.map((u) => u.id));
       const loadedPool = action.units.filter((u) => u.unplaced && !placedNow.has(u.id));
       const loadedPoolIds = new Set(loadedPool.map((u) => u.id));
-      const userPooled = state.unplacedUnits.filter((u) => saved.has(u.id) && !placedNow.has(u.id) && !loadedPoolIds.has(u.id));
+      // Before these pages the pool holds only what the user put there (the first answer carries
+      // placed units only), so a room there stays even once a save has dropped it from savedUnits.
+      const userPooled = state.unplacedUnits.filter((u) => (saved.has(u.id) || isRoomLike(u.type)) && !placedNow.has(u.id) && !loadedPoolIds.has(u.id));
       return {
         ...state,
         units,
@@ -723,8 +734,34 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, myDesk: action.myDesk };
     case 'SET_SAVING':
       return { ...state, saving: action.value };
-    case 'MARK_SAVED':
-      return { ...state, savedUnits: state.units, unsavedChanges: 0 };
+    case 'MARK_SAVED': {
+      if (!action.units) return { ...state, savedUnits: state.units, unsavedChanges: 0 };
+      // A save that finished after a floor switch says nothing about the floor now on screen.
+      if (action.floorId && action.floorId !== state.floorId) return state;
+      // What was SENT is what is saved — not what is on screen now. The canvas stays live during a
+      // save, and an edit made meanwhile was never written: it must still count as unsaved.
+      const before = action.baseline ?? state.savedUnits;
+      const beforeById = new Map(before.map((u) => [u.id, u]));
+      const beforeIds = new Set(before.map((u) => u.id));
+      const sentIds = new Set(action.units.map((u) => u.id));
+      const retry = new Set(action.retry ?? []);
+      // Background pages may have landed meanwhile: they stamp departments onto saved units and add
+      // the floor's later records, as saved. Both are kept.
+      const current = new Map(state.savedUnits.map((u) => [u.id, u]));
+      const stamp = (u: Unit): Unit => {
+        const c = !u.department ? current.get(u.id) : undefined;
+        return c?.department ? { ...u, department: c.department, departmentId: c.departmentId } : u;
+      };
+      const savedUnits: Unit[] = [];
+      for (const u of action.units) {
+        if (!retry.has(u.id)) savedUnits.push(stamp(u));
+        else if (beforeById.has(u.id)) savedUnits.push(stamp(beforeById.get(u.id)!)); // failed: still as it was
+        // failed and new since the baseline (a failed create): not saved at all
+      }
+      for (const b of before) if (retry.has(b.id) && !sentIds.has(b.id)) savedUnits.push(stamp(b)); // a failed delete
+      for (const c of state.savedUnits) if (!beforeIds.has(c.id) && !sentIds.has(c.id)) savedUnits.push(c); // arrived during the save
+      return { ...state, savedUnits, unsavedChanges: countUnsavedChanges(state.units, savedUnits) };
+    }
     case 'DISCARD_CHANGES': {
       // A record un-placed since the save (a deleted desk, or an org room whose outline was
       // deleted) is back on the plan after the revert, so it must leave the pool it was put in —

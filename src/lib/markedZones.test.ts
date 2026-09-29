@@ -67,6 +67,11 @@ const org = vi.hoisted(() => ({
   spaceModuleId: 128279 as number | null,
   /** A space record's own type, when it is not a plain space (a desk read through `space`). */
   spaceTypes: {} as Record<number, { spaceTypeEnum: string; moduleId: number }>,
+  /** Ids that answer through a point-record module (`desks`, `lockers`, `parkingstall`) — desks, in this org, are spaces too. */
+  pointRecords: {} as Record<string, number[]>,
+  /** Related-list pages that fail, by related module (`desks: [1]` fails the desk list's first page). */
+  failPages: {} as Record<string, number[]>,
+  failWrites: { create: false, update: false, delete: false },
   nextId: 9000,
   create: [] as { module: string; data: any }[],
   update: [] as { module: string; id: number; data: any }[],
@@ -86,26 +91,31 @@ vi.mock('./facilioApi', () => ({
     fetchAll: vi.fn(),
     fetchRecord: vi.fn(async (module: string, { id }: { id: number }) => {
       if (module === 'indoorfloorplan') return { indoorfloorplan: { id, geometry: PLAN_GEOMETRY } };
+      if (org.pointRecords[module]?.includes(id)) return { [module]: { id, moduleId: 99999 } };
       if (module === 'space' && org.spaceTypes[id]) return { space: { id, ...org.spaceTypes[id] } };
       if (module === 'space') return org.spaceModuleId ? { space: { id, moduleId: org.spaceModuleId } } : { error: { code: 1, message: 'nope' } };
       return { error: { code: 1, message: `unexpected ${module}` } };
     }),
     fetchAllRelatedList: vi.fn(async (opts: { relatedModuleName: string; id: number }, params: { page: number; perPage: number }) => {
       if (opts.relatedModuleName === 'floorplanmarkedzone' && org.failZones) return { error: { code: 500, message: 'zone list down' }, list: null };
+      if (org.failPages[opts.relatedModuleName]?.includes(params.page)) return { error: { code: 429, message: 'slow down' }, list: null };
       // Zones belong to one plan each — a floor with two plans answers each plan with its own.
       const all = (org.tables[opts.relatedModuleName] ?? []).filter((r) => opts.relatedModuleName !== 'floorplanmarkedzone' || Number(r.indoorfloorplan?.id) === Number(opts.id));
       return { error: null, list: all.slice((params.page - 1) * params.perPage, params.page * params.perPage) };
     }),
     createRecord: vi.fn(async (module: string, { data }: { data: any }) => {
+      if (org.failWrites.create) return { error: { code: 500, message: 'create down' } };
       org.create.push({ module, data });
       const id = org.nextId++;
       return { error: null, [module]: { id, ...data } };
     }),
     updateRecord: vi.fn(async (module: string, { id, data }: { id: number; data: any }) => {
+      if (org.failWrites.update) return { error: { code: 500, message: 'update down' } };
       org.update.push({ module, id, data });
       return { error: null };
     }),
     deleteRecord: vi.fn(async (module: string, id: number) => {
+      if (org.failWrites.delete) return { error: { code: 429, message: 'slow down' } };
       org.remove.push({ module, id });
       return { error: null };
     }),
@@ -139,6 +149,9 @@ beforeEach(() => {
   org.failZones = false;
   org.spaceModuleId = SPACE_MODULE_ID;
   org.spaceTypes = {};
+  org.pointRecords = {};
+  org.failPages = {};
+  org.failWrites = { create: false, update: false, delete: false };
   org.create = [];
   org.update = [];
   org.remove = [];
@@ -273,9 +286,26 @@ describe('one room, more than one zone', () => {
     await saveFloorplanZones(FLOOR, placed, placed);
     expect(org.update.length + org.remove.length + org.create.length).toBe(0);
 
-    // Removed: only the zone on the plan the room was shown on goes.
-    await saveFloorplanZones(FLOOR, [], placed);
-    expect(org.remove).toEqual([{ module: 'floorplanmarkedzone', id: 4945 }]);
+    // Removed: the zone it was shown from goes, and so does its hidden copy on the locker plan —
+    // left there, it would draw the room on that plan on the next read.
+    const r = await saveFloorplanZones(FLOOR, [], placed);
+    expect(org.remove.map((x) => x.id).sort()).toEqual([4945, 4946]);
+    expect(r.roomsNotWritten).toEqual([]);
+  });
+
+  it('keeps the copy on the other plan when the room only moved plans, and never deletes an editor copy there', async () => {
+    org.plans = { '1': { id: PLAN }, '2': { id: 27 } };
+    org.tables.floorplanmarkedzone = [zoneRecord(), zoneRecord({ id: 4946, indoorfloorplan: { id: 27 } }), zoneRecord({ id: 4948, geoId: 'q9z', indoorfloorplan: { id: 27 } })];
+    const { FacilioApiDataSource, saveFloorplanZones } = await fresh();
+    const placed = (await new FacilioApiDataSource().getUnits(FLOOR)).filter((u) => !u.unplaced);
+    const moved = placed.map((u) => (u.id === '819848' ? { ...u, plan: 'locker' as const } : u));
+    await saveFloorplanZones(FLOOR, moved, placed);
+    expect(org.remove).toEqual([{ module: 'floorplanmarkedzone', id: 4945 }]); // off the workstation plan only
+
+    org.remove = [];
+    const r = await saveFloorplanZones(FLOOR, [], placed);
+    expect(org.remove.map((x) => x.id).sort()).toEqual([4945, 4946]); // never 4948, the editor's
+    expect(r.roomsNotWritten).toEqual([]); // and a copy that was never on screen is no news
   });
 
   it('keeps duplicate app zones on one plan to one outline, and deletes them all with the room', async () => {
@@ -338,18 +368,63 @@ describe('saving room outlines', () => {
     expect(org.create.filter((c) => c.module !== 'floorplanmarkedzone')).toHaveLength(0);
   });
 
-  it('takes zoneModuleId from the app zones already on the plan, over a record read', async () => {
+  it('takes zoneModuleId from the app zones already on the plan, and refuses a record in another module', async () => {
     const { saveFloorplanZones, placed } = await loadFloor();
-    org.spaceModuleId = 55555; // what a record read would say — not used while a zone of ours has it
     await saveFloorplanZones(FLOOR, [...placed, traced('819849', SQUARE)], placed);
     expect(zones(org.create)[0].data.zoneModuleId).toBe(SPACE_MODULE_ID);
+
+    // A desk read through `space`: SPACE-typed like every desk here, but in its own module.
+    org.spaceTypes[819850] = { spaceTypeEnum: 'SPACE', moduleId: 99999 };
+    const r = await saveFloorplanZones(FLOOR, [...placed, traced('819850', SQUARE, { label: 'WS-9' })], placed);
+    expect(r.created).toBe(0);
+    expect(r.roomsNotWritten).toEqual(['WS-9']);
+    expect(zones(org.create)).toHaveLength(1);
   });
 
-  it('writes nothing for a room read back and saved unchanged', async () => {
+  it('never keeps a module id read from a record for the next zone', async () => {
+    org.tables.floorplanmarkedzone = []; // no app zone to learn the space module id from
+    const { saveFloorplanZones } = await loadFloor();
+    org.spaceModuleId = 55555;
+    await saveFloorplanZones(FLOOR, [traced('819849', SQUARE)]);
+    org.spaceModuleId = SPACE_MODULE_ID;
+    await saveFloorplanZones(FLOOR, [traced('819850', SQUARE)]);
+    expect(zones(org.create).map((c) => [c.data.recordId, c.data.zoneModuleId])).toEqual([
+      [819849, 55555],
+      [819850, SPACE_MODULE_ID],
+    ]);
+  });
+
+  it('writes nothing — and asks for nothing — for a room read back and saved unchanged', async () => {
     const { saveFloorplanZones, placed } = await loadFloor();
+    const { facilioApi } = await import('./facilioApi');
+    const reads = vi.mocked(facilioApi.fetchAllRelatedList).mock.calls.length;
     const result = await saveFloorplanZones(FLOOR, placed, placed);
-    expect(result).toMatchObject({ plansSynced: 1, created: 0, updated: 0, deleted: 0 });
+    expect(result).toMatchObject({ plansSynced: 0, created: 0, updated: 0, deleted: 0, roomsNotWritten: [] });
     expect(org.create.length + org.update.length + org.remove.length).toBe(0);
+    expect(vi.mocked(facilioApi.fetchAllRelatedList).mock.calls.length).toBe(reads);
+  });
+
+  it('writes nothing on Discard or an unrelated save, though the zone changed in the org since the read', async () => {
+    const { saveFloorplanZones, placed } = await loadFloor();
+    const desk: Unit = { id: '1001', type: 'workstation', label: 'WS-1', room: null, geom: { kind: 'point', x: 0.5, y: 0.5 }, floor: FLOOR, plan: 'workstation' };
+    // Reshaped elsewhere (another tab, the onboarding's shape update) after this floor was read.
+    const reshaped = JSON.stringify({ type: 'Polygon', coordinates: [[[-122.4189, 37.7748], [-122.4188, 37.7748], [-122.4188, 37.7747], [-122.4189, 37.7748]]] });
+    org.tables.floorplanmarkedzone = [zoneRecord({ geometry: reshaped })];
+    await saveFloorplanZones(FLOOR, placed, placed); // Discard's housekeeping
+    await saveFloorplanZones(FLOOR, [...placed, desk], placed); // Save after placing one desk
+    expect(org.update).toHaveLength(0);
+
+    // Deleted elsewhere: not re-created by a save that did not touch the room.
+    org.tables.floorplanmarkedzone = [];
+    await saveFloorplanZones(FLOOR, placed, placed);
+    await saveFloorplanZones(FLOOR, [...placed, desk], placed);
+    expect(org.create).toHaveLength(0);
+  });
+
+  it('reads no count for the zone list on a floor load', async () => {
+    await loadFloor();
+    const { customGet } = await import('./facilioApi');
+    expect(vi.mocked(customGet).mock.calls.filter(([path]) => String(path).includes('floorplanmarkedzone'))).toHaveLength(0);
   });
 
   it("updates the geometry and label of the room's own zone, and never sends isReservable", async () => {
@@ -460,10 +535,12 @@ describe('saving room outlines', () => {
     expect(org.create).toHaveLength(0);
   });
 
-  it('writes no zone for a record that is not a plain space, and never caches its module id', async () => {
+  it('writes no zone for a desk that read as a room, and never caches its module id', async () => {
     org.tables.floorplanmarkedzone = []; // no app zone to take zoneModuleId from
     org.tables.space.push({ id: 819851, name: 'WS-9', spaceTypeEnum: 'SPACE' }); // read as a room…
-    org.spaceTypes[819851] = { spaceTypeEnum: 'DESK', moduleId: 99999 }; // …but its record is a desk
+    // …and its `space` record says SPACE too, as every desk's does here — but it is a desk record.
+    org.spaceTypes[819851] = { spaceTypeEnum: 'SPACE', moduleId: 99999 };
+    org.pointRecords.desks = [819851];
     const { saveFloorplanZones } = await loadFloor();
 
     const result = await saveFloorplanZones(FLOOR, [traced('819851', SQUARE, { label: 'WS-9' }), traced('819849', SQUARE)]);
@@ -518,5 +595,97 @@ describe('saving room outlines', () => {
     expect(org.remove).toHaveLength(0); // the desk's marker stays; rooms never count against markers
     expect(org.create).toHaveLength(0); // and no marker is minted for a room
     expect(zones([...org.create, ...org.update, ...org.remove])).toHaveLength(0);
+  });
+});
+
+describe('a desk that reads as a room while its desk list failed', () => {
+  it('is not a room the save may outline when the desk list failed outright', async () => {
+    org.tables.desks = [{ id: 900005, name: 'WS-5' }];
+    org.tables.space.push({ id: 900005, name: 'WS-5', spaceTypeEnum: 'SPACE' });
+    org.failPages.desks = [1];
+    const { FacilioApiDataSource, saveFloorplanZones } = await fresh();
+    const loaded = await new FacilioApiDataSource().getUnits(FLOOR);
+    expect(loaded.find((u) => u.id === '900005')?.type).toBe('room'); // what the pool shows…
+    const placed = loaded.filter((u) => !u.unplaced);
+    const result = await saveFloorplanZones(FLOOR, [...placed, traced('900005', SQUARE, { label: 'WS-5' })], placed);
+    expect(result.created).toBe(0); // …but not something to write a zone for
+    expect(result.roomsNotWritten).toEqual(['WS-5']);
+  });
+
+  it('is not one either when a later page of desks failed', async () => {
+    org.tables.desks = Array.from({ length: 600 }, (_, i) => ({ id: 900000 + i, name: `WS-${i}` }));
+    org.tables.space.push(...org.tables.desks.map((d) => ({ id: d.id, name: d.name, spaceTypeEnum: 'SPACE' })));
+    org.failPages.desks = [2];
+    const { FacilioApiDataSource, saveFloorplanZones } = await fresh();
+    let more: Unit[] | null = null;
+    const first = await new FacilioApiDataSource().getUnits(FLOOR, (u) => (more = u));
+    await vi.waitFor(() => expect(more).not.toBeNull());
+    expect((more as unknown as Unit[]).find((u) => u.id === '900550')?.type).toBe('room');
+    const placed = first.filter((u) => !u.unplaced);
+    const result = await saveFloorplanZones(FLOOR, [...placed, traced('900550', SQUARE, { label: 'WS-550' })], placed);
+    expect(result.created).toBe(0);
+    expect(org.create).toHaveLength(0);
+  });
+});
+
+describe('rooms the save cannot write are named, and only when changed', () => {
+  async function loadWith(zone: Record<string, unknown>) {
+    org.tables.floorplanmarkedzone = [zoneRecord(zone)];
+    const mod = await fresh();
+    const loaded = await new mod.FacilioApiDataSource().getUnits(FLOOR);
+    return { ...mod, placed: loaded.filter((u) => !u.unplaced) };
+  }
+  const desk: Unit = { id: '1001', type: 'workstation', label: 'WS-1', room: null, geom: { kind: 'point', x: 0.5, y: 0.5 }, floor: FLOOR, plan: 'workstation' };
+
+  it('says nothing of an in-frame editor zone the user did not touch — and names it once reshaped', async () => {
+    const { saveFloorplanZones, placed } = await loadWith({ id: 6000, geoId: 'x7q', recordId: 819850, space: { id: 819850 }, label: 'Pantry' });
+    expect((await saveFloorplanZones(FLOOR, [...placed, desk], placed)).roomsNotWritten).toEqual([]);
+    expect((await saveFloorplanZones(FLOOR, placed)).roomsNotWritten).toEqual([]); // no baseline: matches the org, still no news
+    const reshaped = placed.map((u) => (u.id === '819850' ? { ...u, geom: { kind: 'poly' as const, pts: SQUARE } } : u));
+    expect((await saveFloorplanZones(FLOOR, reshaped, placed)).roomsNotWritten).toEqual(['Pantry']);
+    expect(org.create.length + org.update.length + org.remove.length).toBe(0);
+  });
+
+  it('names a reshaped or deleted zone that outlines no room, and writes neither', async () => {
+    const { saveFloorplanZones, placed } = await loadWith({ id: 7000, geoId: 'k2p', recordId: null, space: null, label: 'Loading bay' });
+    expect(placed.map((u) => u.id)).toEqual(['zone-7000']);
+    expect((await saveFloorplanZones(FLOOR, [...placed, desk], placed)).roomsNotWritten).toEqual([]);
+    const reshaped = placed.map((u) => ({ ...u, geom: { kind: 'poly' as const, pts: SQUARE } }));
+    expect((await saveFloorplanZones(FLOOR, reshaped, placed)).roomsNotWritten).toEqual(['Loading bay']);
+    expect((await saveFloorplanZones(FLOOR, [desk], placed)).roomsNotWritten).toEqual(['Loading bay']);
+    expect(org.create.length + org.update.length + org.remove.length).toBe(0);
+  });
+});
+
+describe('a room write the org refused comes back to be retried', () => {
+  async function loadFloor() {
+    const mod = await fresh();
+    const loaded = await new mod.FacilioApiDataSource().getUnits(FLOOR);
+    return { ...mod, placed: loaded.filter((u) => !u.unplaced) };
+  }
+
+  it('a failed delete', async () => {
+    const { saveFloorplanZones, placed } = await loadFloor();
+    org.failWrites.delete = true;
+    const r = await saveFloorplanZones(FLOOR, [], placed);
+    expect(r).toMatchObject({ deleted: 0, retryIds: ['819848'] });
+    expect(r.roomsNotWritten).toEqual(['HQ-BKC-2F-MALE TOILET Common Area']);
+  });
+
+  it('a failed create or update — but not a room that is simply not the app\'s to write', async () => {
+    const { saveFloorplanZones, placed } = await loadFloor();
+    org.failWrites.create = true;
+    org.failWrites.update = true;
+    const reshaped = placed.map((u) => ({ ...u, geom: { kind: 'poly' as const, pts: SQUARE } }));
+    const r = await saveFloorplanZones(FLOOR, [...reshaped, traced('819849', SQUARE), traced('4242424', SQUARE)], placed);
+    expect(r.retryIds.sort()).toEqual(['819848', '819849']);
+    expect(r.roomsNotWritten).toHaveLength(3);
+  });
+
+  it('every room on a plan whose zone list could not be read', async () => {
+    const { saveFloorplanZones, placed } = await loadFloor();
+    org.failZones = true;
+    const r = await saveFloorplanZones(FLOOR, [], placed);
+    expect(r).toMatchObject({ plansSynced: 0, plansSkipped: 1, retryIds: ['819848'] });
   });
 });

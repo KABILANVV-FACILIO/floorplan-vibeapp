@@ -7,6 +7,12 @@ import type { Unit } from '../lib/types';
 export interface PersistOutcome {
   /** Labels of rooms whose outline (a create, update or delete) did not reach the org. */
   roomsNotWritten: string[];
+  /**
+   * Ids of rooms whose outline write was tried and FAILED. The caller keeps these out of the new
+   * saved snapshot (MARK_SAVED's `retry`), so they stay unsaved and the next Save sends them again
+   * — a delete in particular is decided from that snapshot, and would otherwise never be retried.
+   */
+  roomsToRetry: string[];
 }
 
 /**
@@ -26,37 +32,43 @@ export interface PersistOutcome {
  * first regardless, so a failed org write never loses the edit; it just isn't called a save.
  *
  * `baseline` is the snapshot the user last had as saved (`state.savedUnits`), captured in the same
- * render as `units`. It is what lets the zone sync tell a room the user REMOVED from one that was
- * simply never drawn (see saveFloorplanZones); without it no outline is deleted — the discard and
- * demo-reset housekeeping pass none. A save that went through but left some room outlines behind
- * resolves with their labels, so the caller can say so instead of a plain "Changes saved".
+ * render as `units`. It is what lets the zone sync write only what the user changed, and tell a
+ * room the user REMOVED from one that was simply never drawn (see saveFloorplanZones); without it
+ * no outline is deleted. Discard passes the saved snapshot as both, so it writes no outline at all.
+ * A save that went through but left some room outlines behind resolves with their labels, so the
+ * caller can say so instead of a plain "Changes saved".
+ *
+ * Room outlines are written only once the markers went through (or there were none to write): a
+ * save reported as failed must not have changed the org's outlines behind the user's back — they
+ * would then be out of step with what a Discard puts back on screen.
  */
 export async function persistUnits(floorId: string, units: Unit[], baseline?: Unit[]): Promise<PersistOutcome> {
   await dataSource.saveUnits(floorId, units);
-  if (!isFacilioApiConfigured) return { roomsNotWritten: [] };
+  if (!isFacilioApiConfigured) return { roomsNotWritten: [], roomsToRetry: [] };
   const result = await saveFloorplanMarkers(floorId, units);
-  // Room outlines next: real `floorplanmarkedzone` records for rooms that stand for an org space.
-  // Run even when the markers were skipped — a floor can have its rooms' plan georeferenced and
-  // nothing else — and reported the same way, so a room that did not reach the org is never
-  // called saved.
-  const zones = await saveFloorplanZones(floorId, units, baseline);
   const hasPointUnits = units.some((u) => u.geom.kind === 'point' && u.type !== 'amenity');
   if (hasPointUnits && result.plansSynced === 0 && result.skipped.length) {
     // eslint-disable-next-line no-console
     console.warn(`[facilio-api] Save changes wrote NO markers to the org — ${result.skipped.join('; ')}. Positions are kept in this browser only.`);
     throw new Error(`markers not written to the org: ${result.skipped.join('; ')}`);
   }
+  // Room outlines next: real `floorplanmarkedzone` records for rooms that stand for an org space.
+  // Run when the markers were skipped for want of any to write — a floor can have its rooms' plan
+  // georeferenced and nothing else — and reported the same way, so a room that did not reach the
+  // org is never called saved.
+  const zones = await saveFloorplanZones(floorId, units, baseline);
   if (zones.skipped.length) {
     // eslint-disable-next-line no-console
     console.warn(`[facilio-api] Save changes skipped some room outlines — ${zones.skipped.join('; ')}.`);
   }
   // Thrown only when a PLAN could not be written and no plan was: per-room skips (an editor-drawn
   // outline, a room this floor never loaded) on a save that otherwise went through are reported
-  // through `roomsNotWritten`, not called a failed save.
-  if (units.some(isOrgZoneUnit) && zones.plansSynced === 0 && zones.plansSkipped > 0) {
+  // through `roomsNotWritten`, not called a failed save. A room the user REMOVED counts as much as
+  // one still on the floor — deleting the last room is a write too.
+  if ((units.some(isOrgZoneUnit) || zones.retryIds.length > 0) && zones.plansSynced === 0 && zones.plansSkipped > 0) {
     throw new Error(`room outlines not written to the org: ${zones.skipped.join('; ')}`);
   }
-  return { roomsNotWritten: [...new Set(zones.roomsNotWritten)] };
+  return { roomsNotWritten: [...new Set(zones.roomsNotWritten)], roomsToRetry: [...new Set(zones.retryIds)] };
 }
 
 /**
@@ -64,7 +76,7 @@ export async function persistUnits(floorId: string, units: Unit[], baseline?: Un
  * not reach the org (drawn in Facilio's editor, a failed write, a room this floor never loaded) —
  * which ones, so the user isn't told a room was saved that will be gone, or back, on reload.
  */
-export function savedNotice(outcome: PersistOutcome): string {
+export function savedNotice(outcome: Pick<PersistOutcome, 'roomsNotWritten'>): string {
   const labels = outcome.roomsNotWritten;
   if (!labels.length) return 'Changes saved';
   const named = labels.slice(0, 3).join(', ') + (labels.length > 3 ? ` +${labels.length - 3} more` : '');

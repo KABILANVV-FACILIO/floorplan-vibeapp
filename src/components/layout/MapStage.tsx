@@ -76,7 +76,7 @@ export function MapStage({ stageRef }: { stageRef: RefObject<HTMLDivElement> }) 
           <div className={styles.unsavedBar}>
             <span>{state.unsavedChanges} unsaved change{state.unsavedChanges === 1 ? '' : 's'}</span>
             {/* Discard-in-place: revert to the last save and stay in edit mode. */}
-            <button className={styles.unsavedDiscard} onClick={actions.discardChanges}>
+            <button className={styles.unsavedDiscard} disabled={state.saving} onClick={actions.discardChanges}>
               Discard
             </button>
             <button className={styles.unsavedSave} disabled={state.saving} onClick={actions.saveChanges}>

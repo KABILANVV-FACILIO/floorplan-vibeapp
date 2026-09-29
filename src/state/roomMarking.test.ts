@@ -219,3 +219,85 @@ describe('the pool stays whole around a background load and a discard', () => {
     expect(reverted.unplacedUnits.map((u) => u.id)).toEqual(['1676023']);
   });
 });
+
+describe('a room deleted and saved before the rest of the floor arrived', () => {
+  const pts: [number, number][] = [
+    [0.1, 0.1],
+    [0.4, 0.1],
+    [0.4, 0.5],
+  ];
+  const fromOrg = room({ id: '819848', label: 'MALE TOILET', geom: { kind: 'poly', pts }, plan: 'workstation', unplaced: undefined });
+  const other = room({ id: '819849', label: 'Meeting Room 2', geom: { kind: 'poly', pts }, plan: 'workstation', unplaced: undefined });
+
+  it('stays off the plan and in the pool — the older load does not bring it back as saved', () => {
+    const loaded = reducer({ ...withPool([]), floorId: 'f1' }, { type: 'SELECT_FLOOR_DONE', floorId: 'f1', units: [fromOrg, other], assignments: {}, bookings: [] });
+    const deleted = reducer(loaded, { type: 'DELETE_UNIT', id: '819848' });
+    const saved = reducer(deleted, { type: 'MARK_SAVED', floorId: 'f1', units: deleted.units, baseline: loaded.savedUnits });
+    // The background pages were built from a read that started before the delete: the room is placed there.
+    const more = reducer(saved, { type: 'FLOOR_UNITS_MORE', floorId: 'f1', units: [fromOrg, other, desk({ id: '5001', unplaced: undefined, geom: { kind: 'point', x: 0.5, y: 0.5 } })] });
+    expect(more.units.map((u) => u.id)).toEqual(['819849', '5001']);
+    expect(more.savedUnits.map((u) => u.id)).toEqual(['819849', '5001']);
+    expect(more.unplacedUnits.find((u) => u.id === '819848')).toMatchObject({ unplaced: true, geom: { kind: 'poly', pts: [] } });
+    expect(more.unsavedChanges).toBe(0);
+  });
+
+  it('leaves a deleted desk exactly as before (only rooms are held back by the pool)', () => {
+    const d = desk({ id: '5002', unplaced: undefined, geom: { kind: 'point', x: 0.5, y: 0.5 } });
+    const loaded = reducer({ ...withPool([]), floorId: 'f1' }, { type: 'SELECT_FLOOR_DONE', floorId: 'f1', units: [d], assignments: {}, bookings: [] });
+    const deleted = reducer(loaded, { type: 'DELETE_UNIT', id: '5002' });
+    const saved = reducer(deleted, { type: 'MARK_SAVED', floorId: 'f1', units: deleted.units, baseline: loaded.savedUnits });
+    const more = reducer(saved, { type: 'FLOOR_UNITS_MORE', floorId: 'f1', units: [d] });
+    expect(more.units.map((u) => u.id)).toEqual(['5002']);
+  });
+});
+
+describe('MARK_SAVED marks what was sent, not what is on screen', () => {
+  const pts: [number, number][] = [
+    [0.1, 0.1],
+    [0.4, 0.1],
+    [0.4, 0.5],
+  ];
+  const x = room({ id: '819848', label: 'MALE TOILET', geom: { kind: 'poly', pts }, plan: 'workstation', unplaced: undefined });
+  const y = room({ id: '819849', label: 'Meeting Room 2', geom: { kind: 'poly', pts }, plan: 'workstation', unplaced: undefined });
+  const start = () => ({ ...withPool([]), units: [x, y], savedUnits: [x, y] });
+
+  it('keeps an edit made while the save was in flight unsaved', () => {
+    const edited = reducer(start(), { type: 'UPDATE_UNIT', id: '819848', patch: { label: 'Male Toilet' } });
+    const sent = edited.units;
+    const during = reducer(edited, { type: 'DELETE_UNIT', id: '819849' }); // made while the save runs
+    const done = reducer(during, { type: 'MARK_SAVED', floorId: 'f1', units: sent, baseline: [x, y] });
+    expect(done.savedUnits.map((u) => u.id)).toEqual(['819848', '819849']);
+    expect(done.savedUnits[0].label).toBe('Male Toilet');
+    expect(done.unsavedChanges).toBe(1); // Y's delete was never sent
+  });
+
+  it('keeps a room whose write failed at its baseline, so the next Save sends it again', () => {
+    const deleted = reducer(start(), { type: 'DELETE_UNIT', id: '819848' });
+    const done = reducer(deleted, { type: 'MARK_SAVED', floorId: 'f1', units: deleted.units, baseline: [x, y], retry: ['819848'] });
+    expect(done.savedUnits.find((u) => u.id === '819848')).toEqual(x);
+    expect(done.unsavedChanges).toBe(1);
+    // …and Discard now puts it back where the org still has it.
+    expect(reducer(done, { type: 'DISCARD_CHANGES' }).units.find((u) => u.id === '819848')?.geom).toEqual({ kind: 'poly', pts });
+  });
+
+  it('leaves a room whose create failed out of the saved snapshot', () => {
+    const traced = reducer({ ...withPool([room()]), units: [x], savedUnits: [x] }, { type: 'PLACE_EXISTING_UNIT', unitId: '783701', geom: { kind: 'poly', pts }, room: null });
+    const done = reducer(traced, { type: 'MARK_SAVED', floorId: 'f1', units: traced.units, baseline: [x], retry: ['783701'] });
+    expect(done.savedUnits.map((u) => u.id)).toEqual(['819848']);
+    expect(done.unsavedChanges).toBe(1);
+  });
+
+  it('keeps what the background pages added and stamped during the save', () => {
+    const s = start();
+    const sent = s.units;
+    const more = reducer(s, { type: 'FLOOR_UNITS_MORE', floorId: 'f1', units: [desk({ id: '5001', unplaced: undefined, geom: { kind: 'point', x: 0.5, y: 0.5 } })] });
+    const done = reducer(more, { type: 'MARK_SAVED', floorId: 'f1', units: sent, baseline: s.savedUnits });
+    expect(done.savedUnits.map((u) => u.id)).toEqual(['819848', '819849', '5001']);
+    expect(done.unsavedChanges).toBe(0);
+  });
+
+  it('ignores a save that finished after a floor switch', () => {
+    const s = { ...start(), floorId: 'f2' };
+    expect(reducer(s, { type: 'MARK_SAVED', floorId: 'f1', units: [], baseline: [] })).toBe(s);
+  });
+});
