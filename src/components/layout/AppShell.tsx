@@ -9,6 +9,7 @@ import { PeopleView } from '../people/PeopleView';
 import { BookingModal } from '../details/BookingModal';
 import { MobileApp } from '../mobile/MobileApp';
 import { PrintSheet } from '../print/PrintSheet';
+import { PrintController } from '../print/PrintController';
 import { Toast } from '../primitives/Toast';
 import styles from './AppShell.module.css';
 
@@ -39,7 +40,7 @@ export function AppShell() {
   }
 
   return (
-    <>
+    <PrintController>
       <div className={[styles.root, 'fp-screen'].join(' ')}>
       {state.activeView === 'settings' ? (
         <SettingsScreen />
@@ -54,9 +55,9 @@ export function AppShell() {
       <BookingModal />
       <Toast message={state.toast} />
       </div>
-      {/* Paper view. Hidden on screen, so the browser's print preview IS the preview — and Cmd+P
-          produces the sheet without going near the toolbar. */}
+      {/* Paper view. Hidden on screen; it is what the browser's own File › Print prints. Cmd+P is
+          taken over to print through the print viewer instead (PrintController). */}
       <PrintSheet />
-    </>
+    </PrintController>
   );
 }

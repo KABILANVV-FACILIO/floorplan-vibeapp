@@ -27,7 +27,7 @@ const GUTTER = 24;
  * The whole floor comes first; in "Floor + details" a zoomed page for every area of desks follows
  * it. The grey area scrolls through them, one page fitting in view.
  */
-export function PrintViewer({ onClose }: { onClose: () => void }) {
+export function PrintViewer({ onClose, printRequest = 0 }: { onClose: () => void; /** Bumped to print straight away (Cmd+P). */ printRequest?: number }) {
   const { state, actions } = useFloorplan();
   const meta = floorMeta(state, state.floorId);
   const floorTitle = meta ? meta.floor.name : 'Floor plan';
@@ -91,6 +91,17 @@ export function PrintViewer({ onClose }: { onClose: () => void }) {
       setBusy(null);
     }
   }
+
+  // Cmd+P: print as soon as the pages are drawn. An effect runs after they are laid out; the short
+  // timer lets a viewer opened by the key press paint first. (A timer, not animation frames, which
+  // never fire in a background tab.)
+  useEffect(() => {
+    if (!printRequest) return;
+    const t = setTimeout(() => void onPrint(), 30);
+    return () => clearTimeout(t);
+    // Only a new request prints; onPrint is re-created every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [printRequest]);
 
   async function onDownload() {
     const pages = Array.from(pagesRef.current?.querySelectorAll<HTMLElement>('[data-print-page]') ?? []);

@@ -1,7 +1,6 @@
-import { useState } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { myAssignedUnit } from '../../state/selectors';
-import { PrintViewer } from '../print/PrintViewer';
+import { usePrintViewer } from '../print/PrintController';
 import styles from './Toolbar.module.css';
 
 export function Toolbar({ leftPad, rightPad }: { leftPad: number; rightPad: number }) {
@@ -10,7 +9,7 @@ export function Toolbar({ leftPad, rightPad }: { leftPad: number; rightPad: numb
   // Mock tier derives "my desk" from local assignments; the real backend provides it via
   // servicePortalHome (state.myDesk). Either one lights the button up.
   const hasMyDesk = !!myUnit || !!state.myDesk;
-  const [printOpen, setPrintOpen] = useState(false);
+  const openPrint = usePrintViewer();
 
   function onMyDesk() {
     if (myUnit) actions.focusUnit(myUnit.id, state.stage.w, state.stage.h, { select: false });
@@ -54,10 +53,10 @@ export function Toolbar({ leftPad, rightPad }: { leftPad: number; rightPad: numb
 
         {/* PRINT the floor as the sheet designed for it — the title block, a card per module, the
             occupancy legend and the plan itself (see components/print/PrintSheet). This opens the
-            print viewer: the page as it will come out, with Print and Download PDF. Cmd+P still
-            prints the same sheet directly. Editing the plan is not a state you print from. */}
+            print viewer: the page as it will come out, with Print and Download PDF (Cmd+P opens it
+            too, and prints — see PrintController). Editing the plan is not a state you print from. */}
         {state.mode !== 'edit' && (
-          <button className={styles.iconToggle} data-tip="Print this floor" aria-label="Print this floor" onClick={() => setPrintOpen(true)}>
+          <button className={styles.iconToggle} data-tip="Print this floor" aria-label="Print this floor" onClick={() => openPrint()}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
               <path d="M6 9V3h12v6" />
               <rect x="4" y="9" width="16" height="8" rx="2" />
@@ -103,7 +102,6 @@ export function Toolbar({ leftPad, rightPad }: { leftPad: number; rightPad: numb
           </svg>
         </button>
       </div>
-      {printOpen && <PrintViewer onClose={() => setPrintOpen(false)} />}
     </div>
   );
 }
