@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { DragEvent as ReactDragEvent, ReactNode } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { contactName, moduleEnabled, unitById } from '../../state/selectors';
 import { polyAreaM2, unitSortCompare } from '../../lib/geometry';
 import { BUILTIN_MARKERS, DESK_TYPES, floorImageKey, isRoomLike, isZoneTool, TYPE_META } from '../../lib/types';
@@ -97,7 +97,7 @@ function MarkerChipContent({ def }: { def: MarkerDef }) {
 }
 
 export function EditPanel() {
-  const { state } = useFloorplan();
+  const { state } = useFloorplanData();
   const [tab, setTab] = useState<'tools' | 'markers'>('tools');
   return (
     <div className={styles.stack}>
@@ -120,7 +120,7 @@ export function EditPanel() {
 }
 
 function ToolsTab() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
 
   const armedDef = state.tool === 'amenity' ? [...BUILTIN_MARKERS, ...state.customMarkers].find((m) => m.id === state.markerKind) : undefined;
   const placingUnit = state.placingUnitId ? state.unplacedUnits.find((u) => u.id === state.placingUnitId) : undefined;
@@ -260,7 +260,7 @@ function ToolsTab() {
 }
 
 function MarkersTab() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const [formOpen, setFormOpen] = useState(false);
   const [nmName, setNmName] = useState('');
   const [nmText, setNmText] = useState('');
@@ -366,7 +366,7 @@ function MarkersTab() {
 }
 
 function Inspector() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const sel = unitById(state, state.selected);
   const multi = state.multiSelected;
 
@@ -481,7 +481,7 @@ function Inspector() {
  * Only same-type unplaced records are offered, because that is the swap the action accepts.
  */
 function RecordSwap({ sel }: { sel: Unit }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   // Amenities and library markers aren't records. Everything else is, zones included: a traced
   // room is bound to a space record exactly as a marker is bound to a desk.
   if (sel.type === 'amenity') return null;
@@ -512,13 +512,13 @@ function RecordSwap({ sel }: { sel: Unit }) {
 
 /** The marker's current state — the same pill the canvas and the spaces list show. */
 function InspectorStatus({ sel }: { sel: Unit }) {
-  const { state } = useFloorplan();
+  const { state } = useFloorplanData();
   const status = unitStatus(state, sel, (id) => contactName(state, id));
   return <StatusPill label={status.text} bg={status.bg} fg={status.fg} />;
 }
 
 function CalibrationCard() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const calibReady = state.calib.length === 2;
   return (
     <div className={card.card}>
@@ -577,7 +577,7 @@ function makeAssetDragImage(): HTMLElement {
 }
 
 function AssetListCard() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const [assetQuery, setAssetQuery] = useState('');
   // The only thing that reads the asset catalog, so it is also the only thing that fetches it.
   useEffect(() => {

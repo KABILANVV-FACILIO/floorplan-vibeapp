@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { Modal, ModalFooter, ModalHeader } from '../primitives/Modal';
 import { Button } from '../primitives/Button';
 import { Select } from '../primitives/Select';
@@ -36,7 +36,7 @@ const KIND_LABEL: Record<CadGroup['kind'], string> = {
 };
 
 export function AutoMapModal() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const groups = state.autoMapGroups;
   const [mapping, setMapping] = useState<Record<string, Mapping>>({});
 

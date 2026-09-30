@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { conflictsFor, contactName, floorMeta, isBookable, moduleEnabled } from '../../state/selectors';
 import { fmtTime } from '../../lib/geometry';
 import { dataSource } from '../../lib/dataSource';
@@ -17,7 +17,7 @@ import styles from './BookingsView.module.css';
  * floor (PortfolioTree calls selectFloor) reloads units/bookings in place and closes it.
  */
 function LocationSwitcher() {
-  const { state } = useFloorplan();
+  const { state } = useFloorplanData();
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const meta = floorMeta(state, state.floorId);
@@ -124,7 +124,7 @@ function shortDate(iso: string): string {
 }
 
 export function BookingsView() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const meta = floorMeta(state, state.floorId);
 
   const [layout, setLayout] = useState<'calendar' | 'grid'>('calendar');

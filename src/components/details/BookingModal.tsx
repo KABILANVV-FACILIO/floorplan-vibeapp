@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { unitById } from '../../state/selectors';
 import { fmtTime } from '../../lib/geometry';
 import { isFacilioApiConfigured } from '../../lib/facilioApi';
@@ -59,7 +59,7 @@ function fromLocalInput(v: string): { date: string; minutes: number } {
 }
 
 export function BookingModal() {
-  const { state } = useFloorplan();
+  const { state } = useFloorplanData();
   if (!state.bookForm) return null;
   const target = state.bookForm;
   // Remount (fresh field state) whenever the form opens for a different resource/window.
@@ -67,7 +67,7 @@ export function BookingModal() {
 }
 
 function BookingFormInner() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const target = state.bookForm!;
   const unit = unitById(state, target.unitId);
   const module = state.bookingModule;

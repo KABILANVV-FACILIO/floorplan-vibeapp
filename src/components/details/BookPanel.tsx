@@ -1,6 +1,6 @@
 import { useRef } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { bookedUnitIds, conflictsFor, contactName, isBookable, unitById, visibleUnits } from '../../state/selectors';
 import { fmtTime } from '../../lib/geometry';
 import { DatePicker } from '../primitives/DatePicker';
@@ -17,7 +17,7 @@ const WIN_E = 1200;
 const PXH = 28;
 
 export function BookPanel() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const sel = unitById(state, state.selected);
   // Through `visibleUnits`, so a module switched off in Settings leaves no bookable resources
   // behind — the availability count and the "N free" summary are user-facing surfaces like any
@@ -110,7 +110,7 @@ export function BookPanel() {
 }
 
 function ScheduleList({ unitId }: { unitId: string }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const dayBookings = state.units.length
     ? state.bookings.filter((b) => b.unitId === unitId && b.date === state.date).sort((a, b) => a.start - b.start)
     : [];
@@ -148,7 +148,7 @@ function minutesAtClientY(rect: DOMRect, clientY: number, snap: number) {
 }
 
 function DayTimeline({ unitId }: { unitId: string }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const height = ((WIN_E - WIN_S) / 60) * PXH;
   const dayBookings = state.bookings.filter((b) => b.unitId === unitId && b.date === state.date);
   const hours = Array.from({ length: (WIN_E - WIN_S) / 60 + 1 }, (_, i) => WIN_S + i * 60);

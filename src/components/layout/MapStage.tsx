@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import type { RefObject } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { floorMeta } from '../../state/selectors';
 import { Canvas } from '../canvas/Canvas';
 import { EmptyPlanState } from '../canvas/EmptyPlanState';
@@ -18,7 +18,7 @@ import { floorImageKey } from '../../lib/types';
 import styles from './MapStage.module.css';
 
 export function MapStage({ stageRef }: { stageRef: RefObject<HTMLDivElement> }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
 
   // Keep state.stage in sync from the stage wrapper itself. The Canvas has its
   // own observer, but it's unmounted while the loading skeleton (or the empty

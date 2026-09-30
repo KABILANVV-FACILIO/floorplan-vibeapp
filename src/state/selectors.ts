@@ -6,9 +6,55 @@ import type { Booking, Employee, Unit, UnitType } from '../lib/types';
 import type { AppState } from './types';
 import { departmentDisplayName, personDisplayName, personInitials, shortPersonName } from '../lib/displayNames';
 
+/*
+ * Lookups by id, indexed once per array and cached on the array itself (a WeakMap, so a replaced
+ * array simply gets a new index and the old one is collected). Every marker on the plan asks for
+ * its holder, its unit and whether it is the user's own desk on every render; against a roster of
+ * 2,600 employees a linear `find` per marker per frame was most of what made panning a 400-desk
+ * floor drop frames.
+ */
+const employeeIndexes = new WeakMap<Employee[], Map<string, Employee>>();
+export function employeeIndex(employees: Employee[]): Map<string, Employee> {
+  let m = employeeIndexes.get(employees);
+  if (!m) {
+    m = new Map(employees.map((e) => [e.id, e]));
+    employeeIndexes.set(employees, m);
+  }
+  return m;
+}
+const unitIndexes = new WeakMap<Unit[], Map<string, Unit>>();
+export function unitIndex(units: Unit[]): Map<string, Unit> {
+  let m = unitIndexes.get(units);
+  if (!m) {
+    m = new Map(units.map((u) => [u.id, u]));
+    unitIndexes.set(units, m);
+  }
+  return m;
+}
+/** Which unit each person holds — the first one, as `Object.entries(...).find` answered. */
+const holdings = new WeakMap<AppState['assignments'], Map<string, string>>();
+export function unitHeldBy(assignments: AppState['assignments']): Map<string, string> {
+  let m = holdings.get(assignments);
+  if (!m) {
+    m = new Map();
+    for (const [unitId, contactId] of Object.entries(assignments)) if (!m.has(contactId)) m.set(contactId, unitId);
+    holdings.set(assignments, m);
+  }
+  return m;
+}
+const selectionSets = new WeakMap<string[], Set<string>>();
+export function multiSelectedSet(ids: string[]): Set<string> {
+  let s = selectionSets.get(ids);
+  if (!s) {
+    s = new Set(ids);
+    selectionSets.set(ids, s);
+  }
+  return s;
+}
+
 export function unitById(state: AppState, id: string | null | undefined): Unit | null {
   if (!id) return null;
-  return state.units.find((u) => u.id === id) ?? null;
+  return unitIndex(state.units).get(id) ?? null;
 }
 
 /**
@@ -32,7 +78,7 @@ export function enabledTypes(state: AppState, types: UnitType[]): UnitType[] {
 
 export function contactById(state: AppState, id: string | null | undefined): Employee | null {
   if (!id) return null;
-  return state.employees.find((c) => c.id === id) ?? null;
+  return employeeIndex(state.employees).get(id) ?? null;
 }
 
 /**
@@ -88,9 +134,8 @@ export function isAssignable(u: Unit): boolean {
 }
 
 export function myAssignedUnit(state: AppState): Unit | null {
-  const mine = Object.entries(state.assignments).find(([, contactId]) => contactId === state.bookBy);
-  if (!mine) return null;
-  return unitById(state, mine[0]);
+  const mine = unitHeldBy(state.assignments).get(state.bookBy);
+  return mine ? unitById(state, mine) : null;
 }
 
 export function floorMeta(state: AppState, floorId: string) {

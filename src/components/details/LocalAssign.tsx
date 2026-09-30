@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import type { Unit } from '../../lib/types';
 import { Button } from '../primitives/Button';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
@@ -15,7 +15,7 @@ import styles from './AssignPanel.module.css';
  * here was a second, smaller people list that only this panel had.
  */
 export function LocalAssign({ unit }: { unit: Unit }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const [picking, setPicking] = useState(false);
   const [vacating, setVacating] = useState(false);
   const assigned = !!state.assignments[unit.id];

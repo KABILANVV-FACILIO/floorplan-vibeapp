@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { floorMeta } from '../../state/selectors';
 import { orgNow } from '../../lib/orgTime';
 import { Modal, ModalFooter, ModalHeader } from '../primitives/Modal';
@@ -28,7 +28,7 @@ const GUTTER = 24;
  * it. The grey area scrolls through them, one page fitting in view.
  */
 export function PrintViewer({ onClose, printRequest = 0 }: { onClose: () => void; /** Bumped to print straight away (Cmd+P). */ printRequest?: number }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const meta = floorMeta(state, state.floorId);
   const floorTitle = meta ? meta.floor.name : 'Floor plan';
 

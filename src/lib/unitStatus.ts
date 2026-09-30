@@ -1,6 +1,6 @@
 import type { AppState } from '../state/types';
 import { personInitials } from './displayNames';
-import { conflictsFor, isAssignable, isBookable } from '../state/selectors';
+import { conflictsFor, contactById, isAssignable, isBookable, multiSelectedSet } from '../state/selectors';
 import { isRoomLike, resolveMarkerDef, STATE_DEFS } from './types';
 import { departmentColor, departmentsIn } from './departmentColors';
 import type { Unit } from './types';
@@ -56,7 +56,7 @@ export interface MarkerStyle {
 export function markerStyle(state: AppState, unit: Unit, markerScale = 1): MarkerStyle {
   const size = Math.round(24 * markerScale);
   const radius = unit.type === 'parking' ? '999px' : unit.type === 'locker' ? '4px' : '6px';
-  const selected = state.selected === unit.id || state.multiSelected.includes(unit.id);
+  const selected = state.selected === unit.id || multiSelectedSet(state.multiSelected).has(unit.id);
   // In edit mode, hovering a compatible drag over a marker rings it green — the drop
   // will REPLACE this marker's record (see placeUnitOnUnit), not stack a second one.
   const dropTarget = state.mode === 'edit' && state.dragOverId === unit.id;
@@ -183,7 +183,7 @@ function initialsOf(name: string): string {
   return personInitials(name);
 }
 function contactNameFallback(state: AppState, contactId: string): string {
-  return state.employees.find((e) => e.id === contactId)?.name ?? contactId;
+  return contactById(state, contactId)?.name ?? contactId;
 }
 
 export function unitStatus(state: AppState, unit: Unit, contactName: (id: string) => string): UnitStatus {

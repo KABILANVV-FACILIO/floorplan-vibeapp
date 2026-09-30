@@ -1,4 +1,4 @@
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { unitById } from '../../state/selectors';
 import { fmtTime } from '../../lib/geometry';
 import { TYPE_META } from '../../lib/types';
@@ -11,7 +11,7 @@ import styles from './MobileMyBookings.module.css';
  * locate the space on the plan, or cancel it.
  */
 export function MobileMyBookings({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const sheetRef = useSheetDrag(onClose, open);
   if (!open) return null;
 

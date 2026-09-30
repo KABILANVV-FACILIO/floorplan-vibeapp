@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import type { DragEvent as ReactDragEvent } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { Modal, ModalFooter, ModalHeader } from '../primitives/Modal';
 import { Button } from '../primitives/Button';
 import { isCadFile } from '../../lib/cadPreview';
@@ -15,7 +15,7 @@ import styles from './FloorUploadModal.module.css';
 const ACCEPT = '.png,.jpg,.jpeg,.pdf,.dwg,.dxf,image/png,image/jpeg,application/pdf';
 
 export function FloorUploadModal() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const inputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<'idle' | 'working' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);

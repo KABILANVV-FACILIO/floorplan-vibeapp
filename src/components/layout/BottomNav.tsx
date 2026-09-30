@@ -1,10 +1,10 @@
 import type { ReactNode } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import styles from './BottomNav.module.css';
 
 /** App-level navigation, moved out of the (removed) left sidebar into a floating bottom bar. */
 export function BottomNav() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const view = state.activeView;
 
   return (

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useLivePeople } from '../../hooks/useLivePeople';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { assignEmployeeToRecord, resolveUnitRecord } from '../../lib/facilioApiDataSource';
 import { initials } from '../../state/selectors';
 import { byPersonName, personDisplayName } from '../../lib/displayNames';
@@ -26,7 +26,7 @@ import styles from './AssignEmployeeModal.module.css';
  * somewhere else.
  */
 export function AssignEmployeeModal({ unit, onClose }: { unit: Unit; onClose: () => void }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const [query, setQuery] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
 

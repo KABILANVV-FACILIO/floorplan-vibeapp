@@ -1,4 +1,4 @@
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { Modal, ModalFooter, ModalHeader } from '../primitives/Modal';
 import { Button } from '../primitives/Button';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
@@ -6,7 +6,7 @@ import { ButtonSpinner } from '../primitives/ButtonSpinner';
 const MODE_LABEL: Record<string, string> = { assign: 'Assignment', book: 'Booking' };
 
 export function UnsavedChangesModal() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   if (!state.pendingModeSwitch) return null;
 
   const targetLabel = MODE_LABEL[state.pendingModeSwitch] ?? state.pendingModeSwitch;

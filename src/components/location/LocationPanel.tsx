@@ -1,4 +1,4 @@
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { floorMeta, moduleEnabled } from '../../state/selectors';
 import { usePanelDrag } from '../../hooks/usePanelDrag';
 import { isFacilioApiConfigured } from '../../lib/facilioApi';
@@ -20,7 +20,7 @@ const LocationIcon = (
 );
 
 export function LocationPanel() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const drag = usePanelDrag('portfolio', PANEL_WIDTH);
   const meta = floorMeta(state, state.floorId);
   const floor = meta?.floor;

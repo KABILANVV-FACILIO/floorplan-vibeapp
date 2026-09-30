@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { initials, visibleUnits } from '../../state/selectors';
 import { byPersonName, departmentDisplayName, employeeNumber, personDisplayName } from '../../lib/displayNames';
 import { facilioRecordUrl } from '../../lib/facilioApi';
@@ -8,7 +8,7 @@ import styles from './PeopleView.module.css';
 
 /** Simple directory of employees. Assigned desks are derived from `state.assignments`. */
 export function PeopleView() {
-  const { state } = useFloorplan();
+  const { state } = useFloorplanData();
   const [search, setSearch] = useState('');
 
   const deskByContact = useMemo(() => {

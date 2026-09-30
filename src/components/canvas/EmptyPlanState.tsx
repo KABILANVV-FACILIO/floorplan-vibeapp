@@ -1,10 +1,10 @@
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { floorMeta } from '../../state/selectors';
 import { PLAN_TYPE_MAPS, PLAN_TYPE_NAME } from '../../lib/types';
 import { Button } from '../primitives/Button';
 
 export function EmptyPlanState() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const floor = floorMeta(state, state.floorId)?.floor;
   const planName = PLAN_TYPE_NAME[state.planId];
 

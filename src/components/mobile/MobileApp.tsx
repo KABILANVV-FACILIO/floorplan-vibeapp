@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { floorMeta, isBookable, visibleUnits } from '../../state/selectors';
 import { isRoomLike } from '../../lib/types';
 import { fitView, fmtTime, polygonCentroid, zoomAt } from '../../lib/geometry';
@@ -29,7 +29,7 @@ interface MobileAppProps {
 }
 
 export function MobileApp({ mode, onClose }: MobileAppProps) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const meta = floorMeta(state, state.floorId);
   const hasPlan = !!meta?.floor.hasPlan;
   const myUnit = myAssignedUnit(state);
@@ -211,7 +211,7 @@ function MobileMap({
   legend: { label: string; color: string }[];
   onOpenSpaces: () => void;
 }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const wrapRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<ViewTransform | null>(null);
   const viewRef = useRef<ViewTransform | null>(null);

@@ -17,6 +17,7 @@ import type { Unit } from '../../lib/types';
 const store: { state: AppState } = { state: buildInitialState() };
 vi.mock('../../state/FloorplanContext', () => ({
   useFloorplan: () => ({ state: store.state, actions: new Proxy({}, { get: () => vi.fn() }) }),
+  useFloorplanData: () => ({ state: store.state, actions: new Proxy({}, { get: () => vi.fn() }) }),
 }));
 vi.mock('../../lib/pdfPreview', () => ({ renderPdfToDataUrl: vi.fn() }));
 vi.mock('../../lib/cadPreview', () => ({ renderCadToDataUrl: vi.fn() }));

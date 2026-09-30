@@ -1,5 +1,5 @@
 import type { MouseEvent as ReactMouseEvent } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { clipPathFor } from '../../lib/geometry';
 import { IMG_H, IMG_W } from '../../lib/mockData';
 import { conflictsFor, isAssignable, isBookable } from '../../state/selectors';
@@ -16,7 +16,7 @@ export function RoomPolygon({
   /** True while the click ending a gesture (a pan or drag that started inside this room) is to be ignored. */
   clickSuppressed?: () => boolean;
 }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const geom = unit.geom as PolyGeom;
   const selected = state.selected === unit.id;
   // An armed "Available to place" desk, locker or stall places where the plan is clicked — inside a

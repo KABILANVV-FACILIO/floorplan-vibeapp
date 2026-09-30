@@ -1,4 +1,4 @@
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { useSheetDrag } from './useSheetDrag';
 import { Calendar, toISO } from '../primitives/Calendar';
 import styles from './MobileDatePicker.module.css';
@@ -12,7 +12,7 @@ import styles from './MobileDatePicker.module.css';
  * calendar itself is the shared one.
  */
 export function MobileDatePicker({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const sheetRef = useSheetDrag(onClose, open);
 
   if (!open) return null;

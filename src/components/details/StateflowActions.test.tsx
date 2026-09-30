@@ -36,12 +36,14 @@ const recordChanged = vi.fn(() => {
   store.recordNonce += 1;
 });
 
-vi.mock('../../state/FloorplanContext', () => ({
-  useFloorplan: () => ({
+vi.mock('../../state/FloorplanContext', () => {
+  const ctx = () => ({
     state: { ...store },
     actions: { openPanel, showToast, markAssigned, assign, setUnitBusy, refreshAssignments, recordChanged },
-  }),
-}));
+  });
+  // Both hooks read the same test store: nothing here pans the plan.
+  return { useFloorplan: ctx, useFloorplanData: ctx };
+});
 vi.mock('../../lib/facilioApiDataSource', () => ({
   resolveUnitRecord: (u: { id: string }) => (/^\d+$/.test(u.id) ? { moduleName: 'desks', recordId: Number(u.id) } : null),
   invalidateUnitRecordInfo,

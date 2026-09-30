@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { BottomNav } from './BottomNav';
 import { MapStage } from './MapStage';
@@ -14,7 +14,7 @@ import { Toast } from '../primitives/Toast';
 import styles from './AppShell.module.css';
 
 export function AppShell() {
-  const { state } = useFloorplan();
+  const { state } = useFloorplanData();
   const isMobileViewport = useMediaQuery('(max-width: 720px)');
   const stageRef = useRef<HTMLDivElement>(null);
 

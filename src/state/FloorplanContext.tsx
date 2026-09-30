@@ -18,6 +18,7 @@ import { pathForView, viewFromLocation } from '../lib/routes';
 import { bootFloorCandidates, readUrlFloorId, writeUrlFloorId } from '../lib/urlFloor';
 import { persistUnits, ROOM_NOTICE_MS, ROOM_OUTLINES_FAILED_NOTICE, ROOM_READ_ONLY_HINT, savedNotice } from './persistUnits';
 import { buildInitialState, reducer } from './reducer';
+import { useDataState } from './useDataState';
 import type { Action } from './reducer';
 import type { AppState } from './types';
 import { conflictsFor, isAssignable, nextLabel, unitById } from './selectors';
@@ -29,6 +30,22 @@ interface Ctx {
 }
 
 const FloorplanCtx = createContext<Ctx | null>(null);
+/** The same store without its view: what everything except the plan reads (see useFloorplanData). */
+const FloorplanDataCtx = createContext<Ctx | null>(null);
+
+/**
+ * The actions object every data consumer gets: built once, each method calling the CURRENT
+ * action of that name. `actions` itself is rebuilt on every state change (its closures read the
+ * state), and a context value carrying it would change on every pan.
+ */
+function delegatingActions(get: () => Ctx['actions']): Ctx['actions'] {
+  const out: Record<string, unknown> = {};
+  const now = get() as unknown as Record<string, unknown>;
+  for (const k of Object.keys(now)) {
+    out[k] = typeof now[k] === 'function' ? (...args: unknown[]) => ((get() as unknown as Record<string, (...a: unknown[]) => unknown>)[k])(...args) : now[k];
+  }
+  return out as unknown as Ctx['actions'];
+}
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 /** Whether this session has shown the "room changes can't be saved yet" hint (see roomReadOnlyHint). */
@@ -576,6 +593,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
 
     setStageSize: (w: number, h: number) => dispatch({ type: 'SET_STAGE_SIZE', w, h }),
 
+    /** The whole plan on screen. */
     fitView: (rectW: number, rectH: number) => {
       dispatch({ type: 'MARK_USER_ZOOMED', value: false });
       dispatch({ type: 'SET_VIEW', view: fitViewFn(rectW, rectH, viewInsets(state)) });
@@ -1556,11 +1574,36 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo(() => ({ state, actions }), [state, actions]);
 
-  return <FloorplanCtx.Provider value={value}>{children}</FloorplanCtx.Provider>;
+  // The view-less store for everything that doesn't draw the plan: the same state object until
+  // something other than the view changes, and actions whose identity never changes — so a pan
+  // frame reaches none of those components (see state/useDataState).
+  const data = useDataState(state);
+  const actionsRef = useRef(actions);
+  actionsRef.current = actions;
+  const stableActions = useMemo(() => delegatingActions(() => actionsRef.current), []);
+  const dataValue = useMemo(() => ({ state: data, actions: stableActions }), [data, stableActions]);
+
+  return (
+    <FloorplanCtx.Provider value={value}>
+      <FloorplanDataCtx.Provider value={dataValue}>{children}</FloorplanDataCtx.Provider>
+    </FloorplanCtx.Provider>
+  );
 }
 
 export function useFloorplan(): Ctx {
   const ctx = useContext(FloorplanCtx);
   if (!ctx) throw new Error('useFloorplan must be used within FloorplanProvider');
+  return ctx;
+}
+
+/**
+ * The store for components that don't draw the plan's position: the same `state` object back
+ * until something other than the view changes, and actions that never change identity. A pan or
+ * zoom re-renders nothing that reads the store this way. `state.view` here may be stale — read it
+ * through useFloorplan instead.
+ */
+export function useFloorplanData(): Ctx {
+  const ctx = useContext(FloorplanDataCtx);
+  if (!ctx) throw new Error('useFloorplanData must be used within FloorplanProvider');
   return ctx;
 }

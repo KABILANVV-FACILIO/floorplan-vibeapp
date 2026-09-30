@@ -19,6 +19,8 @@ const actions = new Proxy({} as Record<string, ReturnType<typeof vi.fn>>, {
 const store: { state: AppState } = { state: buildInitialState() };
 vi.mock('../../state/FloorplanContext', () => ({
   useFloorplan: () => ({ state: store.state, actions }),
+  // The view-less store reads the same test state: nothing here pans.
+  useFloorplanData: () => ({ state: store.state, actions }),
 }));
 vi.mock('../../lib/pdfPreview', () => ({ renderPdfToDataUrl: vi.fn() }));
 vi.mock('../../lib/cadPreview', () => ({ renderCadToDataUrl: vi.fn() }));

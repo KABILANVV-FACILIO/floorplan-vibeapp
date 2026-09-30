@@ -1,10 +1,10 @@
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { myAssignedUnit } from '../../state/selectors';
 import { usePrintViewer } from '../print/PrintController';
 import styles from './Toolbar.module.css';
 
 export function Toolbar({ leftPad, rightPad }: { leftPad: number; rightPad: number }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const myUnit = myAssignedUnit(state);
   // Mock tier derives "my desk" from local assignments; the real backend provides it via
   // servicePortalHome (state.myDesk). Either one lights the button up.

@@ -1,6 +1,6 @@
 import { useRef } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
-import { useFloorplan } from '../state/FloorplanContext';
+import { useFloorplanData } from '../state/FloorplanContext';
 import { panelMaxHeight } from '../lib/geometry';
 
 interface DragSession {
@@ -13,7 +13,7 @@ interface DragSession {
 
 /** Drag/collapse behavior for a floating panel, mirroring the original startPanelDrag/onPanelDragMove logic. */
 export function usePanelDrag(id: 'context' | 'portfolio' | 'details', width: number) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const dragRef = useRef<DragSession | null>(null);
   const suppressClickRef = useRef(false);
 

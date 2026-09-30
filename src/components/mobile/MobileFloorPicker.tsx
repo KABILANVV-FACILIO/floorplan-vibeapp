@@ -1,4 +1,4 @@
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { useSheetDrag } from './useSheetDrag';
 import styles from './MobileFloorPicker.module.css';
 
@@ -30,7 +30,7 @@ function LevelIcon({ kind }: { kind: LevelKind }) {
 }
 
 export function MobileFloorPicker() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const sheetRef = useSheetDrag(() => actions.setMobFloorOpen(false), state.mobFloorOpen);
   if (!state.mobFloorOpen) return null;
 

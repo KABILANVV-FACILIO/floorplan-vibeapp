@@ -1,4 +1,4 @@
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { moduleColor } from '../../lib/unitStatus';
 import { AMENITY_META, isRoomLike, TYPE_META } from '../../lib/types';
 import { enabledTypes } from '../../state/selectors';
@@ -57,7 +57,7 @@ export function legendItems(state: AppState): { label: string; color: string }[]
 }
 
 export function Legend() {
-  const { state } = useFloorplan();
+  const { state } = useFloorplanData();
   const items = legendItems(state);
 
   return (

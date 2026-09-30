@@ -11,13 +11,34 @@ import { Legend } from './Legend';
 import { ZoomControls } from './ZoomControls';
 import { Tooltip } from './Tooltip';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
-import { isBookable, markerLabelInputs, myAssignedUnit, planMarkers, planRooms, roomLabelInputs, visibleUnits } from '../../state/selectors';
+import { isBookable, markerLabelInputs, planMarkers, planRooms, roomLabelInputs, visibleUnits } from '../../state/selectors';
 import { planMarkerLabels, planRoomLabels } from '../../lib/labelLayout';
+import type { LabelPlacement } from '../../lib/labelLayout';
+import { markerModel } from '../../lib/markerModel';
+import type { MarkerHandlers } from './Marker';
+import { useDataState } from '../../state/useDataState';
 import { floorImageKey, isRoomLike, isZoneTool, unitOnPlan } from '../../lib/types';
 import type { PolyGeom, Unit, UnitGeom } from '../../lib/types';
 import styles from './Canvas.module.css';
 
 const DRAW_TOOLS = new Set(['room', 'delivery', 'workstation', 'locker', 'parking', 'amenity', 'calibrate']);
+
+/**
+ * The label plan with each marker's placement kept as the SAME object while it says the same
+ * thing, so a zoom step re-renders only the markers whose label actually changed.
+ */
+function useStablePlacements(next: Map<string, LabelPlacement>): Map<string, LabelPlacement> {
+  const prevRef = useRef(next);
+  const prev = prevRef.current;
+  if (prev === next) return next;
+  const out = new Map<string, LabelPlacement>();
+  for (const [id, p] of next) {
+    const q = prev.get(id);
+    out.set(id, q && q.name === p.name && q.sub === p.sub && q.dept === p.dept && q.subWidth === p.subWidth ? q : p);
+  }
+  prevRef.current = out;
+  return out;
+}
 
 /**
  * Live edit-gesture preview, applied to rendering only — the store commits
@@ -513,49 +534,104 @@ export function Canvas() {
     return u.geom;
   }
 
+  // Everything the plan draws is derived from `data` — the state minus its view — so a pan frame
+  // (which changes only the view) reuses all of it and re-renders no marker (see useDataState).
+  const data = useDataState(state);
+
   // poly-guard matters: connector-tier spaces arrive without plan geometry
   // (listed in the sidebar, not drawn) — RoomPolygon would crash on them.
   // `visibleUnits` drops anything whose module is switched off, so a disabled module leaves
   // nothing on the plan — not an empty outline, not a hit target.
   // What the plan draws — the same rule the print sheet uses (see planRooms / planMarkers).
-  const rooms = planRooms(state).map((u) => ({ ...u, geom: previewedGeom(u) }));
-  const markers = planMarkers(state).map((u) => ({ ...u, geom: previewedGeom(u) }));
+  // `previewedGeom` reads editPreview and multiSel; multiSel comes from `data`.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const rooms = useMemo(() => planRooms(data).map((u) => ({ ...u, geom: previewedGeom(u) })), [data, editPreview]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const markers = useMemo(() => planMarkers(data).map((u) => ({ ...u, geom: previewedGeom(u) })), [data, editPreview]);
+  // What each marker shows (chip colours, holder, title) — once per data change, not per marker
+  // per render (see lib/markerModel).
+  const models = useMemo(() => new Map(markers.map((m) => [m.id, markerModel(data, m)])), [data, markers]);
 
   // Which of those markers may show a label, and which would land on a neighbour. Labels keep a
   // constant screen size while the gaps between markers shrink with the zoom, so on a dense floor
   // the only thing that decides legibility is whether the label actually fits — not the zoom level
-  // (see lib/labelLayout).
-  const mineId = myAssignedUnit(state)?.id ?? null;
-  const labelsOn = state.mode === 'assign' || state.mode === 'book';
-  const labelPlan = useMemo(() => {
-    const inputs = markerLabelInputs(state, markers);
-    return planMarkerLabels(inputs, { planW: IMG_W, planH: IMG_H, zoom: state.view.z });
-    // Deliberately NOT `markers`: that array is rebuilt on every render, so depending on it would
-    // re-run the whole layout on every pan frame. These are what `markers` is actually built from,
-    // plus the zoom — the only thing that can change which labels collide.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    state.units,
-    state.enabledModules,
-    state.planId,
-    editPreview,
-    labelsOn,
-    mineId,
-    state.selected,
-    state.assignments,
-    state.mode,
-    state.view.z,
-  ]);
+  // (see lib/labelLayout). The zoom is the one view field this depends on.
+  const labelPlan = useStablePlacements(
+    useMemo(() => planMarkerLabels(markerLabelInputs(data, markers), { planW: IMG_W, planH: IMG_H, zoom: state.view.z }), [data, markers, state.view.z]),
+  );
 
   // Which room names fit — inside their own room, and clear of each other — at this zoom. Room
   // names keep a constant screen size while the rooms shrink with the zoom, so on an onboarded
   // floor (dozens of small org rooms) they would otherwise pile up into one unreadable block (see
   // planRoomLabels). A room without its name still shows it once selected, and once zoomed in.
-  const roomLabelIds = useMemo(() => {
-    return planRoomLabels(roomLabelInputs(state, rooms), { planW: IMG_W, planH: IMG_H, zoom: state.view.z });
-    // Deliberately NOT `rooms` (rebuilt every render, as `markers` is above) — what it is built from.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.units, state.enabledModules, state.planId, editPreview, state.selected, state.mode, state.view.z]);
+  const roomLabelIds = useMemo(
+    () => planRoomLabels(roomLabelInputs(data, rooms), { planW: IMG_W, planH: IMG_H, zoom: state.view.z }),
+    [data, rooms, state.view.z],
+  );
+
+  // What a marker's click, press and drag-over do — decided here, where the mode, the tool and
+  // what is being dragged are known. The markers get ONE object that never changes (it reads the
+  // latest handlers through a ref), so a change of mode re-renders them for what they show, not
+  // for how they are handled.
+  const replaceMime = (unit: Unit) => `application/x-floorplan-unit-t-${unit.type}`;
+  const isReplaceDrag = (unit: Unit, e: ReactDragEvent) => state.mode === 'edit' && !isRoomLike(unit.type) && e.dataTransfer.types.includes(replaceMime(unit));
+  const markerHandlersNow: MarkerHandlers = {
+    onClick(unit, e) {
+      e.stopPropagation();
+      if (state.mode === 'edit' && state.tool !== 'select') return;
+      actions.selectUnit(unit.id);
+    },
+    onMouseDown(unit, e) {
+      startMarkerDrag(unit, e);
+    },
+    // Edit mode: a tray-record drag of the SAME type may drop onto this marker — the dragged
+    // record replaces this one's (this record moves to "Available to place"). The dragged unit's
+    // type travels as an extra mime suffix because dragover can only read types, not data.
+    onDragOver(unit, e) {
+      if (state.mode === 'edit') {
+        if (!isReplaceDrag(unit, e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'move';
+        if (state.dragOverId !== unit.id) actions.dragOverUnit(unit.id);
+        return;
+      }
+      if (state.mode !== 'assign') return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      if (state.dragOverId !== unit.id) actions.dragOverUnit(unit.id);
+    },
+    onDragLeave(unit) {
+      if (state.dragOverId === unit.id) actions.dragOverUnit(null);
+    },
+    onDrop(unit, e) {
+      if (state.mode === 'edit') {
+        if (!isReplaceDrag(unit, e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        actions.dragOverUnit(null);
+        const unitId = e.dataTransfer.getData('application/x-floorplan-unit');
+        if (unitId && unitId !== unit.id) actions.placeUnitOnUnit(unitId, unit.id);
+        return;
+      }
+      if (state.mode !== 'assign') return;
+      e.preventDefault();
+      const contactId = state.dragContactId || e.dataTransfer.getData('text/plain');
+      if (contactId) actions.assign(contactId, unit.id);
+    },
+  };
+  const markerHandlersRef = useRef(markerHandlersNow);
+  markerHandlersRef.current = markerHandlersNow;
+  const markerHandlers = useMemo<MarkerHandlers>(
+    () => ({
+      onClick: (u, e) => markerHandlersRef.current.onClick(u, e),
+      onMouseDown: (u, e) => markerHandlersRef.current.onMouseDown(u, e),
+      onDragOver: (u, e) => markerHandlersRef.current.onDragOver(u, e),
+      onDragLeave: (u) => markerHandlersRef.current.onDragLeave(u),
+      onDrop: (u, e) => markerHandlersRef.current.onDrop(u, e),
+    }),
+    [],
+  );
 
   const selectedRoom = isEditSelect && multiSel.size === 0 ? rooms.find((r) => r.id === state.selected) : undefined;
 
@@ -614,10 +690,11 @@ export function Canvas() {
         {markers.map((m) => (
           <Marker
             key={m.id}
-            unit={dragPreview?.id === m.id ? { ...m, geom: { kind: 'point', x: dragPreview.x, y: dragPreview.y } } : m}
-            invZ={Number(invZ)}
+            model={models.get(m.id)!}
             labels={labelPlan.get(m.id)}
-            onDragStart={startMarkerDrag}
+            // Only the marker being dragged gets a preview, so the drag re-renders that one alone.
+            previewGeom={dragPreview?.id === m.id ? { kind: 'point', x: dragPreview.x, y: dragPreview.y } : undefined}
+            handlers={markerHandlers}
           />
         ))}
 

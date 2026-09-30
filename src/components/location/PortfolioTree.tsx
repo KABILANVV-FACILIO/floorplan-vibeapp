@@ -1,4 +1,4 @@
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import type { FloorSearchHit } from '../../lib/types';
 import styles from './PortfolioTree.module.css';
 import search from './SpacesList.module.css';
@@ -27,7 +27,7 @@ interface FlatNode {
  * as empty; labelling it "no floors" / "no buildings" just adds noise to a tree of 431 buildings.
  */
 export function PortfolioTree() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const query = state.portfolioSearch;
   const searching = query.trim().length > 0;
 

@@ -1,4 +1,4 @@
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { usePanelDrag } from '../../hooks/usePanelDrag';
 import { FloatingPanel } from '../primitives/FloatingPanel';
 import { EditPanel } from './EditPanel';
@@ -17,7 +17,7 @@ const DetailsIcon = (
 const MODE_LABEL: Record<string, string> = { edit: 'Edit view', assign: 'Assignment view', book: 'Booking view' };
 
 export function DetailsPanel() {
-  const { state } = useFloorplan();
+  const { state } = useFloorplanData();
   const drag = usePanelDrag('details', PANEL_WIDTH);
 
   return (

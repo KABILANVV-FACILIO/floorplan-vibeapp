@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent as ReactDragEvent } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { contactName, initials, isAssignable, unitById, visibleUnits } from '../../state/selectors';
 import { byDepartmentName, departmentDisplayName, employeeNumber, personDisplayName } from '../../lib/displayNames';
 import { TYPE_META } from '../../lib/types';
@@ -23,7 +23,7 @@ import card from './Card.module.css';
 import styles from './AssignPanel.module.css';
 
 export function AssignPanel() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const sel = unitById(state, state.selected);
   const [dragId, setDragId] = useState<string | null>(null);
   const dragGhostRef = useRef<HTMLDivElement | null>(null);
@@ -276,7 +276,7 @@ export function AssignPanel() {
 
 /** Who the org says holds this record — the same thing the popover leads with. */
 function Holder({ unitId }: { unitId: string }) {
-  const { state } = useFloorplan();
+  const { state } = useFloorplanData();
   const contactId = state.assignments[unitId];
   // A write is in flight against THIS record, so who holds it is precisely what is changing —
   // the same rule the popover follows. Showing the outgoing holder until the write lands makes

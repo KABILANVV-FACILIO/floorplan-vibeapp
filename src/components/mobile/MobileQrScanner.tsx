@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { isBookable, visibleUnits } from '../../state/selectors';
 import type { Unit } from '../../lib/types';
 import styles from './MobileQrScanner.module.css';
@@ -42,7 +42,7 @@ interface BarcodeDetectorLike {
 }
 
 export function MobileQrScanner({ onClose }: { onClose: () => void }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [cameraState, setCameraState] = useState<'starting' | 'live' | 'unavailable'>('starting');
   const [manualCode, setManualCode] = useState('');

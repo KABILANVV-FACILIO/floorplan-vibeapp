@@ -1,4 +1,4 @@
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { ACTIONS, ROLES, STATE_DEFS, STATE_SWATCHES, TOGGLEABLE_MODULES, TYPE_META } from '../../lib/types';
 import type { ModuleKey, PermsAction, Role, UnitType } from '../../lib/types';
 import { moduleEnabled } from '../../state/selectors';
@@ -27,7 +27,7 @@ const SLOT_OPTIONS = [
 ];
 
 export function SettingsScreen() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
 
   return (
     <div className={styles.screen}>
@@ -77,7 +77,7 @@ const BOOKING_MODULES: { id: 'space' | 'facility'; name: string; desc: string }[
 ];
 
 function BookingsSettingsTab() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   return (
     <div className={styles.card}>
       <div className={styles.cardHead}>
@@ -139,7 +139,7 @@ function BookingsSettingsTab() {
 }
 
 function PermissionsTab() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   return (
     <div className={styles.stack}>
       <div className={styles.card}>
@@ -221,7 +221,7 @@ function PermissionsTab() {
 }
 
 function PermSwitch({ action, role }: { action: PermsAction; role: Role }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const on = state.perms[action].includes(role);
   return (
     <button className={[styles.switch, on ? styles.switchOn : ''].join(' ')} onClick={() => actions.togglePerm(action, role)}>
@@ -237,7 +237,7 @@ function PermSwitch({ action, role }: { action: PermsAction; role: Role }) {
  * workplace's, not one browser's.
  */
 function ModulesTab() {
-  const { state } = useFloorplan();
+  const { state } = useFloorplanData();
   const enabledCount = TOGGLEABLE_MODULES.filter((m) => state.enabledModules[m]).length;
 
   return (
@@ -274,7 +274,7 @@ const MODULE_BLURB: Record<ModuleKey, string> = {
 };
 
 function ModuleSwitch({ module, disabled }: { module: ModuleKey; disabled: boolean }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const on = state.enabledModules[module];
   return (
     <button
@@ -294,7 +294,7 @@ function ModuleSwitch({ module, disabled }: { module: ModuleKey; disabled: boole
 
 
 function ModuleTab({ type }: { type: UnitType }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const defs = STATE_DEFS[type];
   const showSlot = type !== 'locker';
 
@@ -367,7 +367,7 @@ function ModuleTab({ type }: { type: UnitType }) {
  * controls record only the disagreements, which is why an untouched org still reads correctly.
  */
 function DepartmentColors() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   // The ORG's own departments, read from the `department` module at boot — not merely the ones
   // that happen to sit on the floor currently open, so a team whose desks are all elsewhere
   // still gets a colour. The floor's own departments stand in when that list is unavailable

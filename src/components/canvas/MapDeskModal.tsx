@@ -1,4 +1,4 @@
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { Modal, ModalFooter, ModalHeader } from '../primitives/Modal';
 import { Button } from '../primitives/Button';
 import { TYPE_META } from '../../lib/types';
@@ -11,7 +11,7 @@ import card from '../details/Card.module.css';
  * survives off-plan), with an explicit "create new" as the alternative.
  */
 export function MapDeskModal() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const spot = state.pendingPlacement;
   if (!spot) return null;
 

@@ -12,6 +12,7 @@ import { FloorplanBackground } from '../canvas/FloorplanBackground';
 import { RoomPolygon } from '../canvas/RoomPolygon';
 import { RoomLabel } from '../canvas/Canvas';
 import { Marker } from '../canvas/Marker';
+import { markerModel } from '../../lib/markerModel';
 import { legendItems } from '../canvas/Legend';
 import { planLabelledDetailAreas } from '../../lib/printAreas';
 import type { DetailArea } from '../../lib/printAreas';
@@ -279,6 +280,9 @@ function PrintZoomedPlan({ cx, cy, zoom, labelScale = 1 }: { cx: number; cy: num
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [zoom, labelScale],
   );
+  // Each marker's model (chip colours, holder, title), once per page — see lib/markerModel.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const models = useMemo(() => new Map(markers.map((m) => [m.id, markerModel(state, m, { personal: false })])), [zoom, labelScale]);
   // Room names as the screen keeps them at this zoom (see Canvas' roomLabelIds): drawn unfiltered,
   // an onboarded floor's dozens of small org rooms print as a pile of overlapping name boxes.
   const roomLabelIds = useMemo(
@@ -305,7 +309,7 @@ function PrintZoomedPlan({ cx, cy, zoom, labelScale = 1 }: { cx: number; cy: num
           <RoomLabel key={`l-${r.id}`} unit={r} />
         ))}
       {markers.map((m) => (
-        <Marker key={m.id} unit={m} invZ={invZ} personal={false} labels={labelPlan.get(m.id)} />
+        <Marker key={m.id} model={models.get(m.id)!} labels={labelPlan.get(m.id)} />
       ))}
     </div>
   );
@@ -384,6 +388,8 @@ function PrintPlan() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const models = useMemo(() => new Map(markers.map((m) => [m.id, markerModel(state, m, { personal: false })])), []);
   const roomLabelIds = useMemo(
     () => planRoomLabels(roomLabelInputs(state, rooms), { planW: IMG_W, planH: IMG_H, zoom: PRINT_ZOOM }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -406,7 +412,7 @@ function PrintPlan() {
           <RoomLabel key={`l-${r.id}`} unit={r} />
         ))}
       {markers.map((m) => (
-        <Marker key={m.id} unit={m} invZ={invZ} personal={false} labels={labelPlan.get(m.id)} />
+        <Marker key={m.id} model={models.get(m.id)!} labels={labelPlan.get(m.id)} />
       ))}
     </div>
   );
