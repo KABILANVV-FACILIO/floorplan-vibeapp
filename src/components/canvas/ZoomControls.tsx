@@ -24,7 +24,14 @@ export function ZoomControls({ rectW, rectH }: { rectW: number; rectH: number })
           </svg>
         </button>
       </div>
-      <button className={styles.fit} data-tip="Fit to view" onClick={() => actions.fitView(rectW, rectH)}>
+      {/* Where the desks are (what a floor opens on), and the whole drawing. */}
+      <button className={styles.fit} data-tip="Fit to desks" aria-label="Fit to desks" onClick={() => actions.fitDesks(rectW, rectH, true)}>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" />
+          <rect x="9" y="9" width="6" height="6" rx="1.5" />
+        </svg>
+      </button>
+      <button className={styles.fit} data-tip="Whole floor" aria-label="Whole floor" onClick={() => actions.fitView(rectW, rectH)}>
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
           <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" />
         </svg>

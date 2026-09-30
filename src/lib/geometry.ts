@@ -26,6 +26,45 @@ export function fitView(rectW: number, rectH: number, insets?: Partial<ViewInset
   return { z, tx: l + (availW - IMG_W * z) / 2, ty: t + (availH - IMG_H * z) / 2 };
 }
 
+/** Screen px kept clear around the desks when the view is fitted to them. */
+const FIT_UNITS_PAD = 60;
+/** The closest a fit to the desks goes: past this a CAD plan is a blur and a 7-desk pod fills the screen. */
+const FIT_UNITS_MAX_ZOOM = 2;
+
+/**
+ * The view that shows the floor's placed desks — what a floor opens on.
+ *
+ * Fitted to the plan's IMAGE, a floor with seven desks in one corner of a large drawing opened as
+ * a large drawing with seven specks in the corner; fitted to the desks, it opens on the desks.
+ * The box is the placed point markers (desks, lockers, stalls — not amenities: a lift at the far
+ * end of the floor would pull the box out to nothing), padded, never zoomed out past the whole
+ * floor and never in past FIT_UNITS_MAX_ZOOM. A floor with no placed desk fits the plan as before.
+ */
+export function fitUnitsView(units: Pick<Unit, 'geom' | 'type' | 'unplaced'>[], rectW: number, rectH: number, insets?: Partial<ViewInsets>): ViewTransform {
+  const whole = fitView(rectW, rectH, insets);
+  let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const u of units) {
+    if (u.geom.kind !== 'point' || u.unplaced || u.type === 'amenity') continue;
+    x0 = Math.min(x0, u.geom.x);
+    y0 = Math.min(y0, u.geom.y);
+    x1 = Math.max(x1, u.geom.x);
+    y1 = Math.max(y1, u.geom.y);
+  }
+  if (!Number.isFinite(x0)) return whole;
+  const l = insets?.left ?? 0;
+  const r = insets?.right ?? 0;
+  const t = insets?.top ?? 0;
+  const b = insets?.bottom ?? 0;
+  const availW = Math.max(120, rectW - l - r) - 2 * FIT_UNITS_PAD;
+  const availH = Math.max(120, rectH - t - b) - 2 * FIT_UNITS_PAD;
+  const boxW = (x1 - x0) * IMG_W;
+  const boxH = (y1 - y0) * IMG_H;
+  const z = clamp(Math.min(boxW > 0 ? availW / boxW : Infinity, boxH > 0 ? availH / boxH : Infinity), whole.z, FIT_UNITS_MAX_ZOOM);
+  const cx = ((x0 + x1) / 2) * IMG_W;
+  const cy = ((y0 + y1) / 2) * IMG_H;
+  return { z, tx: l + (rectW - l - r) / 2 - cx * z, ty: t + (rectH - t - b) / 2 - cy * z };
+}
+
 export function zoomAt(view: ViewTransform, factor: number, cx: number, cy: number): ViewTransform {
   const z = clamp(view.z * factor, 0.08, 6);
   const k = z / view.z;

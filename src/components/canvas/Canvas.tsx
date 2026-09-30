@@ -135,7 +135,10 @@ export function Canvas() {
       if (r.width < 20) return;
       setRect({ w: r.width, h: r.height });
       actions.setStageSize(r.width, r.height);
-      if (!userZoomedRef.current) actions.fitView(r.width, r.height);
+      // A floor opens on its desks, not on the whole drawing (see fitUnitsView) — the canvas mounts
+      // afresh after each floor load, so this is that moment; and it keeps that fit through
+      // resizes until the user takes over the view.
+      if (!userZoomedRef.current) actions.fitDesks(r.width, r.height);
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -149,7 +152,7 @@ export function Canvas() {
     const el = wrapRef.current;
     if (!el || userZoomedRef.current) return;
     const r = el.getBoundingClientRect();
-    if (r.width > 20) actions.fitView(r.width, r.height);
+    if (r.width > 20) actions.fitDesks(r.width, r.height);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.panels.portfolio.open, state.panels.details.open]);
 

@@ -21,8 +21,8 @@ import { buildInitialState, reducer } from './reducer';
 import { useDataState } from './useDataState';
 import type { Action } from './reducer';
 import type { AppState } from './types';
-import { conflictsFor, isAssignable, nextLabel, unitById } from './selectors';
-import { calibratedPxPerMeter, clampPanelPos, defaultPanelPos, distNormToPx, fitView as fitViewFn, focusUnitView, pointInPoly, zoomAt as zoomAtFn } from '../lib/geometry';
+import { conflictsFor, isAssignable, nextLabel, planMarkers, unitById } from './selectors';
+import { calibratedPxPerMeter, clampPanelPos, defaultPanelPos, distNormToPx, fitUnitsView, fitView as fitViewFn, focusUnitView, pointInPoly, zoomAt as zoomAtFn } from '../lib/geometry';
 
 interface Ctx {
   state: AppState;
@@ -597,6 +597,12 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     fitView: (rectW: number, rectH: number) => {
       dispatch({ type: 'MARK_USER_ZOOMED', value: false });
       dispatch({ type: 'SET_VIEW', view: fitViewFn(rectW, rectH, viewInsets(state)) });
+    },
+    /** The floor's placed desks on screen — what a floor opens on (see fitUnitsView). */
+    fitDesks: (rectW: number, rectH: number, animate = false) => {
+      dispatch({ type: 'MARK_USER_ZOOMED', value: false });
+      dispatch({ type: 'SET_VIEW', view: fitUnitsView(planMarkers(state), rectW, rectH, viewInsets(state)), animate });
+      if (animate) setTimeout(() => dispatch({ type: 'SET_VIEW', view: fitUnitsView(planMarkers(state), rectW, rectH, viewInsets(state)), animate: false }), 380);
     },
     zoomIn: (rectW: number, rectH: number) => {
       dispatch({ type: 'MARK_USER_ZOOMED', value: true });
