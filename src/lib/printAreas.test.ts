@@ -76,12 +76,13 @@ describe('detail pages', () => {
 });
 
 describe('every desk on a detail page is labelled in full', () => {
-  // The floor's usual spacing is 90 plan px (rows of desks); one pod of six sits round a table
-  // with desks 26 px apart — like the one that printed its middle desk bare.
+  // The floor's usual spacing is 90 plan px (rows of desks); one pod of four sits round a table
+  // with desks 14 px apart — like the one that printed its middle desk bare. At the floor's own
+  // zoom its chips overlap and nothing fits; zoomed in for it, each desk has its card.
   const rows: DeskPoint[] = Array.from({ length: 24 }, (_, i) => ({ id: `r${i}`, x: 100 + (i % 8) * 90, y: 100 + Math.floor(i / 8) * 90 }));
-  const podDesks: DeskPoint[] = [0, 1, 2].flatMap((c) => [
-    { id: `p0${c}`, x: 1100 + c * 26, y: 700 },
-    { id: `p1${c}`, x: 1100 + c * 26, y: 760 },
+  const podDesks: DeskPoint[] = [0, 1].flatMap((c) => [
+    { id: `p0${c}`, x: 1100 + c * 14, y: 700 },
+    { id: `p1${c}`, x: 1100 + c * 14, y: 714 },
   ]);
   const points = [...rows, ...podDesks];
   const inputs: MarkerLabelInput[] = points.map((p) => ({

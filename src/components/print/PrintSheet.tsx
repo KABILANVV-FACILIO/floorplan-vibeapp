@@ -13,6 +13,7 @@ import { RoomPolygon } from '../canvas/RoomPolygon';
 import { RoomLabel } from '../canvas/Canvas';
 import { Marker } from '../canvas/Marker';
 import { markerModel } from '../../lib/markerModel';
+import { sharedLabelTextMeasurer } from '../../lib/textMeasure';
 import { legendItems } from '../canvas/Legend';
 import { planLabelledDetailAreas } from '../../lib/printAreas';
 import type { DetailArea } from '../../lib/printAreas';
@@ -133,7 +134,7 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
     // A detail page shows every desk in FULL — its name, who holds it, their department — checked
     // with the same label layout the page draws with (PrintZoomedPlan); an area where one doesn't
     // fit is zoomed in further (see planLabelledDetailAreas).
-    const inputs = markerLabelInputs(state, markers, { personal: false });
+    const inputs = markerLabelInputs(state, markers, { personal: false, measure: sharedLabelTextMeasurer() });
     const wants = new Map(inputs.map((i) => [i.id, i]));
     const allLabelled = (area: DetailArea) => {
       const placed = planMarkerLabels(inputs, { planW: IMG_W, planH: IMG_H, zoom: area.zoom / DETAIL_LABEL_SCALE });
@@ -275,7 +276,7 @@ function PrintZoomedPlan({ cx, cy, zoom, labelScale = 1 }: { cx: number; cy: num
   // Chips and labels `labelScale`× their screen size: laid out as the screen would at
   // zoom / labelScale (same geometry, everything divided by the scale), drawn at labelScale / zoom.
   const labelPlan = useMemo(
-    () => planMarkerLabels(markerLabelInputs(state, markers, { personal: false }), { planW: IMG_W, planH: IMG_H, zoom: zoom / labelScale }),
+    () => planMarkerLabels(markerLabelInputs(state, markers, { personal: false, measure: sharedLabelTextMeasurer() }), { planW: IMG_W, planH: IMG_H, zoom: zoom / labelScale }),
     // Built once per page, from the state at that moment.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [zoom, labelScale],
@@ -383,7 +384,7 @@ function PrintPlan() {
   const rooms = planRooms(state);
   const markers = planMarkers(state);
   const labelPlan = useMemo(
-    () => planMarkerLabels(markerLabelInputs(state, markers, { personal: false }), { planW: IMG_W, planH: IMG_H, zoom: PRINT_ZOOM }),
+    () => planMarkerLabels(markerLabelInputs(state, markers, { personal: false, measure: sharedLabelTextMeasurer() }), { planW: IMG_W, planH: IMG_H, zoom: PRINT_ZOOM }),
     // Built once per print, from the state at that moment.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],

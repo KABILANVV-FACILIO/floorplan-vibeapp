@@ -1,9 +1,9 @@
 import { memo } from 'react';
-import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from 'react';
+import type { CSSProperties, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from 'react';
 import type { Unit, PointGeom } from '../../lib/types';
 import type { MarkerModel } from '../../lib/markerModel';
-import type { LabelPlacement } from '../../lib/labelLayout';
-import { DEPT_FONT, NAME_MAX_PX, SUB_MAX_PX } from '../../lib/labelLayout';
+import type { LabelPlacement, LabelPos } from '../../lib/labelLayout';
+import { CARD_GAP, CARD_PAD_X, CARD_PAD_Y, DEPT_FONT, DEPT_LINE_PX, DEPT_WEIGHT, NAME_FONT, NAME_LINE_PX, NAME_WEIGHT, SUB_FONT, SUB_LINE_PX, SUB_WEIGHT, cardOffset } from '../../lib/labelLayout';
 import { MARKER_ICONS as ICONS } from './markerIcons';
 import styles from './Marker.module.css';
 
@@ -20,7 +20,16 @@ export interface MarkerHandlers {
   onDrop(unit: Unit, e: ReactDragEvent): void;
 }
 
-/** One line of the holder label: its own ellipsis, so a long department never pushes the name out. */
+/** The card's pointer, per side: a CARD_GAP-high triangle on the edge that faces the chip. */
+const TAIL_COLOR = 'var(--ink-300)';
+const TAIL: Record<LabelPos, CSSProperties> = {
+  below: { top: -CARD_GAP, left: '50%', marginLeft: -CARD_GAP, borderLeft: `${CARD_GAP}px solid transparent`, borderRight: `${CARD_GAP}px solid transparent`, borderBottom: `${CARD_GAP}px solid ${TAIL_COLOR}` },
+  above: { bottom: -CARD_GAP, left: '50%', marginLeft: -CARD_GAP, borderLeft: `${CARD_GAP}px solid transparent`, borderRight: `${CARD_GAP}px solid transparent`, borderTop: `${CARD_GAP}px solid ${TAIL_COLOR}` },
+  right: { left: -CARD_GAP, top: '50%', marginTop: -CARD_GAP, borderTop: `${CARD_GAP}px solid transparent`, borderBottom: `${CARD_GAP}px solid transparent`, borderRight: `${CARD_GAP}px solid ${TAIL_COLOR}` },
+  left: { right: -CARD_GAP, top: '50%', marginTop: -CARD_GAP, borderTop: `${CARD_GAP}px solid transparent`, borderBottom: `${CARD_GAP}px solid transparent`, borderLeft: `${CARD_GAP}px solid ${TAIL_COLOR}` },
+};
+
+/** One line of the card: its own ellipsis, so a long line never pushes the next one out. */
 const LINE = { display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } as const;
 
 /**
@@ -51,35 +60,15 @@ export const Marker = memo(function Marker({
   const { unit, style, title, holder, dept, isMine, isHighlighted, isBusy, draggable } = model;
   const geom = previewGeom ?? model.geom;
 
-  // Common to both label boxes. `display: block` is what lets `max-width` + `text-overflow`
-  // actually clip; an inline box ignores both.
-  const labelBase = {
-    position: 'absolute',
-    left: `${geom.x * 100}%`,
-    top: `${geom.y * 100}%`,
-    transformOrigin: '0 0',
-    pointerEvents: 'none',
-    zIndex: 1,
-    display: 'block',
-    boxSizing: 'border-box',
-    background: 'rgba(255,255,255,0.92)',
-    border: '1px solid var(--ink-100)',
-    padding: '2px 5px',
-    borderRadius: 3,
-    whiteSpace: 'nowrap',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-  } as const;
-  const showName = !!labels?.name;
-  const showSub = !!labels?.sub;
+  const at = { left: `${geom.x * 100}%`, top: `${geom.y * 100}%` };
+  // No card while the chip is being dragged: the layout placed it for where the chip WAS, and a
+  // card trailing behind a moving chip reads as another desk's. It returns where the drag ends.
+  const card = labels?.name && labels.pos && labels.w && labels.h && !previewGeom ? cardOffset(labels.pos, labels.w, labels.h, style.size / 2) : null;
 
   return (
     <>
-      {isMine && showName && (
-        <div
-          className={styles.myDeskBadge}
-          style={{ left: `${geom.x * 100}%`, top: `${geom.y * 100}%`, transform: `scale(var(--inv)) translate(-50%, calc(-100% - ${Math.round(style.size / 2 + 6)}px))`, transformOrigin: '0 0' }}
-        >
+      {isMine && labels?.pill && (
+        <div className={styles.myDeskBadge} style={{ ...at, transform: `scale(var(--inv)) translate(-50%, calc(-100% - ${Math.round(style.size / 2 + 6)}px))`, transformOrigin: '0 0' }}>
           <div className={styles.myDeskPill}>
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0z" />
@@ -135,35 +124,58 @@ export const Marker = memo(function Marker({
           ))}
       </div>
       {/*
-        The desk's name ABOVE its chip; who holds it BELOW, with their department as a second,
-        smaller line when there is room for both (the holder alone when there isn't). Each box is
-        capped — the name at NAME_MAX_PX, the holder at the width the layout reserved for it — and
-        ends in "…" when the text runs longer; the chip's tooltip has the full text.
+        The card: the desk's name, who holds it, their department — wherever the canvas found room
+        for it around the chip (see planMarkerLabels), at exactly the size it reserved, so what is
+        drawn is what was measured against the neighbours. A line too long for the card ends in
+        "…" (the department runs to a second line first); the chip's tooltip has the full text.
       */}
-      {showName && !isMine && (
+      {card && labels && (
         <div
           style={{
-            ...labelBase,
-            transform: `scale(var(--inv)) translate(-50%, calc(-100% - ${Math.round(style.size / 2 + 4)}px))`,
-            maxWidth: NAME_MAX_PX,
-            font: '600 8.5px/1.15 var(--font-sans)',
-            color: 'var(--ink-800)',
+            position: 'absolute',
+            ...at,
+            transformOrigin: '0 0',
+            transform: `scale(var(--inv)) translate(${card.dx}px, ${card.dy}px)`,
+            pointerEvents: 'none',
+            zIndex: 1,
+            width: labels.w,
+            height: labels.h,
           }}
         >
-          {unit.label}
-        </div>
-      )}
-      {showSub && holder && (
-        <div
-          style={{
-            ...labelBase,
-            transform: `scale(var(--inv)) translate(-50%, ${Math.round(style.size / 2 + 4)}px)`,
-            maxWidth: labels?.subWidth ?? SUB_MAX_PX,
-            textAlign: 'center',
-          }}
-        >
-          <div style={{ ...LINE, font: '500 8px/1.2 var(--font-sans)', color: 'var(--ink-700)' }}>{holder}</div>
-          {labels?.dept && dept && <div style={{ ...LINE, font: `400 ${DEPT_FONT}px/1.2 var(--font-sans)`, color: 'var(--ink-500)' }}>{dept}</div>}
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              boxSizing: 'border-box',
+              padding: `${CARD_PAD_Y}px ${CARD_PAD_X}px`,
+              background: 'rgba(255,255,255,0.94)',
+              border: '1px solid var(--ink-200)',
+              borderRadius: 3,
+              textAlign: 'center',
+              overflow: 'hidden',
+            }}
+          >
+            <div style={{ ...LINE, font: `${NAME_WEIGHT} ${NAME_FONT}px/${NAME_LINE_PX}px var(--font-sans)`, color: 'var(--ink-800)' }}>{unit.label}</div>
+            {labels.sub && holder && <div style={{ ...LINE, font: `${SUB_WEIGHT} ${SUB_FONT}px/${SUB_LINE_PX}px var(--font-sans)`, color: 'var(--ink-700)' }}>{holder}</div>}
+            {labels.dept && dept && (
+              <div
+                style={{
+                  font: `${DEPT_WEIGHT} ${DEPT_FONT}px/${DEPT_LINE_PX}px var(--font-sans)`,
+                  color: 'var(--ink-500)',
+                  display: '-webkit-box',
+                  WebkitBoxOrient: 'vertical',
+                  WebkitLineClamp: labels.deptLines ?? 1,
+                  overflow: 'hidden',
+                  overflowWrap: 'anywhere',
+                }}
+              >
+                {dept}
+              </div>
+            )}
+          </div>
+          {/* The pointer: a small arrow on the card's edge facing the chip, in the gap between
+              them, so a card beside a chip is never read as a neighbour's. */}
+          <div style={{ position: 'absolute', width: 0, height: 0, ...TAIL[labels.pos!] }} />
         </div>
       )}
     </>

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { contactName, isAssignable, isBookable, moduleEnabled } from '../../state/selectors';
 import { unitStatus } from '../../lib/unitStatus';
 import { unitSortCompare, fmtTime } from '../../lib/geometry';
@@ -24,7 +24,7 @@ const FILTERS: { id: 'all' | UnitType; label: string }[] = [
  * the right pin on the plan first.
  */
 export function MobileSpacesSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const [filter, setFilter] = useState<'all' | UnitType>('all');
   const [query, setQuery] = useState('');
   const sheetRef = useSheetDrag(onClose, open);
@@ -97,7 +97,7 @@ export function MobileSpacesSheet({ open, onClose }: { open: boolean; onClose: (
 }
 
 function SpaceRow({ unit, onShow, onClose }: { unit: Unit; onShow: () => void; onClose: () => void }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const status = unitStatus(state, unit, (id) => contactName(state, id));
   const contactId = state.assignments[unit.id];
   const bookTab = state.mobileTab === 'book';
@@ -116,8 +116,9 @@ function SpaceRow({ unit, onShow, onClose }: { unit: Unit; onShow: () => void; o
             {contactId ? ` · ${contactName(state, contactId)}` : ''}
           </span>
         </span>
+        {/* The line above already names the holder, so the pill says only "Assigned". */}
         <span className={styles.statusPill} style={{ background: status.bg, color: status.fg }}>
-          {status.text}
+          {contactId && status.text.startsWith('Assigned') ? 'Assigned' : status.text}
         </span>
       </button>
       {canBook && (

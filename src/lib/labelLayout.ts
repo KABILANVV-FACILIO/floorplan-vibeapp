@@ -1,5 +1,5 @@
 /**
- * Which marker labels can actually be drawn without landing on top of something else.
+ * Which marker labels can actually be drawn without landing on top of something else — and where.
  *
  * Markers and their labels are counter-scaled by 1/z, so they keep a constant SIZE on screen
  * while their POSITIONS scale with the zoom. Zoom out on a dense floor and a bank of desks that
@@ -7,15 +7,12 @@
  * shrink to nothing, and each label is drawn over its neighbour's marker and its neighbour's
  * label. The result is unreadable in exactly the places that matter most — the crowded ones.
  *
- * The zoom threshold the canvas already had (`invZ <= 1.9`) is a blunt version of this: it drops
- * every label past one zoom level whether or not there was room, and keeps every label before it
- * whether or not there was. Spacing is a property of the plan, not of the zoom — two desks 4cm
- * apart collide at a zoom where a sparse floor is perfectly legible.
- *
- * So: lay the labels out and keep the ones that fit. A label is kept only if it clears every
- * marker chip and every label already kept; ties go to the labels that matter most (the selected
- * record, then "Your desk"), because the one thing worse than a dropped label is dropping the
- * one the user is looking at.
+ * So: lay the labels out and keep the ones that fit. Each desk gets ONE card — its name, who
+ * holds it, their department — placed at the best of eight spots around its chip (below, above,
+ * right, left, the corners); a card that fits nowhere is tried with fewer lines and narrower,
+ * down to the desk's name alone. A card is kept only if it clears every chip and every card
+ * already kept; ties go to the labels that matter most (the selected record, then "Your desk"),
+ * because the one thing worse than a dropped label is dropping the one the user is looking at.
  *
  * Pure geometry — no DOM, no React — so the rules can be pinned by tests rather than by eye.
  */
@@ -27,16 +24,13 @@ export interface MarkerLabelInput {
   y: number;
   /** The chip's on-screen size in px (constant across zoom). */
   size: number;
-  /** Text of the label ABOVE the chip, or null when it has none. */
+  /** The desk's name — the card's first line. No name, no card. */
   name?: string | null;
-  /** Text of the label BELOW the chip (the holder's name), or null. */
+  /** Who holds it — the second line, or null. */
   sub?: string | null;
-  /**
-   * The holder's department, drawn as a second, smaller line under the holder when there is room
-   * for both — and dropped, leaving the holder alone, when there isn't.
-   */
+  /** Their department — the third line (two, when it is long), or null. */
   dept?: string | null;
-  /** The label above is the wider "Your desk" pill rather than a plain name. */
+  /** The "Your desk" pill stands above the chip as well as the card. */
   pill?: boolean;
   /**
    * Placement order — lower goes first and therefore wins a collision. The selected record and
@@ -45,26 +39,42 @@ export interface MarkerLabelInput {
    */
   rank: number;
   /**
-   * Draw the label above no matter what it lands on. Only the "Your desk" pill asks for this: it
-   * is the answer to "where do I sit", and a decluttering pass that can hide it has removed a
-   * feature rather than tidied a plan. It still reserves its space, so everything else yields.
+   * Draw the pill no matter what it lands on. Only "Your desk" asks for this: it is the answer
+   * to "where do I sit", and a decluttering pass that can hide it has removed a feature rather
+   * than tidied a plan. It still reserves its space, so everything else yields.
    */
   must?: boolean;
+  /**
+   * The text widths in px, measured in the page's font (see lib/textMeasure). Estimated from the
+   * character count when absent.
+   */
+  nameW?: number;
+  subW?: number;
+  deptW?: number;
 }
 
+/**
+ * Where a card sits relative to its chip: in line with its row or its column, never on a corner.
+ * A corner card sat between two chips and read as either's — "which one is WS-05?" — so a card
+ * is always centred on its own chip's row or column, and points at it (see Marker).
+ */
+export type LabelPos = 'below' | 'above' | 'right' | 'left';
+
 export interface LabelPlacement {
-  /** The desk's name, ABOVE its chip — or the "Your desk" pill, which takes that place. */
+  /** The card is drawn (it always carries the desk's name). */
   name: boolean;
-  /** The holder, BELOW the chip. Never drawn without `name`. */
+  /** The card carries the holder. Never without `name`. */
   sub: boolean;
-  /** The holder's department, a second line under the holder. Never drawn without `sub`. */
+  /** The card carries the department. Never without `sub`. */
   dept?: boolean;
-  /**
-   * How wide the holder line may run, in px, when it is drawn. Usually SUB_MAX_PX or the text's
-   * own width; narrower when that is what it took to fit beside a neighbour's. The markup caps
-   * the line at exactly this, so what is drawn is what was reserved.
-   */
-  subWidth?: number;
+  /** The "Your desk" pill is drawn above the chip. */
+  pill?: boolean;
+  /** Where the card sits, and its exact size in px — the markup draws exactly this box. */
+  pos?: LabelPos;
+  w?: number;
+  h?: number;
+  /** The department runs to two lines. */
+  deptLines?: 1 | 2;
 }
 
 export interface LabelLayoutOptions {
@@ -73,6 +83,13 @@ export interface LabelLayoutOptions {
   planH: number;
   /** Current zoom. Screen distance between two markers is their plan distance times this. */
   zoom: number;
+  /**
+   * The last plan. A card keeps the spot it had while it still fits there — growing in place as
+   * the zoom makes room — and is only placed afresh when it no longer does. Without this every
+   * zoom step re-decided every card from scratch, and on a dense floor most of them hopped to
+   * another side of their chip at every step of the wheel.
+   */
+  previous?: Map<string, LabelPlacement>;
 }
 
 interface Box {
@@ -82,61 +99,59 @@ interface Box {
   h: number;
 }
 
-/** Gap between a chip and its label, and the breathing room demanded between two labels. */
-const GAP = 4;
+/** Gap between a chip and its card — the card's pointer sits in it — and the breathing room demanded between two cards. */
+export const CARD_GAP = 5;
+const GAP = CARD_GAP;
 const PAD = 1;
+/** How near a placed neighbour has to be for a card to take the same side as it. */
+const COHERENCE_PX = 90;
 
-/**
- * Width of a rendered label, in px.
- *
- * An estimate, deliberately: measuring means a canvas context (absent in tests) or a layout pass
- * per label per frame, to decide something that only has to be right to within a few px. Roboto's
- * average advance at these weights is ~0.55em; the constant covers the 5px side padding and the
- * 1px border.
- */
-export function estimateLabelWidth(text: string, fontPx: number): number {
-  return Math.round(text.length * fontPx * 0.55) + 12;
-}
-
-/** Height of a rendered label, in px — line box plus padding plus border. */
-export function labelHeight(fontPx: number): number {
-  return Math.round(fontPx * 1.1) + 6;
-}
-
-const NAME_FONT = 8.5;
-const SUB_FONT = 8;
+/** The card's type: the name, the holder, the department. Line heights are fixed so the layout's box is the drawn box. */
+export const NAME_FONT = 8.5;
+export const SUB_FONT = 8;
 export const DEPT_FONT = 7.5;
+export const NAME_WEIGHT = 600;
+export const SUB_WEIGHT = 500;
+export const DEPT_WEIGHT = 400;
+export const NAME_LINE_PX = 10;
+export const SUB_LINE_PX = 10;
+export const DEPT_LINE_PX = 9;
+/** The card's padding (3px above and below, 5px each side) and 1px border. */
+export const CARD_PAD_Y = 3;
+export const CARD_PAD_X = 5;
+const CARD_EXTRA_W = 2 * CARD_PAD_X + 2;
+const CARD_EXTRA_H = 2 * CARD_PAD_Y + 2;
 
-/** Height of the two-line holder + department label: both line boxes (line-height 1.2) plus padding and border. */
-export function twoLineLabelHeight(): number {
-  return Math.round(SUB_FONT * 1.2 + DEPT_FONT * 1.2) + 6;
-}
-
 /**
- * The longest a label may run on screen before its text ends in "…". Shared with the markup
- * (Marker.tsx) so the layout reserves exactly the box that gets drawn. The full text is never
- * lost: it is on the chip's own hover tooltip.
+ * The widest a card may be. Wider than the old 120px line, so a holder's full name and most
+ * departments fit on one line where there is room; where there isn't, the card narrows.
  */
-export const NAME_MAX_PX = 96;
-export const SUB_MAX_PX = 120;
-/**
- * Where a holder line stops narrowing to make room. Below this the ellipsis leaves too little of
- * the name to recognise ("Amrithya · P…" still reads; "Amr…" does not), and the desk shows its
- * name alone instead.
- */
-const SUB_MIN_PX = 68;
-/** The narrower widths tried, widest first, when the holder line does not fit at its own. */
-const SUB_NARROWER_PX = [100, 84, SUB_MIN_PX];
-/**
- * The holder + department label stops narrowing sooner: a department cut to "Investm…" says less
- * than no department, and the holder alone (which can go narrower) is the better fallback.
- */
-const TWO_LINE_MIN_PX = 84;
-/** Characters a holder line holds at SUB_MAX_PX — past this a name is shortened to first + last. */
-export const SUB_MAX_CHARS = Math.floor((SUB_MAX_PX - 12) / (SUB_FONT * 0.55));
-/** The "Your desk" pill carries an icon and more generous padding than a plain name label. */
+export const CARD_MAX_PX = 180;
+/** Narrower widths tried, widest first, when a card does not fit at its own. */
+const FULL_NARROWER_PX = [140, 110];
+const NAME_SUB_NARROWER_PX = [100];
+const NAME_NARROWER_PX = [84];
+/** Characters a holder line holds at CARD_MAX_PX — past this a name is shortened to first + last. */
+export const SUB_MAX_CHARS = Math.floor((CARD_MAX_PX - CARD_EXTRA_W) / (SUB_FONT * 0.55));
+/** The "Your desk" pill carries an icon and more generous padding than a plain label. */
 const PILL_EXTRA = 26;
 const PILL_HEIGHT = 20;
+const PILL_TEXT = 'Your desk';
+
+/**
+ * Width of a run of text, in px — an estimate when it was not measured.
+ *
+ * Roboto's average advance at these weights is ~0.55em. Measured widths (lib/textMeasure) come
+ * with the inputs wherever there is a canvas; the estimate is what tests and a server see.
+ */
+export function estimateTextWidth(text: string, fontPx: number): number {
+  return Math.round(text.length * fontPx * 0.55);
+}
+
+/** Width of a rendered one-line label, in px: its text plus the padding and border. */
+export function estimateLabelWidth(text: string, fontPx: number): number {
+  return estimateTextWidth(text, fontPx) + CARD_EXTRA_W;
+}
 
 function overlaps(a: Box, b: Box): boolean {
   return a.x < b.x + b.w + PAD && b.x < a.x + a.w + PAD && a.y < b.y + b.h + PAD && b.y < a.y + a.h + PAD;
@@ -179,12 +194,77 @@ class BoxGrid {
 }
 
 /**
- * Decide which labels to draw. Returns a placement per marker id; a marker missing from the map
- * has no label to draw at all.
+ * Where a card's top-left corner sits relative to its chip's centre, in screen px, for a
+ * placement. Shared with the markup, so the card is drawn exactly where it was reserved.
+ */
+export function cardOffset(pos: LabelPos, w: number, h: number, half: number): { dx: number; dy: number } {
+  switch (pos) {
+    case 'below':
+      return { dx: -w / 2, dy: half + GAP };
+    case 'above':
+      return { dx: -w / 2, dy: -half - GAP - h };
+    case 'right':
+      return { dx: half + GAP, dy: -h / 2 };
+    case 'left':
+      return { dx: -half - GAP - w, dy: -h / 2 };
+  }
+}
+
+/** Below first for a desk with a holder (the holder reads under the desk); above first for a bare name, as a free desk always read. */
+const WITH_HOLDER: LabelPos[] = ['below', 'above', 'right', 'left'];
+const NAME_ONLY: LabelPos[] = ['above', 'below', 'right', 'left'];
+
+/**
+ * The cards placed so far, by where their chips are, so a card can take the side its nearest
+ * placed neighbour took: a bank of desks then carries its cards in one line (all below, or all to
+ * the right) instead of each desk choosing for itself and the bank reading as a scatter.
+ */
+class PlacedSides {
+  private cells = new Map<string, { cx: number; cy: number; pos: LabelPos }[]>();
+  constructor(private cell: number) {}
+  add(cx: number, cy: number, pos: LabelPos): void {
+    const k = `${Math.floor(cx / this.cell)}:${Math.floor(cy / this.cell)}`;
+    const cell = this.cells.get(k);
+    if (cell) cell.push({ cx, cy, pos });
+    else this.cells.set(k, [{ cx, cy, pos }]);
+  }
+  /** The side of the nearest card placed within COHERENCE_PX, if any. */
+  nearest(cx: number, cy: number): LabelPos | null {
+    const x0 = Math.floor((cx - COHERENCE_PX) / this.cell);
+    const x1 = Math.floor((cx + COHERENCE_PX) / this.cell);
+    const y0 = Math.floor((cy - COHERENCE_PX) / this.cell);
+    const y1 = Math.floor((cy + COHERENCE_PX) / this.cell);
+    let best: LabelPos | null = null;
+    let bestD = COHERENCE_PX;
+    for (let x = x0; x <= x1; x++)
+      for (let y = y0; y <= y1; y++) {
+        const cell = this.cells.get(`${x}:${y}`);
+        if (!cell) continue;
+        for (const p of cell) {
+          const d = Math.hypot(p.cx - cx, p.cy - cy);
+          if (d < bestD) {
+            bestD = d;
+            best = p.pos;
+          }
+        }
+      }
+    return best;
+  }
+}
+
+/** The card's height for its lines. */
+export function cardHeight(sub: boolean, deptLines: 0 | 1 | 2): number {
+  return CARD_EXTRA_H + NAME_LINE_PX + (sub ? SUB_LINE_PX : 0) + deptLines * DEPT_LINE_PX;
+}
+
+/**
+ * Decide which labels to draw, and where. Returns a placement per marker id; a marker missing
+ * from the map has no label to draw at all.
  *
  * Every chip is reserved first — chips are always drawn, so a label may never cover one, not even
- * the label of a higher-ranked marker. Labels are then placed in rank order into whatever space
- * is left.
+ * the label of a higher-ranked marker. Cards are then placed in rank order into whatever space
+ * is left: the whole card at its own width first, then narrower, then with fewer lines, each at
+ * every position around the chip, and the first that fits wins.
  */
 export function planMarkerLabels(inputs: MarkerLabelInput[], opts: LabelLayoutOptions): Map<string, LabelPlacement> {
   const out = new Map<string, LabelPlacement>();
@@ -201,67 +281,69 @@ export function planMarkerLabels(inputs: MarkerLabelInput[], opts: LabelLayoutOp
   }
 
   const order = [...inputs].sort((a, b) => a.rank - b.rank || a.y - b.y || a.x - b.x || (a.id < b.id ? -1 : 1));
+  const sides = new PlacedSides(COHERENCE_PX);
 
   for (const i of order) {
     const { cx, cy } = screen(i);
     const half = i.size / 2;
     const placement: LabelPlacement = { name: false, sub: false };
 
-    /*
-     * The desk's name ABOVE its chip, and who holds it (with their department) BELOW.
-     *
-     * The name decides. If it does not fit, the desk shows neither line: a holder line on its own
-     * under a chip is what once left a block of desks captioned by one desk's number above and a
-     * different desk's holder below, the two survivors reading as a title and caption for the
-     * whole group. So a holder line is never drawn without its own desk's name above it.
-     *
-     * The holder line then takes the widest width that fits — its own (capped at SUB_MAX_PX),
-     * then narrower, down to SUB_MIN_PX, ending in "…". In a row of desks a little closer than
-     * two full holder lines, the second desk used to lose BOTH lines because its holder overlapped
-     * its neighbour's by a few px; now it keeps its name and a shorter holder. Only when not even
-     * the narrowest fits does the desk show its name alone — which is how a free desk reads, and
-     * cannot be mistaken for anyone else's caption. The full text is on the chip's tooltip.
-     *
-     * Widths are the capped ones the markup actually draws: measuring the full text would reserve
-     * room the ellipsis never uses, and drop labels in a dense block for no reason.
-     */
-    const nameBox = i.name
-      ? (() => {
-          const h = i.pill ? PILL_HEIGHT : labelHeight(NAME_FONT);
-          const w = i.pill
-            ? estimateLabelWidth(i.name, NAME_FONT) + PILL_EXTRA
-            : Math.min(estimateLabelWidth(i.name, NAME_FONT), NAME_MAX_PX);
-          return { x: cx - w / 2, y: cy - half - GAP - h, w, h };
-        })()
-      : null;
-
     // The "Your desk" pill draws whatever it lands on — it is the answer to "where do I sit".
-    // Everything else needs its name to fit.
-    const nameFits = !!nameBox && (i.must || !grid.hits(nameBox));
-    if (nameFits && nameBox) {
-      grid.add(nameBox);
-      placement.name = true;
+    if (i.pill) {
+      const w = estimateLabelWidth(PILL_TEXT, NAME_FONT) + PILL_EXTRA;
+      const box = { x: cx - w / 2, y: cy - half - GAP - PILL_HEIGHT, w, h: PILL_HEIGHT };
+      if (i.must || !grid.hits(box)) {
+        grid.add(box);
+        placement.pill = true;
+      }
+    }
 
-      // Widest first; the first width that clears everything already placed wins.
-      const tryBox = (own: number, min: number, h: number): number | null => {
-        for (const w of [own, ...SUB_NARROWER_PX.filter((n) => n < own && n >= min)]) {
-          const box = { x: cx - w / 2, y: cy + half + GAP, w, h };
-          if (grid.hits(box)) continue;
-          grid.add(box);
-          return w;
-        }
-        return null;
+    if (i.name) {
+      const nameW = i.nameW ?? estimateTextWidth(i.name, NAME_FONT);
+      const subW = i.sub ? (i.subW ?? estimateTextWidth(i.sub, SUB_FONT)) : 0;
+      const deptW = i.dept ? (i.deptW ?? estimateTextWidth(i.dept, DEPT_FONT)) : 0;
+
+      // What the card may carry, most first; for each, its own width then narrower ones.
+      type Variant = { sub: boolean; dept: boolean; widths: number[] };
+      const widthsFor = (natural: number, narrower: number[]) => {
+        const own = Math.min(natural + CARD_EXTRA_W, CARD_MAX_PX);
+        return [own, ...narrower.filter((n) => n < own)];
       };
-      if (i.sub) {
-        // Holder and department on two lines when both fit; the holder alone when they don't.
-        const two = i.dept
-          ? tryBox(Math.min(Math.max(estimateLabelWidth(i.sub, SUB_FONT), estimateLabelWidth(i.dept, DEPT_FONT)), SUB_MAX_PX), TWO_LINE_MIN_PX, twoLineLabelHeight())
-          : null;
-        const w = two ?? tryBox(Math.min(estimateLabelWidth(i.sub, SUB_FONT), SUB_MAX_PX), SUB_MIN_PX, labelHeight(SUB_FONT));
-        if (w !== null) {
-          placement.sub = true;
-          placement.subWidth = w;
-          if (two !== null) placement.dept = true;
+      const variants: Variant[] = [];
+      if (i.sub && i.dept) variants.push({ sub: true, dept: true, widths: widthsFor(Math.max(nameW, subW, deptW), FULL_NARROWER_PX) });
+      if (i.sub) variants.push({ sub: true, dept: false, widths: widthsFor(Math.max(nameW, subW), NAME_SUB_NARROWER_PX) });
+      variants.push({ sub: false, dept: false, widths: widthsFor(nameW, NAME_NARROWER_PX) });
+      // Its last spot first, if it had one; then the side its nearest placed neighbour took; then
+      // the usual order.
+      const prev = opts.previous?.get(i.id);
+      const kept = prev?.name && prev.pos ? prev.pos : null;
+      const near = sides.nearest(cx, cy);
+      const usual = i.sub ? WITH_HOLDER : NAME_ONLY;
+      const positions: LabelPos[] = [];
+      for (const p of [kept, near, ...usual]) if (p && !positions.includes(p)) positions.push(p);
+
+      search: for (const v of variants) {
+        for (const w of v.widths) {
+          // A department wider than the card runs to a second line rather than ending in "…".
+          const deptLines: 0 | 1 | 2 = v.dept ? (deptW > w - CARD_EXTRA_W ? 2 : 1) : 0;
+          const h = cardHeight(v.sub, deptLines);
+          for (const pos of positions) {
+            // The pill stands above the chip: a card never goes there too.
+            if (placement.pill && pos === 'above') continue;
+            const { dx, dy } = cardOffset(pos, w, h, half);
+            const box = { x: cx + dx, y: cy + dy, w, h };
+            if (grid.hits(box)) continue;
+            grid.add(box);
+            placement.name = true;
+            placement.sub = v.sub;
+            placement.dept = v.dept;
+            placement.pos = pos;
+            placement.w = w;
+            placement.h = h;
+            if (v.dept) placement.deptLines = deptLines as 1 | 2;
+            sides.add(cx, cy, pos);
+            break search;
+          }
         }
       }
     }

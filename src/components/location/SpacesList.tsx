@@ -1,5 +1,5 @@
 import type { DragEvent as ReactDragEvent } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { contactName, moduleEnabled } from '../../state/selectors';
 import { unitSortCompare } from '../../lib/geometry';
 import { unitStatus } from '../../lib/unitStatus';
@@ -46,7 +46,7 @@ function setTypeDragImage(e: ReactDragEvent, unit: Unit) {
 }
 
 export function SpacesList() {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   const isEdit = state.mode === 'edit';
   // What is on the plan, plus — in EDIT MODE ONLY — the org's records that have no marker yet.
   //
@@ -131,13 +131,19 @@ export function SpacesList() {
 }
 
 function SpaceRow({ unit }: { unit: Unit }) {
-  const { state, actions } = useFloorplan();
+  const { state, actions } = useFloorplanData();
   // Read off the unit itself rather than the mode: in assign/book the pool rows used to render as
   // if they were placed, so clicking one focused the canvas on its 0,0 placeholder geometry.
   const unplaced = !!unit.unplaced;
   const isEdit = state.mode === 'edit';
   const selected = state.selected === unit.id;
   const status = unitStatus(state, unit, (id) => contactName(state, id));
+  // The pill names the holder and nothing else: "Assigned · Maria Silva" ended as "Assigned · Mar…"
+  // in the room a pill has, and "Assigned" is what the blue already says. The full status is the
+  // pill's hover text.
+  const holderId = state.assignments[unit.id];
+  const holderName = holderId ? contactName(state, holderId) : '';
+  const pillLabel = holderName && (status.key === 'assigned' || status.key === 'notBookable') ? holderName : status.text;
   // The row dot reflects the unit's current-state color from the module color settings
   // (status.dot is moduleColor-driven), so a Settings color change shows here too.
   // Only POINT records drag onto the canvas (edit mode); placed markers are moved on the canvas
@@ -210,7 +216,7 @@ function SpaceRow({ unit }: { unit: Unit }) {
           />
         )
       ) : (
-        <StatusPill label={status.text} bg={status.bg} fg={status.fg} />
+        <StatusPill label={pillLabel} tip={status.text} bg={status.bg} fg={status.fg} />
       )}
     </div>
   );

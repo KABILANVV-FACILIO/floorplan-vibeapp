@@ -1,5 +1,6 @@
 import { isModuleEnabled, isRoomLike, unitOnPlan } from '../lib/types';
-import { SUB_MAX_CHARS } from '../lib/labelLayout';
+import { DEPT_FONT, DEPT_WEIGHT, NAME_FONT, NAME_WEIGHT, SUB_FONT, SUB_MAX_CHARS, SUB_WEIGHT } from '../lib/labelLayout';
+import type { LabelTextMeasure } from '../lib/textMeasure';
 import type { MarkerLabelInput, RoomLabelInput } from '../lib/labelLayout';
 import { polygonCentroid } from '../lib/geometry';
 import type { Booking, Employee, Unit, UnitType } from '../lib/types';
@@ -218,10 +219,11 @@ export function roomLabelInputs(state: AppState, rooms: Unit[]): RoomLabelInput[
  * (or the "Your desk" pill in its place), and the holder with their department below. Shared with
  * the print sheet so a label reads the same on paper as on screen.
  */
-export function markerLabelInputs(state: AppState, markers: Unit[], opts: { personal?: boolean } = {}): MarkerLabelInput[] {
-  // `personal: false` (the print sheet): no "Your desk" pill — the desk shows its own name.
+export function markerLabelInputs(state: AppState, markers: Unit[], opts: { personal?: boolean; measure?: LabelTextMeasure } = {}): MarkerLabelInput[] {
+  // `personal: false` (the print sheet): no "Your desk" pill — a sheet on a wall is read by everyone.
   const mineId = opts.personal === false ? null : (myAssignedUnit(state)?.id ?? null);
   const labelsOn = state.mode === 'assign' || state.mode === 'book';
+  const measure = opts.measure;
   return markers
     .filter((m) => labelsOn || m.type === 'amenity')
     .map((m) => {
@@ -233,13 +235,21 @@ export function markerLabelInputs(state: AppState, markers: Unit[], opts: { pers
         x: g.x ?? 0,
         y: g.y ?? 0,
         size: 24,
-        // "Your desk" replaces the name label rather than stacking above it.
-        name: mine ? 'Your desk' : m.label,
+        name: m.label,
+        // "Your desk" stands above the chip; the card, with the desk's own name, goes elsewhere.
         pill: mine,
         must: mine,
         sub: holder,
         dept,
         rank: m.id === state.selected ? 0 : mine ? 1 : 2,
+        // Measured in the page's font where there is one, so the card is exactly as wide as its text.
+        ...(measure
+          ? {
+              nameW: measure(m.label, NAME_FONT, NAME_WEIGHT),
+              subW: holder ? measure(holder, SUB_FONT, SUB_WEIGHT) : undefined,
+              deptW: dept ? measure(dept, DEPT_FONT, DEPT_WEIGHT) : undefined,
+            }
+          : {}),
       };
     });
 }

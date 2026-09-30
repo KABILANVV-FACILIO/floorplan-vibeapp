@@ -15,6 +15,7 @@ import { isBookable, markerLabelInputs, planMarkers, planRooms, roomLabelInputs,
 import { planMarkerLabels, planRoomLabels } from '../../lib/labelLayout';
 import type { LabelPlacement } from '../../lib/labelLayout';
 import { markerModel } from '../../lib/markerModel';
+import { sharedLabelTextMeasurer } from '../../lib/textMeasure';
 import type { MarkerHandlers } from './Marker';
 import { useDataState } from '../../state/useDataState';
 import { floorImageKey, isRoomLike, isZoneTool, unitOnPlan } from '../../lib/types';
@@ -34,7 +35,7 @@ function useStablePlacements(next: Map<string, LabelPlacement>): Map<string, Lab
   const out = new Map<string, LabelPlacement>();
   for (const [id, p] of next) {
     const q = prev.get(id);
-    out.set(id, q && q.name === p.name && q.sub === p.sub && q.dept === p.dept && q.subWidth === p.subWidth ? q : p);
+    out.set(id, q && q.name === p.name && q.sub === p.sub && q.dept === p.dept && q.pill === p.pill && q.pos === p.pos && q.w === p.w && q.h === p.h && q.deptLines === p.deptLines ? q : p);
   }
   prevRef.current = out;
   return out;
@@ -559,9 +560,22 @@ export function Canvas() {
   // constant screen size while the gaps between markers shrink with the zoom, so on a dense floor
   // the only thing that decides legibility is whether the label actually fits — not the zoom level
   // (see lib/labelLayout). The zoom is the one view field this depends on.
+  // Each step builds on the last plan, so a card keeps its spot while it still fits (see
+  // LabelLayoutOptions.previous) — read through a ref, so the plan is not its own dependency.
+  const prevPlanRef = useRef<Map<string, LabelPlacement>>(new Map());
   const labelPlan = useStablePlacements(
-    useMemo(() => planMarkerLabels(markerLabelInputs(data, markers), { planW: IMG_W, planH: IMG_H, zoom: state.view.z }), [data, markers, state.view.z]),
+    useMemo(
+      () =>
+        planMarkerLabels(markerLabelInputs(data, markers, { measure: sharedLabelTextMeasurer() }), {
+          planW: IMG_W,
+          planH: IMG_H,
+          zoom: state.view.z,
+          previous: prevPlanRef.current,
+        }),
+      [data, markers, state.view.z],
+    ),
   );
+  prevPlanRef.current = labelPlan;
 
   // Which room names fit — inside their own room, and clear of each other — at this zoom. Room
   // names keep a constant screen size while the rooms shrink with the zoom, so on an onboarded
