@@ -10,20 +10,18 @@
  * (`persistUnits` -> `saveFloorplanZones`: create / update / delete zones, and the `space` reads
  * that decide whether a room may get one).
  *
- * OFF until that write path has had more testing. The org holds 353 zones written by the
- * floorplan onboarding (geoId `space-<id>`) plus a few drawn in Facilio's own editor, and a wrong
- * create/update/delete there is visible in Facilio itself, not just in this app. The READ path
- * does not depend on this: a floor load still draws the org's outlines as placed rooms and takes
- * them out of "Available to place".
+ * ON since 2026-10-01 (requested). What a save does with it on — only for rooms the user CHANGED
+ * since the last save (see saveFloorplanZones):
+ *  - a room traced for a space with no outline yet -> a zone is CREATED for it (geoId `space-<id>`);
+ *  - a room reshaped, relabelled or moved -> its app zone(s) are UPDATED;
+ *  - a room REMOVED from the plan -> its app zones are DELETED. Only zones in the app's own
+ *    naming (`space-<id>`, the onboarding's included) are ever written; a zone drawn in
+ *    Facilio's own editor is never modified or deleted, and is reported in the toast instead.
+ * A write the org refuses keeps the room unsaved and is retried on the next Save. The READ path
+ * never depended on this flag.
  *
- * With it off, desks, lockers and parking stalls save exactly as before rooms were read, and no
- * request of any kind goes to `floorplanmarkedzone` or `space` from a save, a Discard or a Refresh.
- * A save that carries room outline changes (traced, reshaped, relabelled, moved plan, deleted,
- * rebound to another record) still succeeds for the markers, and its toast names the rooms whose
- * changes did not reach Facilio; after a reload the org's outline shows again.
- *
- * To enable: set this to `true` and deploy. Nothing else changes — the write path, its tests
- * (markedZones.test.ts / persistUnits.test.ts force it on through `vi.mock`) and the retry /
- * "not written" reporting are all already in place.
+ * Switching it off again restores the old behaviour: desks, lockers and parking stalls save as
+ * before, no request goes to `floorplanmarkedzone` or `space` from a save, a Discard or a Refresh,
+ * and the toast names the room changes that did not reach Facilio.
  */
-export const ROOM_OUTLINE_WRITES: boolean = false;
+export const ROOM_OUTLINE_WRITES: boolean = true;

@@ -3,9 +3,10 @@ import { geometryStringToQuad, lngLatToQuadFraction } from '../lib/geoReference'
 import type { Unit } from '../lib/types';
 
 /**
- * Room outline WRITES ship off (featureFlags.ts: ROOM_OUTLINE_WRITES = false) while the READ path
- * ships on. These pin what "off" promises, with the flag at its real default — NOT mocked — and a
- * fake org that logs every request:
+ * Room outline WRITES have a switch (featureFlags.ts: ROOM_OUTLINE_WRITES — on since 2026-10-01)
+ * while the READ path is always on. These pin what "off" promises, with the flag mocked OFF — so
+ * it stays a working fallback should the writes have to be switched off again — and a fake org
+ * that logs every request:
  *  - loading, editing, deleting, rebinding rooms, Save, Discard and Refresh send not one create,
  *    update or delete to `floorplanmarkedzone`, and nothing at all to `floorplanmarkedzone` or
  *    `space` outside the floor load's own reads;
@@ -114,6 +115,8 @@ vi.mock('../lib/facilioApi', () => ({
   },
 }));
 vi.mock('../lib/dataSource', () => ({ dataSource: { saveUnits: vi.fn(async () => {}) } }));
+// The "off" path under test — the flag ships on (see featureFlags.ts).
+vi.mock('../lib/featureFlags', () => ({ ROOM_OUTLINE_WRITES: false }));
 vi.mock('../lib/pdfPreview', () => ({ renderPdfToDataUrl: vi.fn() }));
 vi.mock('../lib/cadPreview', () => ({ renderCadToDataUrl: vi.fn() }));
 vi.spyOn(console, 'info').mockImplementation(() => {});
@@ -176,8 +179,8 @@ beforeEach(() => {
   org.nextId = 9000;
 });
 
-describe('room outline writes ship off', () => {
-  it('is off by default', async () => {
+describe('room outline writes, switched off', () => {
+  it('reads as off in every module that asks', async () => {
     const { ROOM_OUTLINE_WRITES } = await fresh();
     expect(ROOM_OUTLINE_WRITES).toBe(false);
   });
