@@ -2578,14 +2578,38 @@ export interface MyDeskInfo {
 }
 
 /**
- * The logged-in user's assigned (or booked) desk, via the employee portal's own home endpoint:
- * `GET maintenance/api/v2/servicePortalHome?fetchOnlyDesk=true&count=1[&recordId={employeeId}]`
- * (captured from a live portal session). Without `recordId` the backend resolves the employee
- * from the session user. Returns null when the user has no desk or the endpoint isn't
- * accessible for the current token.
+ * The logged-in user's assigned (or booked) desk.
+ *
+ * First the way the plan itself knows who holds a desk: the `desks` record whose `employee` is the
+ * session's people id — the same field `getAssignments` reads, so the button, the "Your desk" pill
+ * and the assignment colour all agree. Then, for a user with no assigned desk, the employee
+ * portal's home endpoint (`v2/servicePortalHome?fetchOnlyDesk=true&count=1`), which also knows
+ * about a hot-desk booking; it resolves the employee from the session, which the admin app's
+ * session does not always allow, so it is the fallback and not the read. Null when neither names
+ * a desk.
  */
 export async function fetchMyDesk(employeeId?: number): Promise<MyDeskInfo | null> {
-  if (!isFacilioApiConfigured || !apiOrigin) return null;
+  if (!isFacilioApiConfigured) return null;
+  const peopleId = employeeId ?? (await fetchCurrentPeopleId().catch(() => null));
+  if (peopleId != null) {
+    const res = await facilioApi
+      .fetchAll('desks', { page: 1, perPage: 1, isArchived: false, filters: JSON.stringify({ employee: { operatorId: 36, value: [String(peopleId)] } }) })
+      .catch((err: unknown) => ({ error: { message: (err as Error)?.message ?? 'request failed' }, list: null }) as FacilioApiListResult<any>);
+    const desk = res.list?.[0];
+    if (!res.error && desk?.id) {
+      const floorId = lookupId(desk, 'floor');
+      // eslint-disable-next-line no-console
+      console.info(`[facilio-api] my desk: ${desk.name ?? desk.id} (#${desk.id}) on floor ${floorId ?? '?'} — held by people #${peopleId}`);
+      return { recordId: Number(desk.id), name: desk.name ?? 'Your desk', floorId: floorId != null ? String(floorId) : null, booked: false };
+    }
+    // eslint-disable-next-line no-console
+    if (res.error) console.warn('[facilio-api] my desk: the desks read by employee failed — trying the portal home endpoint', res.error);
+    else console.info(`[facilio-api] my desk: no desk holds people #${peopleId} — trying the portal home endpoint`);
+  } else {
+    // eslint-disable-next-line no-console
+    console.info('[facilio-api] my desk: the session carried no people id — trying the portal home endpoint');
+  }
+  if (!apiOrigin) return null;
   const body = await customGet(
     'v2/servicePortalHome',
     { fetchOnlyDesk: true, count: 1, ...(employeeId ? { recordId: employeeId } : {}) },

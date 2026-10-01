@@ -634,19 +634,20 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     },
 
     /**
-     * "My desk" against the REAL backend: `state.myDesk` (from servicePortalHome) names a desk
-     * record + floor. Navigates to that floor, then tries to map the desk record back to a
-     * local unit (via its floorplanmarker's geoId) for the zoom+pulse treatment; desks that
-     * were never placed through this app have no local unit, so those just land on the floor
-     * with a toast.
+     * "My desk" against the REAL backend: `state.myDesk` (see fetchMyDesk) names a desk record +
+     * floor. Navigates to that floor, then finds the desk on it for the zoom+pulse treatment — a
+     * desk read from the org carries its record id as its unit id, and one placed through an older
+     * path is reached through its floorplanmarker's geoId. A desk with no marker on the plan just
+     * lands on the floor with a toast.
      */
     locateMyDesk: async (rectW: number, rectH: number) => {
       const md = state.myDesk;
       if (!md?.floorId) return;
       let units: Unit[] = state.units;
       if (md.floorId !== state.floorId) units = await loadFloor(md.floorId);
-      const geoId = await findUnitIdForDeskRecord(md.floorId, md.recordId).catch(() => null);
-      const u = geoId ? units.find((x) => x.id === geoId) : null;
+      const byRecord = units.find((x) => x.id === String(md.recordId) && x.type === 'workstation');
+      const geoId = byRecord ? null : await findUnitIdForDeskRecord(md.floorId, md.recordId).catch(() => null);
+      const u = byRecord ?? (geoId ? units.find((x) => x.id === geoId) : null) ?? null;
       if (u) {
         if (u.plan !== state.planId) dispatch({ type: 'SET_PLAN', planId: u.plan });
         const view = focusUnitView(u, rectW, rectH, state.view.z, viewInsets(state));
@@ -1521,9 +1522,14 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
       ]);
       dispatch({ type: 'PORTFOLIO_LOADED', portfolio, employees });
       if (myDesk) dispatch({ type: 'SET_MY_DESK', myDesk });
-      // Who the signed-in user is, in the id space bookings are reserved by — what makes a
-      // booking "mine" on the calendar and the form default to the right person.
+      // Who the signed-in user is, in the id space desks are assigned to and bookings reserved
+      // by — what makes a desk "yours" on the plan, a booking "mine" on the calendar, and the
+      // form default to the right person.
       if (peopleId) dispatch({ type: 'SET_BOOK_FIELD', field: 'bookBy', value: String(peopleId) });
+      if (isFacilioApiConfigured) {
+        // eslint-disable-next-line no-console
+        console.info('[boot] session', { peopleId, myDesk: myDesk ? `${myDesk.name} (#${myDesk.recordId}) on floor ${myDesk.floorId}` : null });
+      }
 
       // The mock default floorId ('hqA3') isn't a real floor against the live backend —
       // sending it to per-floor endpoints (getFloorplanDetailsByType) just 500s. Start on the
