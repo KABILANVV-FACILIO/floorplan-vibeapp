@@ -21,6 +21,7 @@ import { buildInitialState, reducer } from './reducer';
 import { useDataState } from './useDataState';
 import type { Action } from './reducer';
 import type { AppState, BookFormTarget } from './types';
+import type { LabelStyle } from '../lib/labelLayout';
 import { conflictsFor, isAssignable, nextLabel, planMarkers, unitById } from './selectors';
 import { calibratedPxPerMeter, clampPanelPos, defaultPanelPos, distNormToPx, fitUnitsView, fitView as fitViewFn, focusUnitView, pointInPoly, zoomAt as zoomAtFn } from '../lib/geometry';
 
@@ -1083,6 +1084,8 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     openBookModal: () => dispatch({ type: 'SET_BOOK_MODAL', open: true }),
     closeBookModal: () => dispatch({ type: 'SET_BOOK_MODAL', open: false }),
     setBookField: (field: 'bookBy' | 'bookPurpose' | 'bookNotes', value: string) => dispatch({ type: 'SET_BOOK_FIELD', field, value }),
+    /** The type the desk labels are drawn in — saved with the other settings (see settingsStore). */
+    setLabelStyle: (style: LabelStyle) => dispatch({ type: 'SET_LABEL_STYLE', style }),
     cancelBooking: async (id: string) => {
       // Persist BEFORE dispatching: CANCEL_BOOKING bumps bookingsNonce, which refetches the
       // calendar — if the store still held the booking at that moment it would resurrect.
@@ -1483,6 +1486,7 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
     state.perms,
     state.moduleColors,
     state.colorBy,
+    state.labelStyle,
     state.slotGranularity,
     state.bookingModule,
     state.customMarkers,

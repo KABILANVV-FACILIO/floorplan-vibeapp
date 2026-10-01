@@ -7,7 +7,7 @@ import { floorImageKey, unitOnPlan } from '../../lib/types';
 import type { Unit } from '../../lib/types';
 import type { AppState } from '../../state/types';
 import { IMG_H, IMG_W } from '../../lib/mockData';
-import { planMarkerLabels, planRoomLabels } from '../../lib/labelLayout';
+import { planMarkerLabels, planRoomLabels, typographyOf } from '../../lib/labelLayout';
 import { FloorplanBackground } from '../canvas/FloorplanBackground';
 import { RoomPolygon } from '../canvas/RoomPolygon';
 import { RoomLabel } from '../canvas/Canvas';
@@ -141,9 +141,16 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
     // with the same label layout the page draws with (PrintZoomedPlan); an area where one doesn't
     // fit is zoomed in further (see planLabelledDetailAreas).
     const inputs = markerLabelInputs(state, markers, { personal: false, measure: sharedLabelTextMeasurer() });
+    const roomInputs = roomLabelInputs(state, planRooms(state), { measure: sharedLabelTextMeasurer() });
+    const typography = typographyOf(state.labelStyle);
+    // The page is planned exactly as it is drawn: chips first, then the room names clear of them,
+    // then the cards clear of both (see PrintZoomedPlan).
+    const chipBoxesAt = (z: number) => inputs.map((i) => ({ x: i.x * IMG_W * z - i.size / 2, y: i.y * IMG_H * z - i.size / 2, w: i.size, h: i.size }));
     const planAt = (labelScale: number) => {
       const labelledAt = (zoom: number) => {
-        const placed = planMarkerLabels(inputs, { planW: IMG_W, planH: IMG_H, zoom: zoom / labelScale });
+        const z = zoom / labelScale;
+        const roomBoxes = [...planRoomLabels(roomInputs, { planW: IMG_W, planH: IMG_H, zoom: z, reserved: chipBoxesAt(z) }).values()].map((p) => p.box);
+        const placed = planMarkerLabels(inputs, { planW: IMG_W, planH: IMG_H, zoom: z, typography, reserved: roomBoxes });
         const done = new Set<string>();
         for (const want of inputs) {
           const p = placed.get(want.id);
@@ -285,8 +292,31 @@ function PrintZoomedPlan({ cx, cy, zoom, labelScale = 1 }: { cx: number; cy: num
   const markers = planMarkers(state);
   // Chips and labels `labelScale`× their screen size: laid out as the screen would at
   // zoom / labelScale (same geometry, everything divided by the scale), drawn at labelScale / zoom.
+  const typography = typographyOf(state.labelStyle);
+  // Chips first, then the room names clear of them, then the desk cards clear of both — as on screen.
+  const inputs = useMemo(
+    () => markerLabelInputs(state, markers, { personal: false, measure: sharedLabelTextMeasurer() }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [zoom, labelScale],
+  );
+  const roomLabelPlan = useMemo(
+    () => {
+      const z = zoom / labelScale;
+      const chipBoxes = inputs.map((i) => ({ x: i.x * IMG_W * z - i.size / 2, y: i.y * IMG_H * z - i.size / 2, w: i.size, h: i.size }));
+      return planRoomLabels(roomLabelInputs(state, rooms, { measure: sharedLabelTextMeasurer() }), { planW: IMG_W, planH: IMG_H, zoom: z, reserved: chipBoxes });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [zoom, labelScale],
+  );
   const labelPlan = useMemo(
-    () => planMarkerLabels(markerLabelInputs(state, markers, { personal: false, measure: sharedLabelTextMeasurer() }), { planW: IMG_W, planH: IMG_H, zoom: zoom / labelScale }),
+    () =>
+      planMarkerLabels(inputs, {
+        planW: IMG_W,
+        planH: IMG_H,
+        zoom: zoom / labelScale,
+        typography,
+        reserved: [...roomLabelPlan.values()].map((p) => p.box),
+      }),
     // Built once per page, from the state at that moment.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [zoom, labelScale],
@@ -294,13 +324,6 @@ function PrintZoomedPlan({ cx, cy, zoom, labelScale = 1 }: { cx: number; cy: num
   // Each marker's model (chip colours, holder, title), once per page — see lib/markerModel.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const models = useMemo(() => new Map(markers.map((m) => [m.id, markerModel(state, m, { personal: false })])), [zoom, labelScale]);
-  // Room names as the screen keeps them at this zoom (see Canvas' roomLabelIds): drawn unfiltered,
-  // an onboarded floor's dozens of small org rooms print as a pile of overlapping name boxes.
-  const roomLabelIds = useMemo(
-    () => planRoomLabels(roomLabelInputs(state, rooms), { planW: IMG_W, planH: IMG_H, zoom: zoom / labelScale }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [zoom, labelScale],
-  );
   const invZ = labelScale / zoom;
   const ox = VIEW_FRAME_W / 2 - cx * zoom;
   const oy = VIEW_FRAME_H / 2 - cy * zoom;
@@ -314,13 +337,12 @@ function PrintZoomedPlan({ cx, cy, zoom, labelScale = 1 }: { cx: number; cy: num
       {rooms.map((r) => (
         <RoomPolygon key={r.id} unit={r} />
       ))}
-      {rooms
-        .filter((r) => roomLabelIds.has(r.id))
-        .map((r) => (
-          <RoomLabel key={`l-${r.id}`} unit={r} />
-        ))}
+      {rooms.map((r) => {
+        const placement = roomLabelPlan.get(r.id);
+        return placement ? <RoomLabel key={`l-${r.id}`} unit={r} placement={placement} /> : null;
+      })}
       {markers.map((m) => (
-        <Marker key={m.id} model={models.get(m.id)!} labels={labelPlan.get(m.id)} />
+        <Marker key={m.id} model={models.get(m.id)!} labels={labelPlan.get(m.id)} typography={typography} />
       ))}
     </div>
   );
@@ -393,19 +415,32 @@ function PrintPlan() {
   const { state } = useFloorplan();
   const rooms = planRooms(state);
   const markers = planMarkers(state);
+  const typography = typographyOf(state.labelStyle);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const inputs = useMemo(() => markerLabelInputs(state, markers, { personal: false, measure: sharedLabelTextMeasurer() }), []);
+  const roomLabelPlan = useMemo(
+    () => {
+      const chipBoxes = inputs.map((i) => ({ x: i.x * IMG_W * PRINT_ZOOM - i.size / 2, y: i.y * IMG_H * PRINT_ZOOM - i.size / 2, w: i.size, h: i.size }));
+      return planRoomLabels(roomLabelInputs(state, rooms, { measure: sharedLabelTextMeasurer() }), { planW: IMG_W, planH: IMG_H, zoom: PRINT_ZOOM, reserved: chipBoxes });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
   const labelPlan = useMemo(
-    () => planMarkerLabels(markerLabelInputs(state, markers, { personal: false, measure: sharedLabelTextMeasurer() }), { planW: IMG_W, planH: IMG_H, zoom: PRINT_ZOOM }),
+    () =>
+      planMarkerLabels(inputs, {
+        planW: IMG_W,
+        planH: IMG_H,
+        zoom: PRINT_ZOOM,
+        typography,
+        reserved: [...roomLabelPlan.values()].map((p) => p.box),
+      }),
     // Built once per print, from the state at that moment.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const models = useMemo(() => new Map(markers.map((m) => [m.id, markerModel(state, m, { personal: false })])), []);
-  const roomLabelIds = useMemo(
-    () => planRoomLabels(roomLabelInputs(state, rooms), { planW: IMG_W, planH: IMG_H, zoom: PRINT_ZOOM }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  );
   const invZ = 1 / PRINT_ZOOM;
 
   return (
@@ -417,13 +452,12 @@ function PrintPlan() {
       {rooms.map((r) => (
         <RoomPolygon key={r.id} unit={r} />
       ))}
-      {rooms
-        .filter((r) => roomLabelIds.has(r.id))
-        .map((r) => (
-          <RoomLabel key={`l-${r.id}`} unit={r} />
-        ))}
+      {rooms.map((r) => {
+        const placement = roomLabelPlan.get(r.id);
+        return placement ? <RoomLabel key={`l-${r.id}`} unit={r} placement={placement} /> : null;
+      })}
       {markers.map((m) => (
-        <Marker key={m.id} model={models.get(m.id)!} labels={labelPlan.get(m.id)} />
+        <Marker key={m.id} model={models.get(m.id)!} labels={labelPlan.get(m.id)} typography={typography} />
       ))}
     </div>
   );

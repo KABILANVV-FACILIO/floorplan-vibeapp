@@ -8,8 +8,9 @@ import type { AppState } from '../../state/types';
 import type { Unit } from '../../lib/types';
 
 /**
- * The canvas keeps only the room names that fit (planRoomLabels), because an onboarded floor's
- * dozens of small org rooms would otherwise pile into one unreadable block. The print sheet drew
+ * The canvas places the room names it can (planRoomLabels) — inside a room, or just outside one
+ * too small for its name — because an onboarded floor's dozens of small org rooms would otherwise
+ * pile into one unreadable block. The print sheet drew
  * every name regardless — a pile of overlapping boxes on paper, and a "Current view" that showed
  * names the screen hid. These pin that paper keeps the names the screen would at the page's zoom.
  */
@@ -57,17 +58,19 @@ function printed(over: Partial<AppState>) {
 afterEach(cleanup);
 
 describe('the print sheet prints the room names the screen would keep', () => {
-  it('whole floor: the big room is named, the small rooms whose names do not fit are not', () => {
+  it('whole floor: the big room is named; of the small rooms, those whose names find room outside their outlines', () => {
     const shown = printed({ printScope: 'floor' });
     expect(shown).toContain('1');
-    expect(shown.filter((id) => id !== '1')).toEqual([]);
+    // Twelve toilets a few px apart cannot all carry a 190px name beside them — but some can.
+    expect(shown.length).toBeGreaterThan(1);
+    expect(shown.length).toBeLessThan(rooms.length);
   });
 
   it('current view: exactly the names the canvas keeps at the viewer\'s zoom', () => {
     const view = { tx: 0, ty: 0, z: 0.76 };
     const shown = printed({ printScope: 'view', view, stage: { w: 1200, h: 700 } });
     const screen = planRoomLabels(roomLabelInputs(store.state, planRooms(store.state)), { planW: IMG_W, planH: IMG_H, zoom: view.z });
-    expect(new Set(shown)).toEqual(screen);
+    expect(new Set(shown)).toEqual(new Set(screen.keys()));
     expect(shown.length).toBeLessThan(rooms.length);
   });
 });

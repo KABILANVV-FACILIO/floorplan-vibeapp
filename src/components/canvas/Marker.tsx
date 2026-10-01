@@ -2,8 +2,8 @@ import { memo } from 'react';
 import type { CSSProperties, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from 'react';
 import type { Unit, PointGeom } from '../../lib/types';
 import type { MarkerModel } from '../../lib/markerModel';
-import type { LabelPlacement, LabelPos } from '../../lib/labelLayout';
-import { CARD_GAP, CARD_PAD_X, CARD_PAD_Y, DEPT_FONT, DEPT_LINE_PX, DEPT_WEIGHT, NAME_FONT, NAME_LINE_PX, NAME_WEIGHT, SUB_FONT, SUB_LINE_PX, SUB_WEIGHT, cardOffset } from '../../lib/labelLayout';
+import type { LabelPlacement, LabelPos, LabelTypography } from '../../lib/labelLayout';
+import { CARD_GAP, CARD_PAD_X, CARD_PAD_Y, DEFAULT_LABEL_TYPOGRAPHY, HALO_TEXT, cardOffset } from '../../lib/labelLayout';
 import { MARKER_ICONS as ICONS } from './markerIcons';
 import styles from './Marker.module.css';
 
@@ -20,13 +20,13 @@ export interface MarkerHandlers {
   onDrop(unit: Unit, e: ReactDragEvent): void;
 }
 
-/** The card's pointer, per side: a CARD_GAP-high triangle on the edge that faces the chip. */
-const TAIL_COLOR = 'var(--ink-300)';
-const TAIL: Record<LabelPos, CSSProperties> = {
-  below: { top: -CARD_GAP, left: '50%', marginLeft: -CARD_GAP, borderLeft: `${CARD_GAP}px solid transparent`, borderRight: `${CARD_GAP}px solid transparent`, borderBottom: `${CARD_GAP}px solid ${TAIL_COLOR}` },
-  above: { bottom: -CARD_GAP, left: '50%', marginLeft: -CARD_GAP, borderLeft: `${CARD_GAP}px solid transparent`, borderRight: `${CARD_GAP}px solid transparent`, borderTop: `${CARD_GAP}px solid ${TAIL_COLOR}` },
-  right: { left: -CARD_GAP, top: '50%', marginTop: -CARD_GAP, borderTop: `${CARD_GAP}px solid transparent`, borderBottom: `${CARD_GAP}px solid transparent`, borderRight: `${CARD_GAP}px solid ${TAIL_COLOR}` },
-  left: { right: -CARD_GAP, top: '50%', marginTop: -CARD_GAP, borderTop: `${CARD_GAP}px solid transparent`, borderBottom: `${CARD_GAP}px solid transparent`, borderLeft: `${CARD_GAP}px solid ${TAIL_COLOR}` },
+/** The tick: a short line from the chip's edge to the text, across the gap, per side. */
+const TICK_COLOR = 'var(--ink-300)';
+const TICK: Record<LabelPos, CSSProperties> = {
+  below: { top: -CARD_GAP, left: '50%', width: 1, height: CARD_GAP, marginLeft: -0.5 },
+  above: { bottom: -CARD_GAP, left: '50%', width: 1, height: CARD_GAP, marginLeft: -0.5 },
+  right: { left: -CARD_GAP, top: '50%', width: CARD_GAP, height: 1, marginTop: -0.5 },
+  left: { right: -CARD_GAP, top: '50%', width: CARD_GAP, height: 1, marginTop: -0.5 },
 };
 
 /** One line of the card: its own ellipsis, so a long line never pushes the next one out. */
@@ -46,6 +46,7 @@ export const Marker = memo(function Marker({
   labels,
   previewGeom,
   handlers,
+  typography = DEFAULT_LABEL_TYPOGRAPHY,
 }: {
   model: MarkerModel;
   /**
@@ -56,19 +57,25 @@ export const Marker = memo(function Marker({
   /** Where the chip is while it is being dragged (edit mode), ahead of the store. */
   previewGeom?: PointGeom;
   handlers?: MarkerHandlers;
+  /** The type the card is drawn in — the one the labels were laid out for (Settings › Desks). */
+  typography?: LabelTypography;
 }) {
   const { unit, style, title, holder, dept, isMine, isHighlighted, isBusy, draggable } = model;
   const geom = previewGeom ?? model.geom;
+  const t = typography;
 
   const at = { left: `${geom.x * 100}%`, top: `${geom.y * 100}%` };
+  // Half the chip's screen size at the zoom the labels were laid out for — the chip grows with the
+  // zoom (see chipScreenSize), and the card and the pill stand off its edge, not off 24px.
+  const half = labels?.half ?? style.size / 2;
   // No card while the chip is being dragged: the layout placed it for where the chip WAS, and a
   // card trailing behind a moving chip reads as another desk's. It returns where the drag ends.
-  const card = labels?.name && labels.pos && labels.w && labels.h && !previewGeom ? cardOffset(labels.pos, labels.w, labels.h, style.size / 2) : null;
+  const card = labels?.name && labels.pos && labels.w && labels.h && !previewGeom ? cardOffset(labels.pos, labels.w, labels.h, half) : null;
 
   return (
     <>
       {isMine && labels?.pill && (
-        <div className={styles.myDeskBadge} style={{ ...at, transform: `scale(var(--inv)) translate(-50%, calc(-100% - ${Math.round(style.size / 2 + 6)}px))`, transformOrigin: '0 0' }}>
+        <div className={styles.myDeskBadge} style={{ ...at, transform: `scale(var(--inv)) translate(-50%, calc(-100% - ${Math.round(half + 6)}px))`, transformOrigin: '0 0' }}>
           <div className={styles.myDeskPill}>
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0z" />
@@ -94,9 +101,11 @@ export const Marker = memo(function Marker({
           height: style.size,
           // Scale BEFORE translating: the plane is scaled by z, so a translate written here is in
           // PLAN px and reaches the screen multiplied by z. Inside the scale it is divided by z
-          // first, so the offset is a constant number of screen px at every zoom — which is what
-          // a 24px chip centred on its point, and a label a fixed gap away from it, both need.
-          transform: 'scale(var(--inv)) translate(-50%,-50%)',
+          // first, so the offset is in screen px — which is what a chip centred on its point, and
+          // a label a fixed gap away from it, both need. `--chip` is the chip's own size at this
+          // zoom over its 24px base (see chipScreenSize): it grows with the drawing, within bounds,
+          // and the plane sets it beside `--inv`, so a zoom re-renders no chip for it.
+          transform: 'scale(calc(var(--inv) * var(--chip, 1))) translate(-50%,-50%)',
           transformOrigin: '0 0',
           background: style.bg,
           border: `2px solid ${style.bd}`,
@@ -126,8 +135,9 @@ export const Marker = memo(function Marker({
       {/*
         The card: the desk's name, who holds it, their department — wherever the canvas found room
         for it around the chip (see planMarkerLabels), at exactly the size it reserved, so what is
-        drawn is what was measured against the neighbours. A line too long for the card ends in
-        "…" (the department runs to a second line first); the chip's tooltip has the full text.
+        drawn is what was measured against the neighbours. Outlined text, no box: the drawing shows
+        through. A line too long for the card ends in "…" (the department runs to a second line
+        first); the chip's tooltip has the full text.
       */}
       {card && labels && (
         <div
@@ -148,20 +158,18 @@ export const Marker = memo(function Marker({
               inset: 0,
               boxSizing: 'border-box',
               padding: `${CARD_PAD_Y}px ${CARD_PAD_X}px`,
-              background: 'rgba(255,255,255,0.94)',
-              border: '1px solid var(--ink-200)',
-              borderRadius: 3,
               textAlign: 'center',
               overflow: 'hidden',
+              ...HALO_TEXT,
             }}
           >
-            <div style={{ ...LINE, font: `${NAME_WEIGHT} ${NAME_FONT}px/${NAME_LINE_PX}px var(--font-sans)`, color: 'var(--ink-800)' }}>{unit.label}</div>
-            {labels.sub && holder && <div style={{ ...LINE, font: `${SUB_WEIGHT} ${SUB_FONT}px/${SUB_LINE_PX}px var(--font-sans)`, color: 'var(--ink-700)' }}>{holder}</div>}
+            <div style={{ ...LINE, font: `${t.nameWeight} ${t.nameFont}px/${t.nameLine}px var(--font-sans)`, color: 'var(--ink-900)' }}>{unit.label}</div>
+            {labels.sub && holder && <div style={{ ...LINE, font: `${t.subWeight} ${t.subFont}px/${t.subLine}px var(--font-sans)`, color: 'var(--ink-800)' }}>{holder}</div>}
             {labels.dept && dept && (
               <div
                 style={{
-                  font: `${DEPT_WEIGHT} ${DEPT_FONT}px/${DEPT_LINE_PX}px var(--font-sans)`,
-                  color: 'var(--ink-500)',
+                  font: `${t.deptWeight} ${t.deptFont}px/${t.deptLine}px var(--font-sans)`,
+                  color: 'var(--ink-600)',
                   display: '-webkit-box',
                   WebkitBoxOrient: 'vertical',
                   WebkitLineClamp: labels.deptLines ?? 1,
@@ -173,9 +181,9 @@ export const Marker = memo(function Marker({
               </div>
             )}
           </div>
-          {/* The pointer: a small arrow on the card's edge facing the chip, in the gap between
-              them, so a card beside a chip is never read as a neighbour's. */}
-          <div style={{ position: 'absolute', width: 0, height: 0, ...TAIL[labels.pos!] }} />
+          {/* The tick across the gap, from the chip's edge to the text, so a label beside a chip is
+              never read as a neighbour's. */}
+          <div style={{ position: 'absolute', background: TICK_COLOR, ...TICK[labels.pos!] }} />
         </div>
       )}
     </>

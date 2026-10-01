@@ -4,6 +4,8 @@ import type { ModuleKey, PermsAction, Role, UnitType } from '../../lib/types';
 import { moduleEnabled } from '../../state/selectors';
 import { Button } from '../primitives/Button';
 import { moduleColor } from '../../lib/unitStatus';
+import { DEFAULT_LABEL_STYLE, HALO_TEXT, typographyOf } from '../../lib/labelLayout';
+import type { LabelStyle } from '../../lib/labelLayout';
 import { departmentColor, departmentsIn, DEPARTMENT_PALETTE } from '../../lib/departmentColors';
 import { departmentDisplayName } from '../../lib/displayNames';
 import styles from './SettingsScreen.module.css';
@@ -322,6 +324,7 @@ function ModuleTab({ type }: { type: UnitType }) {
         ))}
       </div>
 
+      {type === 'workstation' && <DeskLabelStyle />}
       {type === 'workstation' && <DepartmentColors />}
 
     </div>
@@ -416,6 +419,91 @@ function DepartmentColors() {
           );
         })
       )}
+    </div>
+  );
+}
+
+/* ─────────────────────────── Desk labels ─────────────────────────── */
+
+const NAME_SIZES = [
+  { v: 7.5, l: 'Small' },
+  { v: 8.5, l: 'Default' },
+  { v: 10, l: 'Large' },
+  { v: 12, l: 'Larger' },
+];
+const DETAIL_SIZES = [
+  { v: 7, l: 'Small' },
+  { v: 8, l: 'Default' },
+  { v: 9.5, l: 'Large' },
+  { v: 11, l: 'Larger' },
+];
+const WEIGHTS = [
+  { v: 400, l: 'Regular' },
+  { v: 500, l: 'Medium' },
+  { v: 600, l: 'Semibold' },
+  { v: 700, l: 'Bold' },
+];
+
+/**
+ * The type the desk labels are drawn in: the desk's name (the primary line) and the holder and
+ * department under it (the details), each a size and a weight. The defaults are what the plan
+ * ships with; the choice is saved with the workspace's other settings, so it follows the user to
+ * every device. Settings does not show the plan, so a sample shows what the choice looks like.
+ */
+function DeskLabelStyle() {
+  const { state, actions } = useFloorplanData();
+  const s = state.labelStyle;
+  const t = typographyOf(s);
+  const isDefault = JSON.stringify(s) === JSON.stringify(DEFAULT_LABEL_STYLE);
+  const update = (part: keyof LabelStyle, patch: Partial<LabelStyle['name']>) => actions.setLabelStyle({ ...s, [part]: { ...s[part], ...patch } });
+
+  return (
+    <div className={styles.card}>
+      <div className={styles.cardHead} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+        <div>
+          <h3 className={styles.cardTitle}>Desk labels</h3>
+          <p className={styles.cardDesc}>The text beside each desk — its name, then who holds it and their department. Outlined, with no box, so the drawing shows through. Saved for the whole workspace.</p>
+        </div>
+        {!isDefault && (
+          <Button variant="secondary" onClick={() => actions.setLabelStyle(DEFAULT_LABEL_STYLE)}>
+            Reset to default
+          </Button>
+        )}
+      </div>
+      <LabelTypeRow label="Desk name" sizes={NAME_SIZES} value={s.name} onChange={(patch) => update('name', patch)} />
+      <LabelTypeRow label="Holder & department" sizes={DETAIL_SIZES} value={s.detail} onChange={(patch) => update('detail', patch)} />
+      <div className={styles.labelSample} aria-label="Sample">
+        <div className={styles.labelSampleChip} />
+        <div style={{ textAlign: 'center', ...HALO_TEXT }}>
+          <div style={{ font: `${t.nameWeight} ${t.nameFont}px/${t.nameLine}px var(--font-sans)`, color: 'var(--ink-900)' }}>WS-05</div>
+          <div style={{ font: `${t.subWeight} ${t.subFont}px/${t.subLine}px var(--font-sans)`, color: 'var(--ink-800)' }}>Amrithya Nair</div>
+          <div style={{ font: `${t.deptWeight} ${t.deptFont}px/${t.deptLine}px var(--font-sans)`, color: 'var(--ink-600)' }}>Project Implementation</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LabelTypeRow({ label, sizes, value, onChange }: { label: string; sizes: { v: number; l: string }[]; value: { size: number; weight: number }; onChange: (patch: { size?: number; weight?: number }) => void }) {
+  return (
+    <div className={styles.labelRow}>
+      <div className={styles.labelRowName}>{label}</div>
+      <div className={styles.labelChoices}>
+        <span className={styles.labelChoiceName}>Size</span>
+        {sizes.map((o) => (
+          <button key={o.v} className={[styles.slotChip, styles.labelChip, value.size === o.v ? styles.slotChipActive : ''].join(' ')} onClick={() => onChange({ size: o.v })}>
+            {o.l}
+          </button>
+        ))}
+      </div>
+      <div className={styles.labelChoices}>
+        <span className={styles.labelChoiceName}>Weight</span>
+        {WEIGHTS.map((o) => (
+          <button key={o.v} className={[styles.slotChip, styles.labelChip, value.weight === o.v ? styles.slotChipActive : ''].join(' ')} style={{ fontWeight: o.v }} onClick={() => onChange({ weight: o.v })}>
+            {o.l}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

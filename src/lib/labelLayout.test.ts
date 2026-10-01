@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cardOffset, planMarkerLabels, planRoomLabels } from './labelLayout';
+import { CARD_PAD_X, CHIP_MAX_SCALE, CHIP_PX, cardOffset, chipScreenSize, planMarkerLabels, planRoomLabels, typographyOf } from './labelLayout';
 import type { LabelPlacement, MarkerLabelInput, RoomLabelInput } from './labelLayout';
 
 /**
@@ -104,7 +104,7 @@ describe('the card fits its text', () => {
   it('reserves the measured width when the canvas measured the text', () => {
     const estimated = planMarkerLabels([desk('WS-01', 0.5, 0.5, { sub: 'Amrithya' })], opts).get('WS-01')!;
     const measured = planMarkerLabels([desk('WS-01', 0.5, 0.5, { sub: 'Amrithya', nameW: 60, subW: 90 })], opts).get('WS-01')!;
-    expect(measured.w).toBe(90 + 12);
+    expect(measured.w).toBe(90 + 2 * CARD_PAD_X);
     expect(measured.w).not.toBe(estimated.w);
   });
 });
@@ -200,32 +200,118 @@ describe('room names are drawn only where they fit', () => {
   // The onboarded floors' plan size, at a typical fit-to-screen zoom with the side panels open.
   const fit = { planW: 1492, planH: 1054, zoom: 0.4 };
 
-  it('drops the names of two small neighbouring rooms that would pile on each other — as on Block B 1F', () => {
-    // Two toilets side by side, each ~3% of the plan wide: ~18px on screen, for a name ~150px wide.
+  it('names a small room just outside its outline — below it — instead of dropping the name', () => {
+    // A toilet ~3% of the plan wide: ~18px on screen, for a name ~150px wide.
+    const shown = planRoomLabels([room('HQ-BKB-1F-Male Toilet', 0.4, 0.4, 0.03, 0.05)], fit);
+    const p = shown.get('HQ-BKB-1F-Male Toilet')!;
+    expect(p.outside).toBe(true);
+    expect(p.lines).toBe(1);
+    expect(p.dy).toBeGreaterThan(0);
+  });
+
+  it('names two small neighbouring rooms on opposite sides rather than on each other — as on Block B 1F', () => {
     const shown = planRoomLabels([room('HQ-BKB-1F-Male Toilet', 0.4, 0.4, 0.03, 0.05), room('HQ-BKB-1F-Female Toilet', 0.43, 0.4, 0.03, 0.05)], fit);
-    expect([...shown]).toEqual([]);
+    expect(shown.size).toBe(2);
+    const [a, b] = [...shown.values()];
+    expect(Math.sign(a.dy)).not.toBe(Math.sign(b.dy));
+    const apart = a.box.x + a.box.w <= b.box.x || b.box.x + b.box.w <= a.box.x || a.box.y + a.box.h <= b.box.y || b.box.y + b.box.h <= a.box.y;
+    expect(apart).toBe(true);
   });
 
-  it("draws a room's name once zoomed in far enough for it to fit inside the room", () => {
-    const toilet = room('WC', 0.4, 0.4, 0.03, 0.05);
-    expect(planRoomLabels([toilet], fit).has('WC')).toBe(false);
-    expect(planRoomLabels([toilet], { ...fit, zoom: 2 }).has('WC')).toBe(true);
+  it("moves a room's name inside once zoomed in far enough for it to fit there", () => {
+    const toilet = room('Toilet', 0.4, 0.4, 0.03, 0.05);
+    expect(planRoomLabels([toilet], fit).get('Toilet')?.outside).toBe(true);
+    expect(planRoomLabels([toilet], { ...fit, zoom: 2 }).get('Toilet')).toMatchObject({ outside: false, dx: 0, dy: 0 });
   });
 
-  it('keeps the bigger room when two names that fit their rooms would still overlap', () => {
-    // Two rooms that overlap on screen (a room outlined inside another): the names collide.
+  it('runs a long name to two lines in a room wide enough for that, rather than putting it outside', () => {
+    const p = planRoomLabels([room('Innovation Collaboration Hub', 0.3, 0.3, 0.12, 0.06)], { ...fit, zoom: 1 }).get('Innovation Collaboration Hub')!;
+    expect(p).toMatchObject({ outside: false, lines: 2 });
+    expect(p.w).toBeLessThanOrEqual(0.12 * fit.planW);
+  });
+
+  it('keeps the bigger room inside and moves the smaller one out when their names would collide', () => {
+    // A room outlined inside another, with the same centre: the names would land on each other.
     const shown = planRoomLabels([room('Open Office', 0.1, 0.1, 0.5, 0.5), room('Pod', 0.29, 0.32, 0.12, 0.06)], { ...fit, zoom: 1 });
-    expect([...shown]).toEqual(['Open Office']);
+    expect(shown.get('Open Office')?.outside).toBe(false);
+    expect(shown.get('Pod')?.outside).toBe(true);
   });
 
-  it('always shows the selected room, and everything else yields to it', () => {
+  it('always shows the selected room at its centroid, and everything else yields to it', () => {
     const shown = planRoomLabels([room('Open Office', 0.1, 0.1, 0.5, 0.5), room('Pod', 0.29, 0.32, 0.12, 0.06, { must: true })], { ...fit, zoom: 1 });
-    expect([...shown]).toEqual(['Pod']);
+    expect(shown.get('Pod')).toMatchObject({ outside: false, dx: 0, dy: 0 });
+    expect(shown.get('Open Office')?.outside).toBe(true);
     expect(planRoomLabels([room('HQ-BKB-1F-Male Toilet', 0.4, 0.4, 0.03, 0.05, { must: true })], fit).size).toBe(1);
   });
 
-  it('keeps every name on a roomy floor', () => {
+  it('keeps every name on a roomy floor, inside its room', () => {
     const shown = planRoomLabels([room('Board Room', 0.1, 0.1, 0.3, 0.3), room('Pantry', 0.6, 0.6, 0.3, 0.3)], { ...fit, zoom: 1 });
-    expect([...shown].sort()).toEqual(['Board Room', 'Pantry']);
+    expect([...shown.keys()].sort()).toEqual(['Board Room', 'Pantry']);
+    expect([...shown.values()].every((p) => !p.outside)).toBe(true);
+  });
+
+  it("never puts a room's name under a desk chip — the desks along a small office's wall are taken first", () => {
+    // A small office with a desk right under its wall, where "below" would land the name.
+    const office = room('HQ-BKC-4F- Majed Almaskri Office', 0.4, 0.4, 0.04, 0.05);
+    const z = 1;
+    const chip = { x: 0.42 * fit.planW * z - 12, y: (0.45 * fit.planH + 10) * z - 12, w: 24, h: 24 };
+    const p = planRoomLabels([office], { ...fit, zoom: z, reserved: [chip] }).get(office.id)!;
+    expect(p.outside).toBe(true);
+    expect(p.dy).toBeLessThan(0); // above, not on the desk
+    const apart = p.box.x + p.box.w <= chip.x || chip.x + chip.w <= p.box.x || p.box.y + p.box.h <= chip.y || chip.y + chip.h <= p.box.y;
+    expect(apart).toBe(true);
+  });
+
+  it('keeps the desk cards off the room names', () => {
+    const rooms = planRoomLabels([room('Pod', 0.29, 0.32, 0.12, 0.06)], { ...fit, zoom: 1 });
+    const reserved = [...rooms.values()].map((p) => p.box);
+    // A desk right under the room's name: its card has to go somewhere else.
+    const desk: MarkerLabelInput = { id: 'd', x: 0.35, y: 0.37, size: 24, name: 'WS-01', sub: 'Ann', rank: 2 };
+    const p = planMarkerLabels([desk], { ...fit, zoom: 1, reserved }).get('d')!;
+    expect(p.name).toBe(true);
+    expect(p.pos).not.toBe('above');
+  });
+});
+
+describe('the type the labels are drawn in', () => {
+  it('reserves a taller and wider card for a larger type, and the default reproduces today\'s card', () => {
+    const input: MarkerLabelInput = { id: 'a', x: 0.5, y: 0.5, size: 24, name: 'WS-01', sub: 'Ann Example', dept: 'Finance', rank: 2 };
+    const small = planMarkerLabels([input], { planW: 1000, planH: 1000, zoom: 1 }).get('a')!;
+    const large = planMarkerLabels([input], { planW: 1000, planH: 1000, zoom: 1, typography: typographyOf({ name: { size: 12, weight: 700 }, detail: { size: 11, weight: 500 } }) }).get('a')!;
+    expect(small.h).toBe(2 * 2 + 10 + 10 + 9); // padding + the three default line heights
+    expect(large.h).toBeGreaterThan(small.h!);
+    expect(large.w).toBeGreaterThan(small.w!);
+  });
+});
+
+describe('chipScreenSize', () => {
+  it('holds the readable size on a whole-floor view, tracks the drawing zooming in, and stops at the cap', () => {
+    const footprint = 20; // plan px — a share of this floor's desk pitch
+    expect(chipScreenSize(0.4, footprint)).toBe(CHIP_PX); // 8px would be a speck
+    expect(chipScreenSize(1.2, footprint)).toBe(CHIP_PX); // exactly the floor
+    expect(chipScreenSize(2, footprint)).toBe(40);
+    expect(chipScreenSize(3, footprint)).toBe(60);
+    expect(chipScreenSize(6, footprint)).toBe(CHIP_PX * CHIP_MAX_SCALE);
+  });
+
+  it('never shrinks as the zoom grows', () => {
+    let last = 0;
+    for (let z = 0.1; z <= 8; z += 0.1) {
+      const s = chipScreenSize(z, 30);
+      expect(s).toBeGreaterThanOrEqual(last);
+      last = s;
+    }
+  });
+
+  it('is the constant size when the floor has no pitch to speak of', () => {
+    expect(chipScreenSize(3, null)).toBe(CHIP_PX);
+    expect(chipScreenSize(3, 0)).toBe(CHIP_PX);
+  });
+
+  it('is what the layout places against — each placement carries the half it used', () => {
+    const inputs: MarkerLabelInput[] = [{ id: 'a', x: 0.5, y: 0.5, size: 48, name: 'WS-01', sub: 'Ann', rank: 2 }];
+    const plan = planMarkerLabels(inputs, { planW: 1000, planH: 1000, zoom: 2 });
+    expect(plan.get('a')?.half).toBe(24);
+    expect(plan.get('a')?.name).toBe(true);
   });
 });

@@ -1,5 +1,6 @@
 import type { EnabledModules, MarkerDef, Perms } from './types';
 import type { AppState } from '../state/types';
+import type { LabelStyle } from './labelLayout';
 import { isVibeApp, vibe } from './vibe';
 import { fetchVibeSettings, storeVibeSettings } from './vibeDbDataSource';
 
@@ -36,6 +37,8 @@ export interface SettingsConfig {
   customMarkers?: MarkerDef[];
   /** Which modules the org runs. A disabled one is hidden app-wide (Settings › Modules). */
   enabledModules?: EnabledModules;
+  /** The type the desk labels are drawn in (Settings › Desks › Desk labels). */
+  labelStyle?: LabelStyle;
 }
 
 const LS_KEY = 'facilio_floorplan_settings_v1';
@@ -52,6 +55,7 @@ export function settingsFromState(state: AppState): SettingsConfig {
     bookingModule: state.bookingModule,
     customMarkers: state.customMarkers,
     enabledModules: state.enabledModules,
+    labelStyle: state.labelStyle,
   };
 }
 

@@ -1,4 +1,6 @@
 import { DEFAULT_ENABLED_MODULES, DEFAULT_PERMS, floorImageKey, isRoomLike, planForPlacement } from '../lib/types';
+import { DEFAULT_LABEL_STYLE } from '../lib/labelLayout';
+import type { LabelStyle } from '../lib/labelLayout';
 import type { Booking, Building, Floor, FloorSearchHit, MarkerDef, ModuleKey, PlanId, Site, Unit } from '../lib/types';
 import { clamp, fitView } from '../lib/geometry';
 import { seedBookings } from '../lib/mockData';
@@ -138,6 +140,7 @@ export function buildInitialState(): AppState {
     uploadOpen: false,
     autoMapGroups: null,
     cadAnalyses: {},
+    labelStyle: DEFAULT_LABEL_STYLE,
     myDesk: null,
     floorImages: {},
     floorsWithPlans: {},
@@ -248,6 +251,7 @@ export type Action =
   | { type: 'SET_FLOOR_PLAN_TYPES'; floorId: string; types: AppState['floorPlanTypes'][string] }
   | { type: 'SET_FLOOR_IMAGE_LOADING'; value: boolean }
   | { type: 'SET_MY_DESK'; myDesk: AppState['myDesk'] }
+  | { type: 'SET_LABEL_STYLE'; style: LabelStyle }
   /**
    * A save finished. `units` is what was SENT (the snapshot taken when Save was pressed) and
    * `baseline` the saved snapshot it was diffed against; `retry` the ids whose write failed, kept
@@ -634,6 +638,10 @@ export function reducer(state: AppState, action: Action): AppState {
         // Merged over the defaults, not replaced: a config stored before a module existed would
         // otherwise leave the new one undefined and read as disabled.
         enabledModules: { ...DEFAULT_ENABLED_MODULES, ...(c.enabledModules ?? {}) },
+        // Over the defaults too: a config saved before the setting existed must not blank it.
+        labelStyle: c.labelStyle
+          ? { name: { ...DEFAULT_LABEL_STYLE.name, ...c.labelStyle.name }, detail: { ...DEFAULT_LABEL_STYLE.detail, ...c.labelStyle.detail } }
+          : state.labelStyle,
       };
     }
     case 'ADD_BOOKING':
@@ -772,6 +780,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, floorImageLoading: action.value };
     case 'SET_MY_DESK':
       return { ...state, myDesk: action.myDesk };
+    case 'SET_LABEL_STYLE':
+      return { ...state, labelStyle: action.style };
     case 'SET_SAVING':
       return { ...state, saving: action.value };
     case 'MARK_SAVED': {

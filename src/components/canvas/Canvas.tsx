@@ -12,10 +12,11 @@ import { ZoomControls } from './ZoomControls';
 import { Tooltip } from './Tooltip';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
 import { isBookable, markerLabelInputs, planMarkers, planRooms, roomLabelInputs, visibleUnits } from '../../state/selectors';
-import { planMarkerLabels, planRoomLabels } from '../../lib/labelLayout';
-import type { LabelPlacement } from '../../lib/labelLayout';
+import { CHIP_FOOTPRINT_OF_PITCH, CHIP_PX, chipScreenSize, HALO_TEXT, planMarkerLabels, planRoomLabels, ROOM_FONT, ROOM_LINE_PX, typographyOf } from '../../lib/labelLayout';
+import type { LabelPlacement, RoomLabelPlacement } from '../../lib/labelLayout';
 import { markerModel } from '../../lib/markerModel';
 import { sharedLabelTextMeasurer } from '../../lib/textMeasure';
+import { deskPitch } from '../../lib/printAreas';
 import type { MarkerHandlers } from './Marker';
 import { useDataState } from '../../state/useDataState';
 import { floorImageKey, isRoomLike, isZoneTool, unitOnPlan } from '../../lib/types';
@@ -35,7 +36,7 @@ function useStablePlacements(next: Map<string, LabelPlacement>): Map<string, Lab
   const out = new Map<string, LabelPlacement>();
   for (const [id, p] of next) {
     const q = prev.get(id);
-    out.set(id, q && q.name === p.name && q.sub === p.sub && q.dept === p.dept && q.pill === p.pill && q.pos === p.pos && q.w === p.w && q.h === p.h && q.deptLines === p.deptLines ? q : p);
+    out.set(id, q && q.name === p.name && q.sub === p.sub && q.dept === p.dept && q.pill === p.pill && q.pos === p.pos && q.w === p.w && q.h === p.h && q.deptLines === p.deptLines && q.half === p.half ? q : p);
   }
   prevRef.current = out;
   return out;
@@ -555,6 +556,16 @@ export function Canvas() {
   // What each marker shows (chip colours, holder, title) — once per data change, not per marker
   // per render (see lib/markerModel).
   const models = useMemo(() => new Map(markers.map((m) => [m.id, markerModel(data, m)])), [data, markers]);
+  // The chip's footprint on the plan, in plan px: a share of the median distance between the
+  // floor's desks (lockers and stalls count, amenities do not). Null with fewer than two.
+  const chipFootprint = useMemo(() => {
+    const pts = markers.filter((m) => m.geom.kind === 'point' && m.type !== 'amenity').map((m) => ({ id: m.id, x: (m.geom as { x: number }).x * IMG_W, y: (m.geom as { y: number }).y * IMG_H }));
+    return pts.length >= 2 ? deskPitch(pts) * CHIP_FOOTPRINT_OF_PITCH : null;
+  }, [markers]);
+  // How big a chip is at this zoom (see chipScreenSize): with its footprint a share of the desk
+  // pitch, chips grow with the drawing and sit proportionate to the desks on it.
+  const chipSize = chipScreenSize(state.view.z, chipFootprint);
+  const chipScale = (chipSize / CHIP_PX).toFixed(4);
 
   // Which of those markers may show a label, and which would land on a neighbour. Labels keep a
   // constant screen size while the gaps between markers shrink with the zoom, so on a dense floor
@@ -562,17 +573,40 @@ export function Canvas() {
   // (see lib/labelLayout). The zoom is the one view field this depends on.
   // Each step builds on the last plan, so a card keeps its spot while it still fits (see
   // LabelLayoutOptions.previous) — read through a ref, so the plan is not its own dependency.
+  // The type the labels are drawn in (Settings › Desks › Desk labels) — one object per setting
+  // change, so the markers' memo holds.
+  const typography = useMemo(() => typographyOf(data.labelStyle), [data.labelStyle]);
+  // The chips, as boxes on screen at this zoom: taken before anything else is placed.
+  const chipBoxes = useMemo(
+    () =>
+      markers
+        .filter((m) => m.geom.kind === 'point')
+        .map((m) => {
+          const g = m.geom as { x: number; y: number };
+          return { x: g.x * IMG_W * state.view.z - chipSize / 2, y: g.y * IMG_H * state.view.z - chipSize / 2, w: chipSize, h: chipSize };
+        }),
+    [markers, state.view.z, chipSize],
+  );
+  // Room names next: where each goes at this zoom — inside its room, or just outside a room too
+  // small for it, never under a chip (see planRoomLabels). The desk cards then keep clear of them.
+  const roomLabelPlan = useMemo(
+    () => planRoomLabels(roomLabelInputs(data, rooms, { measure: sharedLabelTextMeasurer() }), { planW: IMG_W, planH: IMG_H, zoom: state.view.z, reserved: chipBoxes }),
+    [data, rooms, state.view.z, chipBoxes],
+  );
+  const roomLabelBoxes = useMemo(() => [...roomLabelPlan.values()].map((p) => p.box), [roomLabelPlan]);
   const prevPlanRef = useRef<Map<string, LabelPlacement>>(new Map());
   const labelPlan = useStablePlacements(
     useMemo(
       () =>
-        planMarkerLabels(markerLabelInputs(data, markers, { measure: sharedLabelTextMeasurer() }), {
+        planMarkerLabels(markerLabelInputs(data, markers, { measure: sharedLabelTextMeasurer(), chipSize }), {
           planW: IMG_W,
           planH: IMG_H,
           zoom: state.view.z,
           previous: prevPlanRef.current,
+          typography,
+          reserved: roomLabelBoxes,
         }),
-      [data, markers, state.view.z],
+      [data, markers, state.view.z, chipSize, typography, roomLabelBoxes],
     ),
   );
   prevPlanRef.current = labelPlan;
@@ -581,10 +615,7 @@ export function Canvas() {
   // names keep a constant screen size while the rooms shrink with the zoom, so on an onboarded
   // floor (dozens of small org rooms) they would otherwise pile up into one unreadable block (see
   // planRoomLabels). A room without its name still shows it once selected, and once zoomed in.
-  const roomLabelIds = useMemo(
-    () => planRoomLabels(roomLabelInputs(data, rooms), { planW: IMG_W, planH: IMG_H, zoom: state.view.z }),
-    [data, rooms, state.view.z],
-  );
+
 
   // What a marker's click, press and drag-over do — decided here, where the mode, the tool and
   // what is being dragged are known. The markers get ONE object that never changes (it reads the
@@ -692,6 +723,7 @@ export function Canvas() {
           transform: `translate(${state.view.tx}px, ${state.view.ty}px) scale(${state.view.z})`,
           transition: planeTransition,
           ['--inv' as any]: invZ,
+          ['--chip' as any]: chipScale,
         }}
       >
         <FloorplanBackground imageUrl={state.floorImages[floorImageKey(state.floorId, state.planId)]} />
@@ -699,16 +731,16 @@ export function Canvas() {
           <RoomPolygon key={r.id} unit={r} onEditDown={startRoomDrag} clickSuppressed={() => suppressClickRef.current && !jitterPanRef.current} />
         ))}
         <DraftOverlay draft={state.draft} calib={state.calib} />
-        {rooms
-          .filter((r) => roomLabelIds.has(r.id))
-          .map((r) => (
-            <RoomLabel key={r.id} unit={r} />
-          ))}
+        {rooms.map((r) => {
+          const placement = roomLabelPlan.get(r.id);
+          return placement ? <RoomLabel key={r.id} unit={r} placement={placement} /> : null;
+        })}
         {markers.map((m) => (
           <Marker
             key={m.id}
             model={models.get(m.id)!}
             labels={labelPlan.get(m.id)}
+            typography={typography}
             // Only the marker being dragged gets a preview, so the drag re-renders that one alone.
             previewGeom={dragPreview?.id === m.id ? { kind: 'point', x: dragPreview.x, y: dragPreview.y } : undefined}
             handlers={markerHandlers}
@@ -803,7 +835,7 @@ export function Canvas() {
   );
 }
 
-export function RoomLabel({ unit }: { unit: Unit }) {
+export function RoomLabel({ unit, placement }: { unit: Unit; placement: RoomLabelPlacement }) {
   const { state } = useFloorplan();
   if (unit.geom.kind !== 'poly') return null;
   const geom = unit.geom as PolyGeom;
@@ -838,26 +870,39 @@ export function RoomLabel({ unit }: { unit: Unit }) {
         position: 'absolute',
         left: `${x * 100}%`,
         top: `${y * 100}%`,
-        transform: 'scale(var(--inv)) translate(-50%,-50%)',
+        // Where the layout put it: at the centroid, or just outside a room too small for its name
+        // (see planRoomLabels) — the offset is in screen px, inside the inverse scale.
+        transform: `scale(var(--inv)) translate(calc(-50% + ${placement.dx}px), calc(-50% + ${placement.dy}px))`,
         transformOrigin: '0 0',
         pointerEvents: 'none',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         gap: 2,
+        width: placement.w,
+        ...HALO_TEXT,
       }}
     >
-      <span style={{ background: '#fff', color: 'var(--ink-900)', border: '1px solid var(--ink-200)', borderRadius: 4, padding: '3px 8px', font: '600 11px/1 var(--font-sans)', boxShadow: 'var(--shadow-xs)', whiteSpace: 'nowrap' }}>
+      <span
+        style={{
+          color: 'var(--ink-900)',
+          font: `600 ${ROOM_FONT}px/${ROOM_LINE_PX}px var(--font-sans)`,
+          textAlign: 'center',
+          // One line, or the two the layout reserved for a long name in a wide room.
+          // Two lines break between words only (break-word cuts a word only when it cannot fit a line alone).
+          ...(placement.lines === 2 ? { whiteSpace: 'normal', overflowWrap: 'break-word', display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2, overflow: 'hidden' } : { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }),
+        }}
+      >
         {unit.label}
       </span>
       {busy ? (
-        <span style={{ display: 'flex', alignItems: 'center', background: 'rgba(255,255,255,0.92)', color: 'var(--ink-600)', borderRadius: 4, padding: '2px 6px 2px 5px', font: '500 10px/1 var(--font-sans)', whiteSpace: 'nowrap' }}>
+        <span style={{ display: 'flex', alignItems: 'center', color: 'var(--ink-600)', font: '500 10px/1 var(--font-sans)', whiteSpace: 'nowrap' }}>
           <ButtonSpinner />
           Working…
         </span>
       ) : (
         sub && (
-          <span style={{ background: 'rgba(255,255,255,0.92)', color: subFg, borderRadius: 4, padding: '2px 6px', font: '500 10px/1 var(--font-sans)', whiteSpace: 'nowrap' }}>
+          <span style={{ color: subFg, font: '500 10px/1 var(--font-sans)', whiteSpace: 'nowrap' }}>
             {sub}
           </span>
         )

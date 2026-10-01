@@ -18,6 +18,7 @@ import type {
 import type { Asset } from '../lib/assets';
 import type { ViewTransform } from '../lib/geometry';
 import type { CadGroup } from '../lib/cadAnalyze';
+import type { LabelStyle } from '../lib/labelLayout';
 
 export type SpaceFilter = 'all' | UnitType;
 
@@ -194,6 +195,8 @@ export interface AppState {
   autoMapGroups: CadGroup[] | null;
   /** Per floor/plan (floorImageKey) CAD analysis kept for the session, so the Edit panel can re-open auto-map without re-uploading. */
   cadAnalyses: Record<string, CadGroup[]>;
+  /** The type the desk labels are drawn in — Settings › Desks › Desk labels (see lib/labelLayout). */
+  labelStyle: LabelStyle;
   /** The logged-in user's real assigned/booked desk (from servicePortalHome) — powers "My desk" against the real backend, where `assignments` (mock-derived) can't. */
   myDesk: { recordId: number; name: string; floorId: string | null; booked: boolean } | null;
   floorImages: Record<string, string>;

@@ -1,5 +1,5 @@
 import { isModuleEnabled, isRoomLike, unitOnPlan } from '../lib/types';
-import { DEPT_FONT, DEPT_WEIGHT, NAME_FONT, NAME_WEIGHT, SUB_FONT, SUB_MAX_CHARS, SUB_WEIGHT } from '../lib/labelLayout';
+import { ROOM_FONT, subMaxChars, typographyOf } from '../lib/labelLayout';
 import type { LabelTextMeasure } from '../lib/textMeasure';
 import type { MarkerLabelInput, RoomLabelInput } from '../lib/labelLayout';
 import { polygonCentroid } from '../lib/geometry';
@@ -211,7 +211,7 @@ export function markerSubTexts(state: AppState, unit: Unit): { holder: string | 
   const name = personDisplayName(contact?.name);
   if (!name) return { holder: null, dept: null };
   const dept = departmentDisplayName(unit.department?.trim() || contact?.department);
-  return { holder: shortPersonName(name, SUB_MAX_CHARS), dept: dept || null };
+  return { holder: shortPersonName(name, subMaxChars(typographyOf(state.labelStyle))), dept: dept || null };
 }
 
 /**
@@ -219,14 +219,27 @@ export function markerSubTexts(state: AppState, unit: Unit): { holder: string | 
  * name at, and the line under the name (the area in Edit, "Available" in Book). Shared by the
  * canvas and the print sheet, so paper shows the room names the screen shows at the same zoom.
  */
-export function roomLabelInputs(state: AppState, rooms: Unit[]): RoomLabelInput[] {
+export function roomLabelInputs(state: AppState, rooms: Unit[], opts: { measure?: LabelTextMeasure } = {}): RoomLabelInput[] {
   const subHeight = state.mode === 'edit' || state.mode === 'book' ? 16 : 0;
+  const measure = opts.measure;
   return rooms
     .filter((r) => r.geom.kind === 'poly' && r.geom.pts.length >= 3)
     .map((r) => {
       const pts = (r.geom as { pts: [number, number][] }).pts;
       const c = polygonCentroid(pts);
-      return { id: r.id, pts, x: c.x, y: c.y, name: r.label, must: r.id === state.selected, subHeight };
+      // Measured in the page's font where there is one, so a long caps name ("HQ-BKC-4F-…") gets
+      // exactly the width it needs and never loses its tail to an estimate.
+      const longest = r.label.split(/\s+/).reduce((a, b) => (b.length > a.length ? b : a), '');
+      return {
+        id: r.id,
+        pts,
+        x: c.x,
+        y: c.y,
+        name: r.label,
+        must: r.id === state.selected,
+        subHeight,
+        ...(measure ? { nameW: measure(r.label, ROOM_FONT, 600), wordW: measure(longest, ROOM_FONT, 600) } : {}),
+      };
     });
 }
 
@@ -235,11 +248,12 @@ export function roomLabelInputs(state: AppState, rooms: Unit[]): RoomLabelInput[
  * (or the "Your desk" pill in its place), and the holder with their department below. Shared with
  * the print sheet so a label reads the same on paper as on screen.
  */
-export function markerLabelInputs(state: AppState, markers: Unit[], opts: { personal?: boolean; measure?: LabelTextMeasure } = {}): MarkerLabelInput[] {
+export function markerLabelInputs(state: AppState, markers: Unit[], opts: { personal?: boolean; measure?: LabelTextMeasure; /** The chip's screen size at the current zoom (see chipScreenSize); 24 when unsaid. */ chipSize?: number } = {}): MarkerLabelInput[] {
   // `personal: false` (the print sheet): no "Your desk" pill — a sheet on a wall is read by everyone.
   const mineId = opts.personal === false ? null : (myAssignedUnit(state)?.id ?? null);
   const labelsOn = state.mode === 'assign' || state.mode === 'book';
   const measure = opts.measure;
+  const t = typographyOf(state.labelStyle);
   return markers
     .filter((m) => labelsOn || m.type === 'amenity')
     .map((m) => {
@@ -250,7 +264,7 @@ export function markerLabelInputs(state: AppState, markers: Unit[], opts: { pers
         id: m.id,
         x: g.x ?? 0,
         y: g.y ?? 0,
-        size: 24,
+        size: opts.chipSize ?? 24,
         name: m.label,
         // "Your desk" stands above the chip; the card, with the desk's own name, goes elsewhere.
         pill: mine,
@@ -261,9 +275,9 @@ export function markerLabelInputs(state: AppState, markers: Unit[], opts: { pers
         // Measured in the page's font where there is one, so the card is exactly as wide as its text.
         ...(measure
           ? {
-              nameW: measure(m.label, NAME_FONT, NAME_WEIGHT),
-              subW: holder ? measure(holder, SUB_FONT, SUB_WEIGHT) : undefined,
-              deptW: dept ? measure(dept, DEPT_FONT, DEPT_WEIGHT) : undefined,
+              nameW: measure(m.label, t.nameFont, t.nameWeight),
+              subW: holder ? measure(holder, t.subFont, t.subWeight) : undefined,
+              deptW: dept ? measure(dept, t.deptFont, t.deptWeight) : undefined,
             }
           : {}),
       };
