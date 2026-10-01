@@ -40,9 +40,11 @@ export interface DetailAreaOptions {
   frameH: number;
   /**
    * Zoom in this much further than the plan's own spacing asks for (and past MAX_ZOOM by as much).
-   * For a pod whose desks sit closer than the floor's usual pitch — see planLabelledDetailAreas.
+   * For a pod whose desks sit closer than the floor's usual pitch.
    */
   zoomBoost?: number;
+  /** Cut for THIS zoom (screen px per plan px) instead of the one the plan's own spacing gives. */
+  zoom?: number;
 }
 
 /** Screen px wanted between neighbouring desks — about one holder line ("Name · Department"). */
@@ -66,7 +68,7 @@ export function planDetailAreas(points: DeskPoint[], opts: DetailAreaOptions): D
   if (points.length === 0) return [];
   const pitch = deskPitch(points);
   const boost = opts.zoomBoost ?? 1;
-  const zoom = clamp(TARGET_PITCH_PX / pitch, MIN_ZOOM, MAX_ZOOM) * boost;
+  const zoom = opts.zoom ?? clamp(TARGET_PITCH_PX / pitch, MIN_ZOOM, MAX_ZOOM) * boost;
   // How much plan fits in one page at that zoom, after the label margins.
   const capW = (opts.frameW - 2 * PAD_X) / zoom;
   const capH = (opts.frameH - 2 * PAD_Y) / zoom;
@@ -93,50 +95,105 @@ export function planDetailAreas(points: DeskPoint[], opts: DetailAreaOptions): D
       return {
         cx: (b.minX + b.maxX) / 2,
         cy: (b.minY + b.maxY) / 2,
-        zoom: Math.min(fitZoom, zoom * 1.5, MAX_ZOOM * boost),
+        zoom: Math.min(fitZoom, zoom * 1.5, opts.zoom ? zoom * 1.5 : MAX_ZOOM * boost),
         deskIds: p.map((d) => d.id),
       };
     })
     .sort((a, b) => a.cy - b.cy || a.cx - b.cx);
 }
 
-/** How far past the plan's own zoom a crowded area may go before it prints as it is. */
-const MAX_BOOST = 3.2;
-const BOOST_STEP = 1.3;
+/** The zooms tried for the detail pages, in print px per plan px: from the plan's own fit to a close-up. */
+const DETAIL_ZOOM_MIN = 0.9;
+const DETAIL_ZOOM_MAX = 8;
+const DETAIL_ZOOM_STEP = 1.1;
+/** No zoom is tried as the floor's base until at least this share of its desks have their whole card there. */
+const MIN_BASE_SHARE = 0.6;
+/** An area whose desks still lack cards is cut again closer, this many times at most. */
+const MAX_RECUTS = 4;
+
+export interface LabelledAreaOptions {
+  /** The page's plan frame, in CSS px. */
+  frameW: number;
+  frameH: number;
+  /** How much larger than the screen the pages draw chips and labels (the label layout runs at zoom / labelScale). */
+  labelScale: number;
+  /** The desks whose card is complete — name, holder, department — in the label layout at this print zoom. */
+  labelledAt: (zoom: number) => Set<string>;
+}
 
 /**
  * Detail areas in which EVERY desk is labelled in full — the promise each detail page makes
- * ("every desk in this area, with who is placed there").
+ * ("every desk in this area, with who is placed there") — at the lowest zoom that keeps it.
  *
- * The zoom `planDetailAreas` picks comes from the floor's typical desk spacing, so a pod packed
- * tighter than the rest of the floor (six desks round one table) still prints with neighbouring
- * labels colliding, and the layout drops whichever ones don't fit. So each area is checked with
- * the real label layout (`allLabelled`), and one that fails is cut again, zoomed in further — on
- * more pages if it no longer fits one — until every desk on it is labelled, or the zoom has gone
- * as far as it sensibly can (two desks drawn on top of each other never separate).
+ * The zoom decides the page count: the frame covers 1/zoom² of the plan, so a zoom half again
+ * too high costs more than twice the pages. Chosen from the desk spacing alone (a pitch of 115px
+ * per desk), the pages of a 400-desk floor came out at 3.4–4.8x and 36 pages, when its cards
+ * fit from 2.1x. So the zoom is found against the real label layout: of a series of zooms, from
+ * the first at which most desks have their whole card up to the first at which all do, the floor
+ * is cut at whichever ends in the fewest pages — where an area with a desk still bare (a pod
+ * packed tighter than the rest) is cut again at the lowest zoom that completes it, on more pages
+ * if it no longer fits one. Every desk ends up on exactly one page.
  *
- * `labelScale` is how much larger than the screen the pages draw their chips and labels: areas are
- * cut for a frame 1/labelScale the size, and their zoom scaled back up.
+ * `labelledAt` is the same layout the pages draw with (PrintZoomedPlan), so what the planner
+ * counts as labelled is what prints.
  */
-export function planLabelledDetailAreas(
-  points: DeskPoint[],
-  opts: DetailAreaOptions & { labelScale: number; allLabelled: (area: DetailArea) => boolean },
-): DetailArea[] {
-  const cut = (pts: DeskPoint[], boost: number) =>
-    planDetailAreas(pts, { frameW: opts.frameW / opts.labelScale, frameH: opts.frameH / opts.labelScale, zoomBoost: boost }).map((a) => ({
+export function planLabelledDetailAreas(points: DeskPoint[], opts: LabelledAreaOptions): DetailArea[] {
+  if (points.length === 0) return [];
+  const steps: number[] = [];
+  for (let z = DETAIL_ZOOM_MIN * opts.labelScale; z <= DETAIL_ZOOM_MAX * opts.labelScale; z *= DETAIL_ZOOM_STEP) steps.push(Number(z.toFixed(4)));
+  const cache = new Map<number, Set<string>>();
+  const labelled = (z: number) => {
+    let s = cache.get(z);
+    if (!s) {
+      s = opts.labelledAt(z);
+      cache.set(z, s);
+    }
+    return s;
+  };
+  const complete = (ids: string[], z: number) => {
+    const s = labelled(z);
+    return ids.every((id) => s.has(id));
+  };
+
+  const byId = new Map(points.map((p) => [p.id, p]));
+  const cut = (pts: DeskPoint[], z: number) =>
+    planDetailAreas(pts, { frameW: opts.frameW / opts.labelScale, frameH: opts.frameH / opts.labelScale, zoom: z / opts.labelScale }).map((a) => ({
       ...a,
       zoom: a.zoom * opts.labelScale,
     }));
-  const byId = new Map(points.map((p) => [p.id, p]));
-  const out: DetailArea[] = [];
-  const visit = (pts: DeskPoint[], boost: number) => {
-    for (const area of cut(pts, boost)) {
-      if (boost * BOOST_STEP > MAX_BOOST || opts.allLabelled(area)) out.push(area);
-      else visit(area.deskIds.map((id) => byId.get(id)!), boost * BOOST_STEP);
-    }
+  const plan = (base: number): DetailArea[] => {
+    const out: DetailArea[] = [];
+    const visit = (pts: DeskPoint[], z: number, recuts: number) => {
+      for (const area of cut(pts, z)) {
+        if (recuts >= MAX_RECUTS || complete(area.deskIds, area.zoom)) {
+          out.push(area);
+          continue;
+        }
+        const need = steps.find((s) => s > area.zoom && complete(area.deskIds, s));
+        if (need === undefined) {
+          // Two desks drawn on top of each other never separate: print the area as it is.
+          out.push(area);
+          continue;
+        }
+        visit(area.deskIds.map((id) => byId.get(id)!), need, recuts + 1);
+      }
+    };
+    visit(points, base, 0);
+    return out;
   };
-  visit(points, 1);
-  return out.sort((a, b) => a.cy - b.cy || a.cx - b.cx);
+
+  // The candidates: from the first zoom where most desks are complete to the first where all are
+  // (or the closest zoom, if none completes every desk). Fewest pages wins; between equals, the
+  // higher zoom — fewer areas cut again, so the pages read more alike.
+  const first = steps.findIndex((z) => labelled(z).size >= Math.ceil(MIN_BASE_SHARE * points.length));
+  let last = steps.findIndex((z) => labelled(z).size === points.length);
+  if (last < 0) last = steps.length - 1;
+  let best: DetailArea[] | null = null;
+  for (let i = Math.max(0, first); i <= last; i++) {
+    const p = plan(steps[i]);
+    if (!best || p.length <= best.length) best = p;
+  }
+  return (best ?? plan(steps[last])).sort((a, b) => a.cy - b.cy || a.cx - b.cx);
 }
 
 /** Median nearest-neighbour distance — the plan's own spacing between desks. */

@@ -40,6 +40,11 @@ export function PrintViewer({ onClose, printRequest = 0 }: { onClose: () => void
   const [pagesH, setPagesH] = useState(PAGE_H);
   // Building the page pictures, for the PDF or for printing — a few seconds on a big floor.
   const [busy, setBusy] = useState<'pdf' | 'print' | null>(null);
+  // "Page 12 of 48": a big floor's pictures take a while, and a button that only says
+  // "Preparing…" for a minute reads as stuck.
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const onProgress = (done: number, total: number) => setProgress(total > 1 ? { done, total } : null);
+  const progressText = progress ? ` page ${Math.min(progress.done + 1, progress.total)} of ${progress.total}` : '';
   const [error, setError] = useState<string | null>(null);
 
   // Fit the whole page in the preview area, never larger than life.
@@ -81,7 +86,7 @@ export function PrintViewer({ onClose, printRequest = 0 }: { onClose: () => void
     setBusy('print');
     setError(null);
     try {
-      await printImages(await sheetToImages(pages));
+      await printImages(await sheetToImages(pages, onProgress));
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('[print] page images failed; printing the live page', err);
@@ -89,6 +94,7 @@ export function PrintViewer({ onClose, printRequest = 0 }: { onClose: () => void
       window.print();
     } finally {
       setBusy(null);
+      setProgress(null);
     }
   }
 
@@ -109,7 +115,7 @@ export function PrintViewer({ onClose, printRequest = 0 }: { onClose: () => void
     setBusy('pdf');
     setError(null);
     try {
-      const blob = await sheetToPdfBlob(pages);
+      const blob = await sheetToPdfBlob(pages, onProgress);
       downloadBlob(blob, printFileName(floorTitle, orgNow().dateISO));
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -117,6 +123,7 @@ export function PrintViewer({ onClose, printRequest = 0 }: { onClose: () => void
       setError('The PDF could not be created here. Print, then choose “Save as PDF”, gives the same page.');
     } finally {
       setBusy(null);
+      setProgress(null);
     }
   }
 
@@ -150,10 +157,10 @@ export function PrintViewer({ onClose, printRequest = 0 }: { onClose: () => void
         </div>
         {error && <span className={styles.error}>{error}</span>}
         <Button variant="secondary" onClick={() => void onDownload()} disabled={!!busy} icon={busy === 'pdf' ? <ButtonSpinner /> : <DownloadIcon />}>
-          {busy === 'pdf' ? 'Preparing PDF…' : 'Download PDF'}
+          {busy === 'pdf' ? `Preparing PDF…${progressText}` : 'Download PDF'}
         </Button>
         <Button variant="primary" onClick={() => void onPrint()} disabled={!!busy} icon={busy === 'print' ? <ButtonSpinner /> : <PrintIcon />}>
-          {busy === 'print' ? 'Preparing…' : 'Print'}
+          {busy === 'print' ? `Preparing…${progressText}` : 'Print'}
         </Button>
       </ModalFooter>
     </Modal>

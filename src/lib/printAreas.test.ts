@@ -95,17 +95,55 @@ describe('every desk on a detail page is labelled in full', () => {
     dept: 'Project Implementation',
     rank: 2,
   }));
-  const allLabelled = (area: { zoom: number; deskIds: string[] }) => {
-    const placed = planMarkerLabels(inputs, { planW: 1492, planH: 1054, zoom: area.zoom / 1.3 });
-    return area.deskIds.every((id) => placed.get(id)?.name && placed.get(id)?.sub && placed.get(id)?.dept);
+  const labelledAt = (zoom: number) => {
+    const placed = planMarkerLabels(inputs, { planW: 1492, planH: 1054, zoom: zoom / 1.3 });
+    return new Set(inputs.filter((i) => placed.get(i.id)?.name && placed.get(i.id)?.sub && placed.get(i.id)?.dept).map((i) => i.id));
   };
+  const allLabelled = (area: { zoom: number; deskIds: string[] }) => area.deskIds.every((id) => labelledAt(area.zoom).has(id));
 
   it('zooms in on a pod packed tighter than the rest of the floor until each desk fits', () => {
-    const plain = planDetailAreas(points, { frameW: FRAME.frameW / 1.3, frameH: FRAME.frameH / 1.3 }).map((a) => ({ ...a, zoom: a.zoom * 1.3 }));
-    expect(plain.every(allLabelled)).toBe(false); // the old cut: some pod desk printed bare
-
-    const areas = planLabelledDetailAreas(points, { ...FRAME, labelScale: 1.3, allLabelled });
+    const areas = planLabelledDetailAreas(points, { ...FRAME, labelScale: 1.3, labelledAt });
     expect(areas.every(allLabelled)).toBe(true);
     expect(allIds(areas)).toEqual(points.map((p) => p.id).sort());
+    // The pod is on pages of its own, closer than the rows.
+    const rowZoom = Math.min(...areas.filter((a) => a.deskIds.some((id) => id.startsWith('r'))).map((a) => a.zoom));
+    const podZoom = Math.max(...areas.filter((a) => a.deskIds.some((id) => id.startsWith('p'))).map((a) => a.zoom));
+    expect(podZoom).toBeGreaterThan(rowZoom);
+  });
+
+  it('gives a lone pod one page, close up', () => {
+    // Seven desks in one corner of a large plan (the org's sixth floor): one detail page, zoomed
+    // in on the pod — not the pod as a speck in the corner of an empty page.
+    const pod: DeskPoint[] = [0.06, 0.085, 0.11].flatMap((x) => [
+      { id: `p${x}a`, x: x * 1492, y: 0.1 * 1054 },
+      { id: `p${x}b`, x: x * 1492, y: 0.14 * 1054 },
+    ]);
+    pod.push({ id: 'p7', x: 0.15 * 1492, y: 0.12 * 1054 });
+    const podInputs: MarkerLabelInput[] = pod.map((p) => ({ id: p.id, x: p.x / 1492, y: p.y / 1054, size: 24, name: 'New Test Desk', sub: 'Johar Ali Ali Asghar', dept: 'Investment Executive Program', rank: 2 }));
+    const podLabelled = (zoom: number) => {
+      const placed = planMarkerLabels(podInputs, { planW: 1492, planH: 1054, zoom: zoom / 1.3 });
+      return new Set(podInputs.filter((i) => placed.get(i.id)?.name && placed.get(i.id)?.sub && placed.get(i.id)?.dept).map((i) => i.id));
+    };
+    const areas = planLabelledDetailAreas(pod, { ...FRAME, labelScale: 1.3, labelledAt: podLabelled });
+    expect(areas).toHaveLength(1);
+    expect(areas[0].deskIds).toHaveLength(7);
+    expect(areas[0].zoom).toBeGreaterThanOrEqual(2);
+    expect(areas[0].deskIds.every((id) => podLabelled(areas[0].zoom).has(id))).toBe(true);
+  });
+
+  it('cuts the floor at the lowest zoom that completes its cards — not one chosen from desk spacing', () => {
+    // A grid at 68 × 46 plan px: the cards fit below each chip from about 2.1x; the pitch rule
+    // asked 3.4x and more, and paid for it in pages.
+    const grid: DeskPoint[] = [];
+    for (let r = 0; r < 20; r++) for (let c = 0; c < 20; c++) grid.push({ id: `g${r}_${c}`, x: 90 + c * 68, y: 84 + r * 46 });
+    const gridInputs: MarkerLabelInput[] = grid.map((p) => ({ id: p.id, x: p.x / 1492, y: p.y / 1054, size: 24, name: 'E-1-WS' + p.id, sub: 'Layla Al Marzooqi', dept: 'Information Technology', rank: 2 }));
+    const gridLabelled = (zoom: number) => {
+      const placed = planMarkerLabels(gridInputs, { planW: 1492, planH: 1054, zoom: zoom / 1.3 });
+      return new Set(gridInputs.filter((i) => placed.get(i.id)?.name && placed.get(i.id)?.sub && placed.get(i.id)?.dept).map((i) => i.id));
+    };
+    const areas = planLabelledDetailAreas(grid, { ...FRAME, labelScale: 1.3, labelledAt: gridLabelled });
+    expect(allIds(areas)).toEqual(grid.map((p) => p.id).sort());
+    for (const a of areas) expect(a.deskIds.every((id) => gridLabelled(a.zoom).has(id))).toBe(true);
+    expect(areas.length).toBeLessThanOrEqual(16);
   });
 });

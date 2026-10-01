@@ -15,28 +15,34 @@ const PAGE_H_IN = 8.5;
 
 /**
  * Pixels per CSS pixel in the raster. 2.5 puts the 11in page at 2640px across, ~240 dpi: small
- * labels stay legible when printed, and the file stays a few MB.
+ * labels stay legible when printed, and the file stays a few MB. A floor of many pages takes
+ * 1.8 (~170 dpi, still print-sharp): at 2.5 a 20-page floor was a 60MB PDF and a minute's wait.
  */
 const PIXEL_RATIO = 2.5;
+const PIXEL_RATIO_MANY = 1.8;
+const MANY_PAGES = 12;
 
 /**
  * Each page as a PNG data URL, drawn exactly as the viewer shows it. The PDF and the printout are
  * both made from these, so neither can differ from the preview.
  */
-export async function sheetToImages(pages: HTMLElement[]): Promise<string[]> {
+export async function sheetToImages(pages: HTMLElement[], onProgress?: (done: number, total: number) => void): Promise<string[]> {
   const { toPng } = await import('html-to-image');
   // Roboto comes from Google Fonts. Until it has loaded, the raster would be drawn in the
   // fallback face, so wait for it rather than capture a page that differs from the screen.
   await document.fonts?.ready;
+  const pixelRatio = pages.length > MANY_PAGES ? PIXEL_RATIO_MANY : PIXEL_RATIO;
   const out: string[] = [];
   for (const page of pages) {
-    out.push(await toPng(page, { pixelRatio: PIXEL_RATIO, backgroundColor: '#ffffff', width: page.offsetWidth, height: page.offsetHeight }));
+    onProgress?.(out.length, pages.length);
+    out.push(await toPng(page, { pixelRatio, backgroundColor: '#ffffff', width: page.offsetWidth, height: page.offsetHeight }));
   }
+  onProgress?.(pages.length, pages.length);
   return out;
 }
 
-export async function sheetToPdfBlob(pages: HTMLElement[]): Promise<Blob> {
-  const [images, { jsPDF }] = await Promise.all([sheetToImages(pages), import('jspdf')]);
+export async function sheetToPdfBlob(pages: HTMLElement[], onProgress?: (done: number, total: number) => void): Promise<Blob> {
+  const [images, { jsPDF }] = await Promise.all([sheetToImages(pages, onProgress), import('jspdf')]);
   const pdf = new jsPDF({ orientation: 'landscape', unit: 'in', format: 'letter', compress: true });
   // One raster per page — the whole floor, then each detail page — each full-bleed on its own sheet.
   images.forEach((png, i) => {

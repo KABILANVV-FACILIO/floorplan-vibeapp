@@ -45,6 +45,12 @@ const VIEW_FRAME_H = PRINT_PLAN_HEIGHT_IN * 96;
  * detail areas are cut for a frame 1/scale the size — every label that fits, fits at this size.
  */
 const DETAIL_LABEL_SCALE = 1.3;
+/**
+ * A big floor prints its cards a notch smaller (~7pt) rather than a notch more pages: a 400-desk
+ * floor needs 20 pages at 1.3× and 16 at this. Used only past DETAIL_PAGES_COMFORTABLE.
+ */
+const DETAIL_LABEL_SCALE_SMALL = 1.15;
+const DETAIL_PAGES_COMFORTABLE = 12;
 
 /**
  * The floor plan print sheet — a port of `Floorplan Print.dc.html` from the Claude Design project
@@ -135,16 +141,20 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
     // with the same label layout the page draws with (PrintZoomedPlan); an area where one doesn't
     // fit is zoomed in further (see planLabelledDetailAreas).
     const inputs = markerLabelInputs(state, markers, { personal: false, measure: sharedLabelTextMeasurer() });
-    const wants = new Map(inputs.map((i) => [i.id, i]));
-    const allLabelled = (area: DetailArea) => {
-      const placed = planMarkerLabels(inputs, { planW: IMG_W, planH: IMG_H, zoom: area.zoom / DETAIL_LABEL_SCALE });
-      return area.deskIds.every((id) => {
-        const p = placed.get(id);
-        const want = wants.get(id);
-        return !!p?.name && (!want?.sub || p.sub) && (!want?.dept || !!p.dept);
-      });
+    const planAt = (labelScale: number) => {
+      const labelledAt = (zoom: number) => {
+        const placed = planMarkerLabels(inputs, { planW: IMG_W, planH: IMG_H, zoom: zoom / labelScale });
+        const done = new Set<string>();
+        for (const want of inputs) {
+          const p = placed.get(want.id);
+          if (!!p?.name && (!want.sub || p.sub) && (!want.dept || !!p.dept)) done.add(want.id);
+        }
+        return done;
+      };
+      return planLabelledDetailAreas(desks, { frameW: VIEW_FRAME_W, frameH: VIEW_FRAME_H, labelScale, labelledAt }).map((a) => ({ ...a, labelScale }));
     };
-    return planLabelledDetailAreas(desks, { frameW: VIEW_FRAME_W, frameH: VIEW_FRAME_H, labelScale: DETAIL_LABEL_SCALE, allLabelled });
+    const areas = planAt(DETAIL_LABEL_SCALE);
+    return areas.length > DETAIL_PAGES_COMFORTABLE ? planAt(DETAIL_LABEL_SCALE_SMALL) : areas;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showPlan, scope, state]);
   const pageCount = 1 + detailAreas.length;
@@ -329,7 +339,7 @@ function DetailPage({
   pageNo,
   pageCount,
 }: {
-  area: DetailArea;
+  area: DetailArea & { labelScale: number };
   index: number;
   count: number;
   where: Where;
@@ -361,7 +371,7 @@ function DetailPage({
 
       <div className={styles.planWrap}>
         <div className={[styles.plan, styles.planView].join(' ')}>
-          <PrintZoomedPlan cx={area.cx} cy={area.cy} zoom={area.zoom} labelScale={DETAIL_LABEL_SCALE} />
+          <PrintZoomedPlan cx={area.cx} cy={area.cy} zoom={area.zoom} labelScale={area.labelScale} />
         </div>
       </div>
 
