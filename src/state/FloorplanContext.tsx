@@ -8,7 +8,7 @@ import type { AmenityIcon, Booking, FloorSearchHit, MarkerDef, ModuleKey, PlanId
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
-import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, takeRoomOutlineReadFailure, vacateUnitReal } from '../lib/facilioApiDataSource';
+import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchCurrentPeopleId, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, fetchOrgBookingsForRange, fetchOrgTimezone, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, takeRoomOutlineReadFailure, vacateUnitReal } from '../lib/facilioApiDataSource';
 import { ROOM_OUTLINE_WRITES } from '../lib/featureFlags';
 import { measureImageDataUrl } from '../lib/geoReference';
 import { listFloorplanFloorIds, loadFloorplanFile, persistFloorplanFile } from '../lib/floorplanFileStore';
@@ -20,7 +20,7 @@ import { persistUnits, ROOM_NOTICE_MS, ROOM_OUTLINES_FAILED_NOTICE, ROOM_READ_ON
 import { buildInitialState, reducer } from './reducer';
 import { useDataState } from './useDataState';
 import type { Action } from './reducer';
-import type { AppState } from './types';
+import type { AppState, BookFormTarget } from './types';
 import { conflictsFor, isAssignable, nextLabel, planMarkers, unitById } from './selectors';
 import { calibratedPxPerMeter, clampPanelPos, defaultPanelPos, distNormToPx, fitUnitsView, fitView as fitViewFn, focusUnitView, pointInPoly, zoomAt as zoomAtFn } from '../lib/geometry';
 
@@ -1082,23 +1082,6 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     openBookModal: () => dispatch({ type: 'SET_BOOK_MODAL', open: true }),
     closeBookModal: () => dispatch({ type: 'SET_BOOK_MODAL', open: false }),
     setBookField: (field: 'bookBy' | 'bookPurpose' | 'bookNotes', value: string) => dispatch({ type: 'SET_BOOK_FIELD', field, value }),
-    confirmBooking: async (unitId: string) => {
-      const conflicts = conflictsFor(state.bookings, unitId, state.date, state.start, state.end);
-      if (state.end <= state.start || conflicts.length) return false;
-      const booking: Booking = {
-        id: 'b' + Date.now(),
-        unitId,
-        date: state.date,
-        start: state.start,
-        end: state.end,
-        by: state.bookBy,
-        purpose: state.bookPurpose,
-      };
-      const saved = await dataSource.createBooking(booking);
-      dispatch({ type: 'ADD_BOOKING', booking: saved });
-      showToast(`${unitById(state, unitId)?.label ?? 'Space'} booked`);
-      return true;
-    },
     cancelBooking: async (id: string) => {
       // Persist BEFORE dispatching: CANCEL_BOOKING bumps bookingsNonce, which refetches the
       // calendar — if the store still held the booking at that moment it would resurrect.
@@ -1116,24 +1099,25 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
 
     /** Which real module bookings target (Space vs Facility) — mutually exclusive, set in Settings. */
     setBookingModule: (module: AppState['bookingModule']) => dispatch({ type: 'SET_BOOKING_MODULE', module }),
-    /** Opens the shared booking form for a resource + window (used by the calendar drag and the book sidebar). */
-    openBookingForm: (target: { unitId: string; date: string; start: number; end: number }) => dispatch({ type: 'SET_BOOK_FORM', form: target }),
-    updateBookForm: (patch: Partial<{ unitId: string; date: string; start: number; end: number }>) => dispatch({ type: 'UPDATE_BOOK_FORM', patch }),
+    /** Opens the shared booking form for a resource + window (the calendar, the plan, the sidebar, the mobile sheets). */
+    openBookingForm: (target: BookFormTarget) => dispatch({ type: 'SET_BOOK_FORM', form: target }),
+    updateBookForm: (patch: Partial<BookFormTarget>) => dispatch({ type: 'UPDATE_BOOK_FORM', patch }),
     closeBookingForm: () => dispatch({ type: 'SET_BOOK_FORM', form: null }),
     /**
-     * Submits the booking form. Saves locally (survives reload) AND best-effort creates the real
-     * backend booking routed by `state.bookingModule` (space -> spacebooking; facility -> TODO).
+     * Submits the booking form. Against an org, the booking is the org's spacebooking record and
+     * nothing else: the create is awaited, and a refusal is a failure the user sees. Without an org
+     * (local/demo mode) the booking goes to the local store instead.
      *
-     * LOCAL-BOOKING-FALLBACK: the `dataSource.createBooking` + ADD_BOOKING path below is the
-     * interim local store. Once real spacebooking/facilitybooking is the source of truth for
-     * every floor, delete this local branch (and the mock booking tier) and read/write bookings
-     * straight from the real module. It's isolated here so removal is a clean, single-site edit.
+     * The resource need not be on the loaded floor — the calendar books from the org-wide pool —
+     * so it is resolved from the form's own snapshot and the unplaced pool before giving up.
      */
     submitBooking: async (form: {
       unitId: string;
       date: string;
       start: number;
       end: number;
+      /** A window that ends on another day ends on this date (omitted = same day as `date`). */
+      endDate?: string;
       name: string;
       description: string;
       host: string;
@@ -1145,29 +1129,94 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       formId?: number;
       /** Org-form fields the app doesn't model natively (rendered generically). */
       extras?: Record<string, unknown>;
+      /** The form's own resource lookup field name, from its response. */
+      resourceField?: string;
     }): Promise<boolean> => {
-      const unit = unitById(state, form.unitId);
-      if (!unit || form.end <= form.start) {
+      const unit =
+        unitById(state, form.unitId) ??
+        (state.bookForm?.resourceUnit?.id === form.unitId ? state.bookForm.resourceUnit : null) ??
+        state.unplacedUnits.find((u) => u.id === form.unitId) ??
+        null;
+      if (!unit) {
+        showToast("That space isn't available any more — pick another");
+        return false;
+      }
+      // A window that ends on a later day is longer, not invalid: the two clock times alone would
+      // refuse every overnight booking (18:00 → 09:00 tomorrow).
+      const dayOffset = form.endDate && form.endDate !== form.date ? Math.round((Date.parse(`${form.endDate}T00:00:00`) - Date.parse(`${form.date}T00:00:00`)) / 86_400_000) : 0;
+      if (!Number.isFinite(dayOffset) || dayOffset < 0 || form.end + dayOffset * 1440 <= form.start) {
         showToast('Pick a valid time window');
         return false;
       }
-      // Conflict-check against the resource's real slice for that exact date (the form can target
-      // any date, so re-fetch rather than trust the single-date `state.bookings`).
-      const dayBookings = await dataSource.getBookings(state.floorId, form.date).catch(() => [] as Booking[]);
-      if (conflictsFor(dayBookings, form.unitId, form.date, form.start, form.end).length) {
+      const endDate = dayOffset > 0 ? form.endDate! : form.date;
+
+      // The clash check reads this resource's bookings over every day the window touches — the
+      // floor's single-day slice would miss a booking on another floor's record or on day two.
+      const existing = isFacilioApiConfigured
+        ? await fetchOrgBookingsForRange(form.date, endDate, { resourceField: isRoomLike(unit.type) ? 'space' : 'desk', resourceIds: [unit.id] }).catch(() => [] as Booking[])
+        : await dataSource.getBookings(state.floorId, form.date).catch(() => [] as Booking[]);
+      const absStart = form.start;
+      const absEnd = dayOffset * 1440 + form.end;
+      const clash = existing.some((b) => {
+        if (b.unitId !== unit.id) return false;
+        const off = Math.round((Date.parse(`${b.date}T00:00:00`) - Date.parse(`${form.date}T00:00:00`)) / 86_400_000);
+        return off * 1440 + b.start < absEnd && off * 1440 + b.end > absStart;
+      });
+      if (clash) {
         showToast('That window overlaps an existing booking');
         return false;
       }
 
-      // --- LOCAL-BOOKING-FALLBACK (remove once real modules are the source of truth) ---
-      // Persist EVERY form field to the vibe-db (not just the calendar summary): the handler
-      // stores whatever object it's given, so the full booking survives reload/refresh.
+      if (isFacilioApiConfigured) {
+        let failure: string | null = null;
+        let realId: number | undefined;
+        try {
+          const res = await createRealBooking(unit, form.date, form.start, form.end, {
+            module: state.bookingModule,
+            name: form.name,
+            description: form.description,
+            host: form.host,
+            reservedBy: form.reservedBy,
+            noOfAttendees: form.noOfAttendees,
+            internalAttendees: form.internalAttendees,
+            externalAttendees: form.externalAttendees,
+            formId: form.formId,
+            extras: form.extras,
+            resourceField: form.resourceField,
+            endDateISO: dayOffset > 0 ? endDate : undefined,
+          });
+          if (!res.ok) failure = res.reason ?? 'unknown error';
+          realId = res.id;
+        } catch (err) {
+          failure = (err as Error).message || 'unknown error';
+        }
+        if (failure) {
+          // eslint-disable-next-line no-console
+          console.warn(`[facilio-api] ${state.bookingModule} booking failed: ${failure}`);
+          showToast(`Couldn't create the booking: ${failure}`, 6000);
+          return false;
+        }
+        // The org has it; ADD_BOOKING bumps the nonce so every calendar re-reads, and the plan's
+        // own day list shows it until then. Its first day only — the re-read brings the segments.
+        dispatch({
+          type: 'ADD_BOOKING',
+          booking: { id: realId != null ? String(realId) : 'b' + Date.now(), unitId: unit.id, date: form.date, start: form.start, end: dayOffset > 0 ? 1440 : form.end, by: form.reservedBy || form.host || state.bookBy, purpose: form.name, module: 'space', name: form.name },
+        });
+        showToast(`${unit.label} booked`);
+        return true;
+      }
+
+      // No org: the local store keeps the whole form so the booking survives a reload. It holds
+      // one row per booking, so a window that runs into later days is kept as its first day's
+      // segment, marked as such — the demo store has no other days to put the rest on.
       const local: Booking = {
         id: 'b' + Date.now(),
         unitId: form.unitId,
+        floorId: state.floorId,
         date: form.date,
         start: form.start,
-        end: form.end,
+        end: dayOffset > 0 ? 1440 : form.end,
+        ...(dayOffset > 0 ? { segIndex: 0, segCount: dayOffset + 1 } : {}),
         by: form.reservedBy || form.host || state.bookBy,
         purpose: form.name,
         module: state.bookingModule,
@@ -1181,78 +1230,8 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       };
       const saved = await dataSource.createBooking(local);
       dispatch({ type: 'ADD_BOOKING', booking: saved });
-      // --- end LOCAL-BOOKING-FALLBACK ---
-
-      if (isFacilioApiConfigured) {
-        createRealBooking(unit, form.date, form.start, form.end, {
-          module: state.bookingModule,
-          name: form.name,
-          description: form.description,
-          host: form.host,
-          reservedBy: form.reservedBy,
-          noOfAttendees: form.noOfAttendees,
-          internalAttendees: form.internalAttendees,
-          externalAttendees: form.externalAttendees,
-          formId: form.formId,
-          extras: form.extras,
-        })
-          .then((res) => {
-            if (!res.ok) {
-              // eslint-disable-next-line no-console
-              console.warn(`[facilio-api] real ${state.bookingModule} booking skipped/failed: ${res.reason}`);
-            }
-          })
-          .catch((err) => {
-            // eslint-disable-next-line no-console
-            console.warn('[facilio-api] real booking error', err);
-          });
-      }
-
       showToast(`${unit.label} booked`);
       return true;
-    },
-    /**
-     * Books a resource for an explicit date/time window — the calendar view drags out arbitrary
-     * windows on arbitrary days, which doesn't fit `confirmBooking`'s reliance on the shared
-     * `state.start/end/date`. Returns the saved booking (persisted via the data source, so it
-     * survives reload) or null on an invalid/conflicting window. Conflict-checking is the
-     * caller's job (the calendar holds the multi-day booking data; `state.bookings` is only the
-     * single selected date).
-     */
-    bookResource: async (input: { unitId: string; date: string; start: number; end: number; by: string; purpose?: string }): Promise<Booking | null> => {
-      if (input.end <= input.start) return null;
-      const booking: Booking = {
-        id: 'b' + Date.now(),
-        unitId: input.unitId,
-        date: input.date,
-        start: input.start,
-        end: input.end,
-        by: input.by,
-        purpose: input.purpose ?? '',
-      };
-      const saved = await dataSource.createBooking(booking);
-      dispatch({ type: 'ADD_BOOKING', booking: saved });
-      showToast(`${unitById(state, input.unitId)?.label ?? 'Space'} booked`);
-      return saved;
-    },
-    quickMobileBook: async (unitId: string) => {
-      const u = unitById(state, unitId);
-      if (!u || u.type === 'locker') return;
-      if (state.end <= state.start) return;
-      if (conflictsFor(state.bookings, unitId, state.date, state.start, state.end).length) return;
-      const booking: Booking = {
-        id: 'b' + Date.now(),
-        unitId,
-        date: state.date,
-        start: state.start,
-        end: state.end,
-        by: state.bookBy,
-        purpose: 'Booked from mobile',
-      };
-      const saved = await dataSource.createBooking(booking);
-      dispatch({ type: 'ADD_BOOKING', booking: saved });
-      dispatch({ type: 'SET_MOB_SEL', id: null });
-      showToast(`${u.label} booked · ${Math.floor(state.start / 60)}:${String(state.start % 60).padStart(2, '0')}`);
     },
     setSchedView: (view: AppState['schedView']) => dispatch({ type: 'SET_SCHED_VIEW', view }),
 
@@ -1531,14 +1510,20 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
         },
       );
 
-      const [portfolio, employees, myDesk, urlFloorId] = await Promise.all([
+      // The org's clock, for every booking read and write, resolved before the first of them.
+      if (isFacilioApiConfigured) void fetchOrgTimezone().catch(() => null);
+      const [portfolio, employees, myDesk, urlFloorId, peopleId] = await Promise.all([
         dataSource.getPortfolio().catch(() => MOCK_PORTFOLIO),
         dataSource.getEmployees().catch(() => MOCK_EMPLOYEES),
         isFacilioApiConfigured ? fetchMyDesk().catch(() => null) : Promise.resolve(null),
         readUrlFloorId().catch(() => null),
+        isFacilioApiConfigured ? fetchCurrentPeopleId().catch(() => null) : Promise.resolve(null),
       ]);
       dispatch({ type: 'PORTFOLIO_LOADED', portfolio, employees });
       if (myDesk) dispatch({ type: 'SET_MY_DESK', myDesk });
+      // Who the signed-in user is, in the id space bookings are reserved by — what makes a
+      // booking "mine" on the calendar and the form default to the right person.
+      if (peopleId) dispatch({ type: 'SET_BOOK_FIELD', field: 'bookBy', value: String(peopleId) });
 
       // The mock default floorId ('hqA3') isn't a real floor against the live backend —
       // sending it to per-floor endpoints (getFloorplanDetailsByType) just 500s. Start on the

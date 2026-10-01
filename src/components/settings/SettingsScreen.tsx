@@ -19,13 +19,6 @@ const MODULE_TABS: { id: 'permissions' | 'modules' | 'bookings' | UnitType; name
   { id: 'delivery', name: 'Delivery areas' },
 ];
 
-const SLOT_OPTIONS = [
-  { minutes: 15, label: '15m' },
-  { minutes: 30, label: '30m' },
-  { minutes: 60, label: '1h' },
-  { minutes: 120, label: '2h' },
-];
-
 export function SettingsScreen() {
   const { state, actions } = useFloorplanData();
 
@@ -131,8 +124,8 @@ function BookingsSettingsTab() {
         })}
       </div>
       <div className={styles.footNote}>
-        Currently active: <b>{BOOKING_MODULES.find((m) => m.id === state.bookingModule)?.name}</b>. Bookings are also saved locally for now — real{' '}
-        {state.bookingModule === 'space' ? 'spacebooking' : 'facilitybooking'} records are written when the backend is reachable.
+        Currently active: <b>{BOOKING_MODULES.find((m) => m.id === state.bookingModule)?.name}</b>. A booking is the org&rsquo;s own{' '}
+        {state.bookingModule === 'space' ? 'spacebooking' : 'facilitybooking'} record — any start and end, across days if needed; there is no fixed slot length.
       </div>
     </div>
   );
@@ -296,7 +289,6 @@ function ModuleSwitch({ module, disabled }: { module: ModuleKey; disabled: boole
 function ModuleTab({ type }: { type: UnitType }) {
   const { state, actions } = useFloorplanData();
   const defs = STATE_DEFS[type];
-  const showSlot = type !== 'locker';
 
   return (
     <div className={styles.stack}>
@@ -332,25 +324,6 @@ function ModuleTab({ type }: { type: UnitType }) {
 
       {type === 'workstation' && <DepartmentColors />}
 
-      {showSlot && (
-        <div className={styles.card}>
-          <div className={styles.cardHead}>
-            <h3 className={styles.cardTitle}>Default slot length</h3>
-            <p className={styles.cardDesc}>New bookings start at this length. Drag the calendar edges to fine-tune any booking.</p>
-          </div>
-          <div className={styles.slotRow}>
-            {SLOT_OPTIONS.map((o) => (
-              <button
-                key={o.minutes}
-                className={[styles.slotChip, state.slotGranularity === o.minutes ? styles.slotChipActive : ''].join(' ')}
-                onClick={() => actions.setSlotGranularity(o.minutes)}
-              >
-                {o.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

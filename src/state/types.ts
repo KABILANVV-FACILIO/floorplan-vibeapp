@@ -21,6 +21,28 @@ import type { CadGroup } from '../lib/cadAnalyze';
 
 export type SpaceFilter = 'all' | UnitType;
 
+/**
+ * What the shared booking form opens on. The plan, the sidebar and the mobile sheets name a unit
+ * and the day's window; the org-wide calendar adds what those never need:
+ */
+export interface BookFormTarget {
+  unitId: string;
+  date: string;
+  start: number;
+  end: number;
+  /** A drag that crossed into later days: the day the window ENDS on (omitted = same day). */
+  endDate?: string;
+  /** "All spaces": the form's own picker decides whether a desk or a room is being booked. */
+  allowTypeSwitch?: boolean;
+  /**
+   * The picked resource itself — an org-wide record is not in `state.units`, and without it the
+   * form could not name what was picked until the org pool lands.
+   */
+  resourceUnit?: Unit;
+  /** Floors the calendar's filter is limited to — the form's lookups follow it. */
+  floorIds?: string[];
+}
+
 export interface AppState {
   mode: AppMode;
   tool: EditTool;
@@ -118,7 +140,7 @@ export interface AppState {
   bookNotes: string;
   bookModalOpen: boolean;
   /** The booking form's current target (resource + window). When set, the shared BookingModal is open. Both the calendar and the sidebar populate this. */
-  bookForm: { unitId: string; date: string; start: number; end: number } | null;
+  bookForm: BookFormTarget | null;
   /** Which real Facilio module bookings target. Mutually exclusive — set in Settings. */
   bookingModule: 'space' | 'facility';
   /** Bumped on every booking add/cancel so surfaces holding their own booking cache (the calendar) know to refetch. */

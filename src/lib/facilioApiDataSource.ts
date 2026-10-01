@@ -1,7 +1,10 @@
 import { apiOrigin, customGet, customPost, facilioApi, fetchFilePreview, isFacilioApiConfigured } from './facilioApi';
 import type { FacilioApiListResult } from './facilioApi';
 import { renderCadToDataUrl } from './cadPreview';
-import { runAssignTransition } from './stateflowApi';
+import { executeStateTransition, fetchAvailableStates, findCancelTransition, runAssignTransition } from './stateflowApi';
+import { epochAtInTz, isValidTimezone, setOrgTimezone } from './orgTime';
+import { bookingSegmentsFromRow, cancelledStateIdOf, clipSegmentsToRange, isoPlusDays } from './bookingRows';
+import type { SpaceBookingRow } from './bookingRows';
 import { renderPdfToDataUrl } from './pdfPreview';
 import { computeSyntheticGeometry, geometryStringToQuad, lngLatToQuadFraction, quadFittingPoints, quadToGeometryString, quadToLngLat } from './geoReference';
 import type { CreateSpaceLoc, FloorplanDataSource } from './dataSource';
@@ -460,14 +463,31 @@ export class FacilioApiDataSource implements FloorplanDataSource {
   async vacateUnit(): Promise<void> {
     throw new Error('facilio-api: assignment writes go through Moves — not wired');
   }
-  async getBookings(): Promise<Booking[]> {
-    throw new Error('facilio-api: spacebooking not wired');
+  /**
+   * The org's spacebooking records for one day, scoped to this floor's desks, spaces and stalls.
+   * Throws on error so the composite falls through to the local tier, as before this was wired.
+   */
+  async getBookings(floorId: string, date: string): Promise<Booking[]> {
+    this.assertConfigured();
+    return fetchSpaceBookingsForRange(date, date, floorId);
   }
+  // Creation goes through createRealBooking (the org-form-aware create) from the context; this
+  // tier's createBooking throws so a local-mode caller falls through to the local store.
   async createBooking(): Promise<Booking> {
-    throw new Error('facilio-api: spacebooking not wired');
+    throw new Error('facilio-api: booking creation goes through createRealBooking');
   }
-  async cancelBooking(): Promise<void> {
-    throw new Error('facilio-api: spacebooking not wired');
+  /**
+   * Cancel = the record's own stateflow Cancel transition (the record stays, as Cancelled, with its
+   * history — never a hard delete). A booking whose current state offers no Cancel cannot be
+   * cancelled from here; locally-minted ids ("b…") fall through to the local tier.
+   */
+  async cancelBooking(id: string): Promise<void> {
+    this.assertConfigured();
+    if (!/^\d+$/.test(id)) throw new Error('facilio-api: not a backend booking id');
+    const { transitions } = await fetchAvailableStates('spacebooking', Number(id));
+    const cancel = findCancelTransition(transitions);
+    if (!cancel) throw new Error('facilio-api: this booking has no Cancel transition in its current state');
+    await executeStateTransition('spacebooking', Number(id), cancel.id);
   }
 }
 
@@ -549,7 +569,14 @@ function buildFloorUnits(
   // room outlined on a second plan type) is left out rather than drawn twice under one unit id:
   // every surface keys units by id, and two units with one id is two rooms answering to one click.
   const spaceNames = new Map<string, string>();
-  for (const r of spaces as any[]) if (r?.id != null && r.name) spaceNames.set(String(r.id), String(r.name));
+  // Whether each space may be booked, from the space record itself — the zone's own flag is what
+  // the app's onboarding wrote (always false) and says nothing about the room.
+  const spaceReservable = new Map<string, boolean>();
+  for (const r of spaces as any[]) {
+    if (r?.id == null) continue;
+    if (r.name) spaceNames.set(String(r.id), String(r.name));
+    if (typeof r.reservable === 'boolean') spaceReservable.set(String(r.id), r.reservable);
+  }
   // The floor's REAL desks / lockers / parking stalls — `space` is the base table they also live
   // in, so a room is whatever `space` row is none of these (see `rooms` below), and a zone tied to
   // one of them is not a room's outline (see the zone loop).
@@ -571,7 +598,7 @@ function buildFloorUnits(
     // lets a zone's bare `recordId` be read as a space id (see zoneSpaceId).
     const spaceModuleId = appZoneModuleId(zones) ?? spaceModuleIdCache.id;
     for (const zone of zones ?? []) {
-      const read = markedZoneToUnit(zone, quad, floorId, planId, spaceNames, spaceModuleId);
+      const read = markedZoneToUnit(zone, quad, floorId, planId, spaceNames, spaceModuleId, spaceReservable);
       if ('skipped' in read) {
         if (read.skipped === 'outOfFrame') zonesOutOfFrame++;
         else zonesMalformed++;
@@ -750,6 +777,8 @@ export function markedZoneToUnit(
   planId: PlanId,
   spaceNames?: Map<string, string>,
   spaceModuleId?: number | null,
+  /** Each space's own `reservable` flag — what decides whether the room is bookable. */
+  spaceReservable?: Map<string, boolean>,
 ): { unit: Unit } | { skipped: 'malformed' | 'outOfFrame' } {
   const id = zoneUnitId(zone, spaceModuleId);
   const ring = parsePolygonRing(zone?.geometry);
@@ -765,16 +794,16 @@ export function markedZoneToUnit(
   const type: UnitType = named && isRoomLike(named) ? named : 'room';
   const spaceId = zoneSpaceId(zone, spaceModuleId ?? undefined);
   const label = zone.label || zone.space?.name || (spaceId ? spaceNames?.get(spaceId) : undefined) || spaceId || String(zone.id);
+  // Bookable when the SPACE record says so; the zone's own flag only stands in where the space
+  // was not read. `orgRoom` marks it as the org's: bookable on that flag, never assignable here.
+  const reservable = (spaceId ? spaceReservable?.get(spaceId) : undefined) ?? (typeof zone.isReservable === 'boolean' ? (zone.isReservable as boolean) : undefined);
   return {
     unit: {
       id,
       type,
       label: String(label),
       ...(props.secondary ? { secondary: props.secondary } : {}),
-      // What the zone says about the room's bookability, carried as read — and `orgRoom`, because
-      // booking or assigning an org room is not wired to Facilio yet (no spacebooking mapping for
-      // rooms; see createRealBooking), so the app must not offer either (see isBookable).
-      ...(typeof zone.isReservable === 'boolean' ? { isReservable: zone.isReservable } : {}),
+      ...(typeof reservable === 'boolean' ? { isReservable: reservable } : {}),
       orgRoom: true,
       room: null,
       geom: { kind: 'poly', pts },
@@ -797,8 +826,10 @@ function toUnplacedUnit(record: any, type: Unit['type'], floorId: string): Unit 
     plan: isZone ? 'custom' : POOL_PLAN[type] ?? 'custom',
     unplaced: true,
     ...(deskType ? { deskType } : {}),
-    // An org room, however it later gets onto the plan: not bookable or assignable here yet.
+    // An org room, however it later gets onto the plan: bookable only when its space record says
+    // so (`reservable`), never assignable here.
     ...(isZone ? { orgRoom: true } : {}),
+    ...(isZone && typeof record.reservable === 'boolean' ? { isReservable: record.reservable } : {}),
   };
 }
 
@@ -1359,6 +1390,8 @@ export function invalidateOrgCaches(): void {
   spaceModuleIdCache.id = null;
   bookingFormListCache.clear();
   bookingFormDetailCache.clear();
+  floorIdsCache.clear();
+  orgResourcesCache = null;
   floorIndex = null;
   employeeFilterFields = null;
 }
@@ -2647,14 +2680,10 @@ async function moduleIdFor(moduleName: string, sampleRecordId: number): Promise<
   return typeof id === 'number' ? id : null;
 }
 
-/** (dateISO, minutesFromMidnight) -> epoch millis in the browser's local timezone. */
-function epochAt(dateISO: string, minutes: number): number {
-  const [y, m, d] = dateISO.split('-').map(Number);
-  return new Date(y, m - 1, d, Math.floor(minutes / 60), minutes % 60, 0, 0).getTime();
-}
-
 /** Which spacebooking lookup field carries the booked resource, per real module. */
 const SPACEBOOKING_LOOKUP: Record<string, string> = { desks: 'desk', parkingstall: 'parkingStall' };
+/** A room booking names its `space` record — the field the record and the booking filters read. */
+const ROOM_SPACEBOOKING_LOOKUP = 'space';
 
 export interface RealBookingResult {
   ok: boolean;
@@ -2692,6 +2721,10 @@ export interface RealBookingInput {
   formId?: number;
   /** Values of org-form fields this app doesn't model natively — passed through verbatim. */
   extras?: Record<string, unknown>;
+  /** The form's own resource lookup field name (from its response) — logged when it differs from the module's. */
+  resourceField?: string;
+  /** A window that ends on another day ends on this date (omitted = the start's day). */
+  endDateISO?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -2753,7 +2786,85 @@ export function pickDefaultBookingForm(forms: BookingFormSummary[], module: 'spa
     const hit = forms.find((f) => re.test(f.name ?? ''));
     if (hit) return hit;
   }
-  return forms[0];
+  // Type-aware last resort: never hand another type's form over just because it sits first in
+  // the list — the "All spaces" switch to a room would otherwise land on the desk form whenever the
+  // org's space form matched no pattern.
+  const avoid = FORM_NOT_FOR_TYPE[unitType];
+  const fallback = avoid ? forms.find((f) => !avoid.test(f.name ?? '')) : undefined;
+  return fallback ?? forms[0];
+}
+
+/** Link-name words that mark a form as ANOTHER type's — the guard the fallbacks above use. */
+const FORM_NOT_FOR_TYPE: Partial<Record<UnitType, RegExp>> = {
+  room: /desk|parking|hot/i,
+  workstation: /space|room|parking/i,
+  parking: /desk|space|room|hot/i,
+  locker: /desk|space|room|parking|hot/i,
+};
+
+/**
+ * Every listable form on the module that belongs to a unit type — the form picker offers these.
+ * Matched on the link name with the same patterns as pickDefaultBookingForm; when nothing matches,
+ * the forms that at least aren't another type's.
+ */
+export function bookingFormsForType(forms: BookingFormSummary[], module: 'space' | 'facility', unitType: UnitType): BookingFormSummary[] {
+  const moduleName = module === 'space' ? 'spacebooking' : 'facilitybooking';
+  const prefs = FORM_NAME_PREFERENCE[moduleName];
+  const patterns = [...(prefs[unitType] ?? []), ...(prefs.default ?? [])];
+  const listable = forms.filter((f) => !f.hideInList);
+  const matched = listable.filter((f) => patterns.some((re) => re.test(f.name ?? '')));
+  if (matched.length) return matched;
+  const avoid = FORM_NOT_FOR_TYPE[unitType];
+  return avoid ? listable.filter((f) => !avoid.test(f.name ?? '')) : listable;
+}
+
+/** What a form's resource LOOKUP points at → the unit type that form books. */
+const FORM_LOOKUP_TYPE: Record<string, UnitType> = {
+  desks: 'workstation',
+  desk: 'workstation',
+  rooms: 'room',
+  space: 'room',
+  basespace: 'room',
+  parkingstall: 'parking',
+  parkinglot: 'parking',
+  lockers: 'locker',
+};
+/** The most SPECIFIC lookup on a form decides its type: a room form that also carries a desks lookup is a room form. */
+const FORM_LOOKUP_SPECIFICITY: Record<string, number> = { rooms: 0, parkingstall: 1, parkinglot: 1, lockers: 2, desks: 3, desk: 3, space: 4, basespace: 4 };
+
+/**
+ * Which unit type each form books, read from the form's OWN resource lookup fields rather than
+ * its name — link names differ per org, so name patterns alone put desks and rooms on the same
+ * form. Resolved once per form and cached; null when a form has no recognisable resource lookup
+ * (callers fall back to the link-name matching above).
+ */
+const formResourceTypeCache = new Map<string, UnitType | null>();
+export async function resolveFormResourceTypes(module: 'space' | 'facility', forms: BookingFormSummary[]): Promise<Map<number, UnitType | null>> {
+  const out = new Map<number, UnitType | null>();
+  await Promise.all(
+    forms.map(async (f) => {
+      const key = `${module}:${f.id}`;
+      if (formResourceTypeCache.has(key)) {
+        out.set(f.id, formResourceTypeCache.get(key)!);
+        return;
+      }
+      const meta = await fetchBookingFormById(module, f.id).catch(() => null);
+      let type: UnitType | null = null;
+      let bestRank = Number.POSITIVE_INFINITY;
+      for (const field of meta?.fields ?? []) {
+        const lm = (field.lookupModule ?? '').toLowerCase();
+        if (!lm || !(lm in FORM_LOOKUP_TYPE)) continue;
+        const rank = FORM_LOOKUP_SPECIFICITY[lm] ?? 5;
+        if (rank < bestRank) {
+          bestRank = rank;
+          type = FORM_LOOKUP_TYPE[lm];
+        }
+      }
+      formResourceTypeCache.set(key, type);
+      out.set(f.id, type);
+    })
+  );
+  return out;
 }
 
 const bookingFormListCache = new Map<string, Promise<BookingFormSummary[]>>();
@@ -2857,14 +2968,26 @@ export async function createRealBooking(unit: Unit, dateISO: string, start: numb
     return { ok: false, reason: 'facility booking requires slot provisioning (not yet wired)' };
   }
 
-  const lookupField = SPACEBOOKING_LOOKUP[REAL_SPACE_MODULE[unit.type] ?? ''];
+  const isRoom = isRoomLike(unit.type);
+  const lookupField = isRoom ? ROOM_SPACEBOOKING_LOOKUP : SPACEBOOKING_LOOKUP[REAL_SPACE_MODULE[unit.type] ?? ''];
   if (!lookupField) return { ok: false, reason: `no spacebooking mapping for ${unit.type}` };
 
-  const ref = await ensureRealSpaceRecord(unit);
-  if (!ref) return { ok: false, reason: 'no real backend record for this unit' };
-
-  const moduleName = REAL_SPACE_MODULE[unit.type]!;
-  const parentModuleId = await moduleIdFor(moduleName, ref.recordId);
+  let recordId: number;
+  let parentModuleId: number | null;
+  if (isRoom) {
+    // A room IS its org `space` record — that is the id an org room carries (see zoneUnitId /
+    // toUnplacedUnit). A `zone-…` outline with no space behind it has nothing to book.
+    if (!/^\d+$/.test(unit.id)) return { ok: false, reason: 'this room has no space record in the org' };
+    recordId = Number(unit.id);
+    // The space module's id: known from the floor's own zones once one was read, else from the
+    // record itself.
+    parentModuleId = spaceModuleIdCache.id ?? (await moduleIdFor('space', recordId));
+  } else {
+    const ref = await ensureRealSpaceRecord(unit);
+    if (!ref) return { ok: false, reason: 'no real backend record for this unit' };
+    recordId = ref.recordId;
+    parentModuleId = await moduleIdFor(REAL_SPACE_MODULE[unit.type]!, ref.recordId);
+  }
   if (!parentModuleId) return { ok: false, reason: 'could not resolve parentModuleId' };
 
   const reservedBy = Number(input.reservedBy);
@@ -2874,16 +2997,29 @@ export async function createRealBooking(unit: Unit, dateISO: string, start: numb
   // form left it empty (matches how the real form auto-adds the reserver).
   if (Number.isFinite(reservedBy) && !internal.some((a) => a.id === reservedBy)) internal.unshift({ id: reservedBy });
 
+  if (input.resourceField && input.resourceField !== lookupField) {
+    // eslint-disable-next-line no-console
+    console.info(`[facilio-api] form resource field '${input.resourceField}' -> payload field '${lookupField}' (record ${recordId})`);
+  }
+  // Epochs on the ORG's clock: "10:00" means 10:00 at the facility, whatever zone the browser is
+  // in — and the same zone the calendar reads the record back through (see bookingRows).
+  const tz = await fetchOrgTimezone().catch(() => null);
+  const bookingStartTime = epochAtInTz(dateISO, start, tz);
+  const bookingEndTime = epochAtInTz(input.endDateISO || dateISO, end, tz);
+  if (bookingEndTime <= bookingStartTime) return { ok: false, reason: 'the end is not after the start' };
+
   const res = await facilioApi.createRecord<any>('spacebooking', {
     data: {
       // Unknown org-form fields first, so the mapped fields below always win on collision.
       ...(input.extras ?? {}),
       // Route the create through the org form the user filled — backend form rules apply.
-      ...(input.formId ? { formId: input.formId } : {}),
-      [lookupField]: { id: ref.recordId },
+      ...(input.formId ? { formId: input.formId, actionFormId: input.formId } : {}),
+      [lookupField]: { id: recordId },
       parentModuleId,
-      bookingStartTime: epochAt(dateISO, start),
-      bookingEndTime: epochAt(dateISO, end),
+      bookingStartTime,
+      bookingEndTime,
+      // The breach marker (start + 30 min) is sent explicitly — the backend does not derive it on this path.
+      bookingbreachtime: bookingStartTime + 30 * 60_000,
       noOfAttendees: input.noOfAttendees && input.noOfAttendees > 0 ? input.noOfAttendees : Math.max(1, internal.length),
       name: input.name || `${unit.label} booking`,
       ...(input.description ? { description: input.description } : {}),
@@ -2895,4 +3031,322 @@ export async function createRealBooking(unit: Unit, dateISO: string, start: numb
   });
   if (res.error) return { ok: false, reason: res.error.message || `code ${res.error.code}` };
   return { ok: true, id: recordOf<any>(res, 'spacebooking')?.id };
+}
+
+// ---------------------------------------------------------------------------
+// Bookings, org-wide: the calendar reads the org's own spacebooking records and books from
+// every hot desk and reservable space in the org, not just the floor on screen.
+// ---------------------------------------------------------------------------
+
+/**
+ * The org's timezone (an IANA name), resolved once per session from the account and registered
+ * with the org clock (orgNow / orgTimezone) so synchronous UI code reads the facility's "now".
+ * `v2/fetchAccount?optimized=true` is what Facilio's own client boots from; `v2/account` stands in
+ * for older backends. Null when neither names a usable zone — the browser's zone then applies.
+ */
+let orgTimezoneCache: Promise<string | null> | null = null;
+export function fetchOrgTimezone(): Promise<string | null> {
+  if (!isFacilioApiConfigured) return Promise.resolve(null);
+  if (!orgTimezoneCache) {
+    orgTimezoneCache = (async () => {
+      const body = (await customGet('v2/fetchAccount', { optimized: true }).catch(() => null)) ?? (await customGet('v2/account').catch(() => null));
+      const account = body?.result?.account ?? body?.account ?? body?.data?.account ?? body?.result ?? null;
+      const candidates: unknown[] = [account?.timezone, account?.timeZone, account?.org?.timezone, account?.org?.timeZone, account?.organisation?.timezone, account?.user?.timezone];
+      const tz = candidates.find(isValidTimezone) ?? null;
+      setOrgTimezone(tz);
+      // eslint-disable-next-line no-console
+      console.info(`[facilio-api] org timezone ${tz ?? '(none — the browser zone applies)'}`);
+      return tz;
+    })();
+    orgTimezoneCache.catch(() => {
+      orgTimezoneCache = null;
+    });
+  }
+  return orgTimezoneCache;
+}
+
+/**
+ * The signed-in user's PEOPLE id — the id space bookings are reserved by and desks are assigned to
+ * (it is not the login user id). From the account payload; null when the session names none.
+ */
+let peopleIdCache: Promise<number | null> | null = null;
+export function fetchCurrentPeopleId(): Promise<number | null> {
+  if (!isFacilioApiConfigured) return Promise.resolve(null);
+  if (!peopleIdCache) {
+    peopleIdCache = (async () => {
+      const asId = (v: unknown) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null);
+      for (const [path, params] of [
+        ['v2/fetchAccount', { optimized: true }],
+        ['v2/account', undefined],
+      ] as const) {
+        const body = await customGet(path, params as Record<string, unknown> | undefined).catch(() => null);
+        if (!body) continue;
+        const account = body?.result?.account ?? body?.account ?? body?.data?.account ?? body?.result ?? body?.data ?? body;
+        const user = account?.user ?? body?.result?.user ?? body?.user ?? null;
+        const id = asId(user?.peopleId ?? user?.people?.id ?? user?.peopleID);
+        if (id) return id;
+      }
+      // eslint-disable-next-line no-console
+      console.warn('[facilio-api] the account payload carried no peopleId — "my bookings" cannot be told apart');
+      return null;
+    })();
+    peopleIdCache.catch(() => {
+      peopleIdCache = null;
+    });
+  }
+  return peopleIdCache;
+}
+
+/**
+ * Whether the host page is the MAINTENANCE (admin) app, read from its path: `'maintenance'` when a
+ * path segment says so, else null — never a guess at a portal's name from an arbitrary segment.
+ * Null also when the URL says nothing (plain local dev, a cross-origin parent that hides its
+ * location, an origin-only referrer).
+ */
+export function currentAppLinkName(): 'maintenance' | null {
+  const candidates: string[] = [];
+  try {
+    candidates.push(window.top && window.top !== window ? window.top.location.pathname : window.location.pathname);
+  } catch {
+    /* cross-origin parent — try the referrer */
+  }
+  try {
+    if (document.referrer) candidates.push(new URL(document.referrer).pathname);
+  } catch {
+    /* unparsable referrer */
+  }
+  const name = candidates.some((href) => href.split('/').some((seg) => seg.trim().toLowerCase() === 'maintenance')) ? 'maintenance' : null;
+  if (!loggedAppLinkName) {
+    loggedAppLinkName = true;
+    // eslint-disable-next-line no-console
+    console.info('[facilio-api] host app from the URL:', name ?? '(unknown)', candidates);
+  }
+  return name;
+}
+let loggedAppLinkName = false;
+
+/**
+ * Whether this session sees only ITS OWN bookings. Always false for now: the calendar is org-wide,
+ * the admin app's view, and the user's own rows are told apart by their people id. Scoping a
+ * portal user server-side wants the current application resolved from the org, not guessed from
+ * the URL — a wrong guess in an admin tool would read as everyone else's bookings missing.
+ */
+export function bookingsScopedToUser(): boolean {
+  void currentAppLinkName();
+  return false;
+}
+
+/**
+ * Cancelled-state ids learnt from the rows themselves: the first row seen in a cancelled state
+ * teaches its id, and every later request leaves such rows out at the source. The client-side
+ * check in bookingRows stays regardless — that is what makes this safe before any id is known.
+ */
+const cancelledStateIds = new Set<string>();
+
+export interface BookingRangeOptions {
+  /** Only the signed-in user's bookings (a server-side reservedBy filter). */
+  forCurrentUser?: boolean;
+  /** Only bookings of resources on these floors. */
+  floorIds?: string[];
+  /** Only desk bookings (`desk` set) or only room bookings (`space` set). */
+  resourceField?: 'desk' | 'space';
+  /** Only these records' bookings — the clash check wants ONE desk or room, not every booked one. */
+  resourceIds?: string[];
+}
+
+const BOOKING_PAGE = 500;
+const BOOKING_MAX_PAGES = 6;
+/** How far before a range the read looks for bookings that started earlier and run into it. */
+const BOOKING_LOOKBACK_DAYS = 31;
+
+/** Which spacebooking lookup a floor module's records are booked under. */
+const BOOKING_FIELD_BY_MODULE: Record<string, 'desk' | 'space' | 'parkingStall'> = { desks: 'desk', space: 'space', parkingstall: 'parkingStall' };
+
+/**
+ * Every record id of one module on a floor (all pages), or [] when the read failed. Kept for a
+ * minute: the plan's day list re-reads bookings on every date change, and the floor's records
+ * have not changed between two dates.
+ */
+const FLOOR_IDS_TTL_MS = 60_000;
+const floorIdsCache = new Map<string, { at: number; ids: Promise<string[]> }>();
+function floorRecordIds(moduleName: string, floorId: string): Promise<string[]> {
+  const key = `${floorId}:${moduleName}`;
+  const hit = floorIdsCache.get(key);
+  if (hit && Date.now() - hit.at < FLOOR_IDS_TTL_MS) return hit.ids;
+  const ids = (async () => {
+    const load = await loadFloorList(floorId, moduleName);
+    if (load.error) throw new Error(load.error.message ?? `floor ${moduleName} read failed`);
+    return [...load.first, ...(await load.rest)].map((r: any) => String(r.id));
+  })();
+  floorIdsCache.set(key, { at: Date.now(), ids });
+  // A failed read is not kept — the next caller tries again — and answers [] to this one.
+  return ids.catch(() => {
+    if (floorIdsCache.get(key)?.ids === ids) floorIdsCache.delete(key);
+    return [] as string[];
+  });
+}
+
+/**
+ * The org's spacebooking rows for an INCLUSIVE date range — ONE request per page rather than one
+ * per visible day — mapped to this app's bookings on the org's clock, one segment per covered day
+ * (see bookingRows). Cancelled rows are left out at the source (`isCancelled IS false`, plus any
+ * cancelled state ids learnt so far) and again client-side, so correctness never depends on the
+ * server-side criteria: if the org rejects it, the request is retried without it.
+ *
+ * `floorId` scopes the result to that floor's desks, spaces and stalls (the per-floor read the
+ * plan shares); null reads org-wide for the calendar.
+ */
+export async function fetchSpaceBookingsForRange(startISO: string, endISO: string, floorId: string | null, opts: BookingRangeOptions = {}): Promise<Booking[]> {
+  const tz = await fetchOrgTimezone().catch(() => null);
+  // The filter is on the START time, so a booking that began before the range and runs into it
+  // would be missed — and with no cap on a booking's length that is a real double-booking. The
+  // filter reaches back BOOKING_LOOKBACK_DAYS and the segments are clipped to the asked range
+  // afterwards; a booking longer than that which started earlier still is missed.
+  const rangeStart = epochAtInTz(isoPlusDays(startISO, -BOOKING_LOOKBACK_DAYS), 0, tz);
+  const rangeEnd = epochAtInTz(endISO, 24 * 60, tz);
+  const reservedById = opts.forCurrentUser ? await fetchCurrentPeopleId().catch(() => null) : null;
+  const baseFilters: Record<string, unknown> = {
+    // BETWEEN (operatorId 20) on the start: a booking that STARTS in the range. One that started
+    // before it and runs into it is rare for desks and is not chased here.
+    bookingStartTime: { operatorId: 20, value: [String(rangeStart), String(rangeEnd - 1)] },
+    ...(reservedById != null ? { reservedBy: { operatorId: 36, value: [String(reservedById)] } } : {}),
+    // A desk booking has its `desk` lookup set, a room booking its `space` one: "is" (36) the named
+    // records, or "is not empty" (2) for the whole category.
+    ...(opts.resourceIds?.length
+      ? { [opts.resourceField ?? 'desk']: { operatorId: 36, value: opts.resourceIds.map(String) } }
+      : opts.resourceField
+        ? { [opts.resourceField]: { operatorId: 2, value: [] } }
+        : {}),
+  };
+  const excludeCancelled: Record<string, unknown> = {
+    isCancelled: { operatorId: 15, value: ['false'] },
+    ...(cancelledStateIds.size ? { moduleState: { operatorId: 10, value: [...cancelledStateIds] } } : {}),
+  };
+
+  const fetchPages = async (filters: Record<string, unknown>): Promise<SpaceBookingRow[]> => {
+    const acc: SpaceBookingRow[] = [];
+    let withExclusion = true;
+    for (let page = 1; page <= BOOKING_MAX_PAGES; page++) {
+      const sent = withExclusion ? { ...filters, ...excludeCancelled } : filters;
+      let res = await facilioApi.fetchAll('spacebooking', { page, perPage: BOOKING_PAGE, filters: JSON.stringify(sent) });
+      if (res.error && withExclusion) {
+        // eslint-disable-next-line no-console
+        console.warn('[facilio-api] spacebooking: cancelled criteria rejected — refetching without it', res.error);
+        withExclusion = false;
+        cancelledStateIds.clear();
+        res = await facilioApi.fetchAll('spacebooking', { page, perPage: BOOKING_PAGE, filters: JSON.stringify(filters) });
+      }
+      if (res.error) {
+        if (page === 1) throw new Error(`facilio-api: spacebooking fetch failed (${res.error.code ?? '?'} ${res.error.message ?? ''})`.trim());
+        break;
+      }
+      const list = (res.list ?? []) as SpaceBookingRow[];
+      acc.push(...list);
+      if (list.length < BOOKING_PAGE) break;
+    }
+    return acc;
+  };
+
+  let rows: SpaceBookingRow[];
+  if (opts.floorIds?.length) {
+    // Filter fields AND together, so one query cannot OR across the resource lookups: the chosen
+    // floors' record ids are gathered (cached per-floor reads) and each lookup gets a query of
+    // its own; the results merge and dedupe.
+    const idsByField: Record<string, string[]> = { desk: [], space: [], parkingStall: [] };
+    await Promise.all(
+      opts.floorIds.flatMap((f) =>
+        Object.entries(BOOKING_FIELD_BY_MODULE).map(async ([m, field]) => {
+          for (const id of await floorRecordIds(m, f)) idsByField[field].push(id);
+        })
+      )
+    );
+    const queries = Object.entries(idsByField)
+      .filter(([field, ids]) => ids.length > 0 && (!opts.resourceField || field === opts.resourceField))
+      .map(([field, ids]) => fetchPages({ ...baseFilters, [field]: { operatorId: 36, value: ids } }).catch(() => [] as SpaceBookingRow[]));
+    const seen = new Set<string>();
+    rows = (await Promise.all(queries)).flat().filter((b) => (seen.has(String(b.id)) ? false : (seen.add(String(b.id)), true)));
+  } else {
+    rows = await fetchPages(baseFilters);
+  }
+
+  // The read is org-wide; a floor-scoped caller wants only its own records' bookings. An empty
+  // set can also mean the floor's lists failed — showing the unscoped rows beats blanking real
+  // bookings then.
+  const onFloor = floorId
+    ? new Set((await Promise.all(Object.keys(BOOKING_FIELD_BY_MODULE).map((m) => floorRecordIds(m, floorId)))).flat())
+    : null;
+  for (const row of rows) {
+    const cancelledId = cancelledStateIdOf(row);
+    if (cancelledId) cancelledStateIds.add(cancelledId);
+  }
+  return clipSegmentsToRange(
+    rows.flatMap((row) => bookingSegmentsFromRow(row, tz, floorId ?? '') ?? []),
+    startISO,
+    endISO
+  ).filter((b) => !onFloor || onFloor.size === 0 || onFloor.has(b.unitId));
+}
+
+/** Org-wide bookings for an inclusive date range — the calendar's read. */
+export function fetchOrgBookingsForRange(startISO: string, endISO: string, opts?: BookingRangeOptions): Promise<Booking[]> {
+  if (!isFacilioApiConfigured) return Promise.resolve([]);
+  return fetchSpaceBookingsForRange(startISO, endISO, null, opts);
+}
+
+const ORG_POOL_PAGE = 500;
+const ORG_POOL_MAX_PAGES = 4;
+
+/**
+ * Every bookable resource in the org — hot/hotel desks and reservable spaces — as unplaced units,
+ * whatever floor they are on. The type filter rides the request (desks: deskType hot/hotel;
+ * spaces: reservable); should the org reject it or answer nothing, the read is retried unfiltered
+ * and the client-side eligibility check (isBookable) still decides what is offered. Session-cached;
+ * `force` re-reads, which the booking form asks for on every open so its picker is never stale.
+ */
+let orgResourcesCache: Promise<Unit[]> | null = null;
+export function fetchOrgBookableResources(opts?: { force?: boolean }): Promise<Unit[]> {
+  if (!isFacilioApiConfigured) return Promise.resolve([]);
+  if (opts?.force) orgResourcesCache = null;
+  if (!orgResourcesCache) {
+    orgResourcesCache = (async () => {
+      const mods: { type: UnitType; moduleName: string; typeFilter: Record<string, unknown> }[] = [
+        { type: 'workstation', moduleName: 'desks', typeFilter: { deskType: { operatorId: 9, value: ['2', '3'] } } },
+        { type: 'room', moduleName: 'space', typeFilter: { reservable: { operatorId: 9, value: ['true'] } } },
+      ];
+      const out: Unit[] = [];
+      await Promise.all(
+        mods.map(async ({ type, moduleName, typeFilter }) => {
+          let filtered = true;
+          for (let page = 1; page <= ORG_POOL_MAX_PAGES; page++) {
+            const params = { page, perPage: ORG_POOL_PAGE, isArchived: false };
+            let res: any = filtered ? await facilioApi.fetchAll(moduleName, { ...params, filters: JSON.stringify(typeFilter) }).catch(() => null) : null;
+            if (filtered && (!res || res.error || !Array.isArray(res.list) || (page === 1 && res.list.length === 0))) {
+              if (res?.error) {
+                // eslint-disable-next-line no-console
+                console.warn(`[facilio-api] ${moduleName} type filter rejected — refetching unfiltered`, res.error);
+              }
+              filtered = false;
+              res = null;
+            }
+            if (!filtered) res = await facilioApi.fetchAll(moduleName, params).catch(() => null);
+            const list = res?.list;
+            if (res?.error || !Array.isArray(list)) break;
+            for (const r of list as any[]) {
+              const floorId = lookupId(r, 'floor');
+              out.push(toUnplacedUnit(r, type, floorId != null ? String(floorId) : ''));
+            }
+            if (list.length < ORG_POOL_PAGE) break;
+          }
+        })
+      );
+      return out;
+    })();
+    orgResourcesCache
+      .then((rows) => {
+        if (!rows.length) orgResourcesCache = null; // never cache "nothing" — retry on the next open
+      })
+      .catch(() => {
+        orgResourcesCache = null;
+      });
+  }
+  return orgResourcesCache;
 }

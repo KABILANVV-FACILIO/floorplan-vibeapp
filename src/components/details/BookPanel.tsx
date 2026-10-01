@@ -15,6 +15,8 @@ const TIME_OPTIONS = Array.from({ length: (1200 - 420) / 30 + 1 }, (_, i) => 420
 const WIN_S = 420;
 const WIN_E = 1200;
 const PXH = 28;
+/** What a click on the timeline selects, before the edges are dragged. */
+const CLICK_MIN = 30;
 
 export function BookPanel() {
   const { state, actions } = useFloorplanData();
@@ -158,8 +160,9 @@ function DayTimeline({ unitId }: { unitId: string }) {
   function onClick(e: ReactMouseEvent<HTMLDivElement>) {
     if (resizeRef.current) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const m = Math.min(WIN_E - state.slotGranularity, minutesAtClientY(rect, e.clientY, state.slotGranularity));
-    actions.setTimeRange(m, m + state.slotGranularity);
+    // A click picks a half-hour to start from; the edges then stretch it to any length.
+    const m = Math.min(WIN_E - CLICK_MIN, minutesAtClientY(rect, e.clientY, CLICK_MIN));
+    actions.setTimeRange(m, m + CLICK_MIN);
   }
 
   function onEdgeDown(edge: 'top' | 'bottom', e: ReactMouseEvent) {

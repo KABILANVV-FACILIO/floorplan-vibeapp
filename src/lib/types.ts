@@ -213,10 +213,10 @@ export interface Unit {
   isReservable?: boolean;
   /**
    * Rooms only — a room read from the org itself (a `floorplanmarkedzone` outline, or a `space`
-   * record in the "Available to place" pool), not one of the demo rooms. Booking or assigning such
-   * a room is not wired to Facilio yet — there is no spacebooking mapping for rooms, so a booking
-   * would be kept in this browser only — so it is neither bookable nor assignable here, whatever
-   * `isReservable` says (see isBookable / isAssignable).
+   * record in the "Available to place" pool), not one of the demo rooms. Such a room is BOOKABLE
+   * only when its record says so (`reservable` on the space, `isReservable` on the zone): a
+   * booking of it is a real spacebooking on that space (see createRealBooking). Assigning it is
+   * still not wired to Facilio, so it is never assignable here (see isBookable / isAssignable).
    */
   orgRoom?: boolean;
   /**
@@ -249,10 +249,22 @@ export interface Employee {
 export interface Booking {
   id: string;
   unitId: string;
+  /**
+   * The floor the booked unit lives on, when known. Org rows carry it only when the read was
+   * scoped to a floor; a row from the org-wide calendar read leaves it empty.
+   */
+  floorId?: string;
   date: string;
   /** Minutes from midnight. */
   start: number;
   end: number;
+  /**
+   * A booking that runs past midnight is ONE org record spanning several days. It arrives as one
+   * segment per covered day, every segment carrying the same `id`, with `segIndex` (0-based) and
+   * `segCount` so a list can show it once. Absent on a same-day booking.
+   */
+  segIndex?: number;
+  segCount?: number;
   /** Short summary fields the calendar/markers read directly (derived from the form below). */
   by: string;
   purpose: string;
@@ -260,6 +272,15 @@ export interface Booking {
   // (which only capture a time window) and older stored rows stay valid. ----
   /** 'space' -> spacebooking form, 'facility' -> facilitybooking form. */
   module?: 'space' | 'facility';
+  // ---- Stateflow / approval read-side (real spacebooking records only; local rows leave unset) ----
+  /** Under an approval flow and still awaiting a decision. */
+  approvalPending?: boolean;
+  /** Printable approval-status label (the record's approvalStatus lookup). */
+  approvalStatusName?: string | null;
+  /** Printable stateflow state label (the record's moduleState lookup). */
+  stateName?: string | null;
+  /** The record's own cancelled flag — a cancelled booking does not hold its slot. */
+  isCancelled?: boolean;
   /** Booking name/title (the form's required "Name"). */
   name?: string;
   description?: string;

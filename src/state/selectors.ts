@@ -116,16 +116,32 @@ export function bookedUnitIds(state: AppState): Set<string> {
  * the IWMS rooms module): bookable unless explicitly marked not-reservable, in which case they're
  * assignable instead — mutually exclusive, same as desks.
  *
- * A room read from the org (`orgRoom`: its outline zone, or its `space` record) is NEITHER, for
- * now: a booking of it has no spacebooking mapping (createRealBooking), and an assignment none
- * either, so both would be kept in this browser only while the plan called the room booked or
- * assigned. Its `isReservable` is carried as read, but says nothing about what this app can do.
+ * A room read from the org (`orgRoom`: its outline zone, or its `space` record) is bookable only
+ * when its record SAYS so — `reservable` on the space — because a booking of it is a real
+ * spacebooking on that space (createRealBooking). It is never assignable here: an assignment of
+ * an org room has no write behind it, and would be kept in this browser only while the plan
+ * called the room assigned.
  */
 export function isBookable(u: Unit): boolean {
   if (u.type === 'locker' || u.type === 'amenity') return false;
   if (u.type === 'workstation') return u.deskType === 'HOT' || u.deskType === 'HOTEL';
-  if (isRoomLike(u.type)) return !u.orgRoom && u.isReservable !== false;
+  if (isRoomLike(u.type)) return u.orgRoom ? u.isReservable === true : u.isReservable !== false;
   return true;
+}
+
+/**
+ * The loaded floor's units plus every org record not among them. A placed unit wins on an id
+ * collision (it carries the richer data), but takes the pool twin's `reservable` flag when its
+ * own is unknown — that flag is what makes a room bookable.
+ */
+export function mergeWithOrgPool(local: Unit[], pool: Unit[]): Unit[] {
+  const byId = new Map(pool.map((u) => [u.id, u]));
+  const merged = local.map((u) => {
+    const twin = byId.get(u.id);
+    return u.isReservable === undefined && twin?.isReservable !== undefined ? { ...u, isReservable: twin.isReservable } : u;
+  });
+  const localIds = new Set(local.map((u) => u.id));
+  return [...merged, ...pool.filter((u) => !localIds.has(u.id))];
 }
 
 export function isAssignable(u: Unit): boolean {
