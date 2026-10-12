@@ -553,7 +553,19 @@ function BookingFormInner() {
             max={maxDate}
             minutes={startMin}
             minuteStep={STEP_MIN}
-            minMinutes={slotDate === minDate ? nowOrg.minutes : undefined}
+            // The picker applies this only ON its min date (today), judged against its own draft.
+            minMinutes={nowOrg.minutes}
+            // Saved as ONE commit (date + time together): the end keeps the window's length from
+            // the NEW start, which separate onChange/onMinutesChange calls would read stale.
+            onCommit={(iso, m) => {
+              const len = Math.max(STEP_MIN, span);
+              setSlotDate(iso);
+              setStartMin(m);
+              const abs = absMin(iso, m) + len;
+              const days = Math.floor((abs - absMin(iso, 0)) / 1440);
+              setEndDate(addDaysIso(iso, days));
+              setEndMin(abs - absMin(iso, 0) - days * 1440);
+            }}
             onChange={(iso) => {
               // Moving the start keeps the window's length; the end follows.
               const len = Math.max(STEP_MIN, span);
@@ -579,7 +591,12 @@ function BookingFormInner() {
             max={maxDate}
             minutes={endMin}
             minuteStep={STEP_MIN}
-            minMinutes={endDate === slotDate ? startMin + STEP_MIN : undefined}
+            // Applies only on the start's own day: the end must come after the start.
+            minMinutes={startMin + STEP_MIN}
+            onCommit={(iso, m) => {
+              setEndDate(iso);
+              setEndMin(iso === slotDate && m <= startMin ? Math.min(1440, startMin + STEP_MIN) : m);
+            }}
             onChange={(iso) => {
               setEndDate(iso);
               if (iso === slotDate && endMin <= startMin) setEndMin(Math.min(1440, startMin + STEP_MIN));
