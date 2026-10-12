@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { callHostInterface } from './hostInterface';
+import { bridgeApiPath, currentHostKind } from './hostKind';
 
 const devMode = import.meta.env.VITE_DEV_MODE === 'true';
 const envBaseURL = import.meta.env.VITE_FACILIO_API_BASE_URL;
@@ -24,8 +25,16 @@ function hostParam(name: string): string | null {
   return new URLSearchParams(window.location.hash.replace(/^#/, '')).get(name);
 }
 
-/** True when this page is inside an iframe — i.e. something is hosting it. */
+/** True when this page is inside an iframe — i.e. the Facilio web page is hosting it. */
 const isEmbedded = typeof window !== 'undefined' && window.self !== window.top;
+
+/**
+ * True inside the Facilio MOBILE app, which hosts connected apps in a React Native WebView rather
+ * than an iframe: the page is the top window there, and the host is reached through the
+ * `window.ReactNativeWebView` bridge the WebView injects (see lib/hostKind). Decided once: the
+ * bridge object is in the page before any script runs.
+ */
+export const isMobileHost = currentHostKind() === 'mobile';
 
 /**
  * Connected-app mode requires an actual HOST, which is a runtime fact: every V3 call here rides
@@ -37,7 +46,7 @@ const isEmbedded = typeof window !== 'undefined' && window.self !== window.top;
  * opened standalone, which is the shape of the "not configured"/no-V3-calls confusion. It is kept
  * only as an explicit override for a host this check can't see.
  */
-export const isConnectedApp = isEmbedded || !!hostParam('capp_id') || import.meta.env.VITE_IS_CONNECTED_APP === 'force';
+export const isConnectedApp = isEmbedded || isMobileHost || !!hostParam('capp_id') || import.meta.env.VITE_IS_CONNECTED_APP === 'force';
 
 /**
  * Where the V3 APIs live for absolute-URL needs: same-origin in connected mode (unless
@@ -185,11 +194,17 @@ let sdkReady: Promise<any> | null = null;
 function facilioAppReady(): Promise<any> {
   if (sdkReady) return sdkReady;
 
-  // No iframe parent means no host can ever answer the handshake, so don't wait out the timeout —
-  // this tier now leads for every call, and an 8s stall per call would make a standalone open feel
-  // broken. Decided once and cached, so the fallthrough afterwards is instant.
-  if (typeof window !== 'undefined' && window.self === window.top) {
-    sdkReady = Promise.reject(new Error('facilio-api: not embedded in a Facilio host (no connected-app parent)'));
+  // Nobody to answer the handshake — no parent frame AND no mobile bridge — so don't wait out the
+  // timeout: this tier leads for every call, and an 8s stall per call would make a standalone open
+  // feel broken. Decided once and cached, so the fallthrough afterwards is instant.
+  //
+  // "No parent frame" alone is NOT that. The Facilio mobile app hosts connected apps in a React
+  // Native WebView where the page IS the top window and the host answers through
+  // `window.ReactNativeWebView` — the SDK speaks that bridge itself. Rejecting on `self === top`
+  // here failed every V3 call on mobile (plan types, viewer data, file bytes) before the SDK was
+  // even loaded, which is why the floor plan never appeared there.
+  if (currentHostKind() === 'none') {
+    sdkReady = Promise.reject(new Error('facilio-api: not hosted by Facilio (no connected-app parent frame and no mobile bridge)'));
     // Nothing awaits this until a caller does; mark it handled so it isn't an unhandled rejection.
     sdkReady.catch(() => {});
     return sdkReady;
@@ -214,6 +229,12 @@ function facilioAppReady(): Promise<any> {
       try {
         const app = (window as any).FacilioAppSDK.init();
         (window as any).facilioApp = app;
+        // init() returns FALSE when the page URL lacks ?origin=&capp_id= (both hosts set them) —
+        // say so, rather than failing on `false.on` with a TypeError nobody can read.
+        if (!app) {
+          done(() => reject(new Error('facilio-api: FacilioAppSDK.init() rejected — the page URL is missing its origin/capp_id params')));
+          return;
+        }
         app.on('app.loaded', () => done(() => resolve(app)));
       } catch (err) {
         done(() => reject(err));
@@ -248,6 +269,12 @@ const HOST_URL_PROPS_TIMEOUT_MS = 3000;
 export async function getHostUrlProps(): Promise<Record<string, unknown> | null> {
   if (!isConnectedApp) {
     urlLog('not embedded in a Facilio page — the host url is not read (the app\'s own ?floorId= is used instead)');
+    return null;
+  }
+  // The mobile app has no address bar: its host routes any `interface.*` it doesn't know to the
+  // app's own handler, which does not know getUrlProps either. Nothing to read, and no 3s race.
+  if (isMobileHost) {
+    urlLog('hosted by the Facilio mobile app — there is no host url to read');
     return null;
   }
   const started = Date.now();
@@ -287,6 +314,8 @@ const HOST_PUSH_WATCHDOG_MS = 5000;
  */
 export function pushHostUrlProps(query: Record<string, string>): void {
   if (!isConnectedApp) return;
+  // No address bar on the mobile app — see getHostUrlProps.
+  if (isMobileHost) return;
   const started = Date.now();
   let replied = false;
   const watchdog = setTimeout(() => {
@@ -463,7 +492,8 @@ export const facilioApi = {
  */
 async function bridgeInvoke(path: string, options: { method: 'GET' | 'POST' | 'PATCH'; data?: Record<string, unknown> }): Promise<any> {
   const app = await facilioAppReady();
-  const url = path.startsWith('/') ? path : `/${path}`;
+  // Root-relative for the web host, bare for the mobile one — see bridgeApiPath for why both.
+  const url = bridgeApiPath(path, isMobileHost ? 'mobile' : 'iframe');
   const raw = await app.request.invokeFacilioAPI(url, options);
   return typeof raw === 'string' ? JSON.parse(raw) : raw;
 }

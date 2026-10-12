@@ -4,6 +4,7 @@ import { installTooltipLayer } from './lib/tooltipLayer';
 import App from './App';
 import { isVibeApp } from './lib/vibe';
 import { isConnectedApp, isFacilioApiConfigured } from './lib/facilioApi';
+import { currentHostKind } from './lib/hostKind';
 import './styles/global.css';
 
 // Deployed only: the route-rescue worker (public/sw.js) that makes /bookings, /people and
@@ -18,7 +19,7 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
 // in. Both are otherwise invisible in a deployed, SSO-gated app.
 // eslint-disable-next-line no-console
 console.info(
-  `[floorplan] build ${__BUILD_STAMP__} | vibe=${isVibeApp} connectedApp=${isConnectedApp} apiConfigured=${isFacilioApiConfigured} embedded=${window.self !== window.top}`
+  `[floorplan] build ${__BUILD_STAMP__} | vibe=${isVibeApp} connectedApp=${isConnectedApp} apiConfigured=${isFacilioApiConfigured} host=${currentHostKind()}`
 );
 
 // One tooltip node for the app, outside every panel and scroll box — a bubble rendered inside
