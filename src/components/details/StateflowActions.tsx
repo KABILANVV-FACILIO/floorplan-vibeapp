@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
-import { invalidateUnitRecordInfo, resolveUnitRecord } from '../../lib/facilioApiDataSource';
-import { executeStateTransition, fetchAvailableStates, isAssignTransition } from '../../lib/stateflowApi';
+import { invalidateUnitRecordInfo, resolveUnitRecord, vacateUnitReal } from '../../lib/facilioApiDataSource';
+import { executeStateTransition, fetchAvailableStates, isAssignTransition, isVacateTransition } from '../../lib/stateflowApi';
 import type { FlowState, TransitionOption } from '../../lib/stateflowApi';
 import type { Unit } from '../../lib/types';
 import { Button } from '../primitives/Button';
@@ -114,6 +114,14 @@ export function StateflowActions({
     // the transition is happening to the thing you are looking at, not to the control you pressed.
     actions.setUnitBusy(unit.id);
     try {
+      // Vacating a DESK is a move record first (the org clears the desk and writes its activity),
+      // the state transition second — the other way round, the transition would empty the desk
+      // and the move would have no one to take off it.
+      const holder = state.assignments?.[unit.id];
+      if (unit.type === 'workstation' && isVacateTransition(t) && holder) {
+        const out = await vacateUnitReal(unit, holder);
+        if (!out.ok) throw new Error(out.reason);
+      }
       await executeStateTransition(moduleName, recordId, t.id, data);
       invalidateUnitRecordInfo(unit);
       // Re-read the record: a transition is exactly what changes its state and its holder, and

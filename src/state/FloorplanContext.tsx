@@ -10,6 +10,7 @@ import { DEMO_ASSETS } from '../lib/assets';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
 import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchCurrentPeopleId, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, fetchOrgBookingsForRange, fetchOrgTimezone, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, takeRoomOutlineReadFailure, vacateUnitReal } from '../lib/facilioApiDataSource';
 import { ROOM_OUTLINE_WRITES } from '../lib/featureFlags';
+import { personDisplayName } from '../lib/displayNames';
 import { measureImageDataUrl } from '../lib/geoReference';
 import { listFloorplanFloorIds, loadFloorplanFile, persistFloorplanFile } from '../lib/floorplanFileStore';
 import { loadSettings, saveSettings, settingsFromState } from '../lib/settingsStore';
@@ -22,7 +23,7 @@ import { useDataState } from './useDataState';
 import type { Action } from './reducer';
 import type { AppState, BookFormTarget } from './types';
 import type { LabelStyle } from '../lib/labelLayout';
-import { conflictsFor, isAssignable, nextLabel, planMarkers, unitById } from './selectors';
+import { conflictsFor, contactById, isAssignable, nextLabel, planMarkers, unitById } from './selectors';
 import { calibratedPxPerMeter, clampPanelPos, defaultPanelPos, distNormToPx, fitUnitsView, fitView as fitViewFn, focusUnitView, pointInPoly, zoomAt as zoomAtFn } from '../lib/geometry';
 
 interface Ctx {
@@ -313,6 +314,21 @@ function roomLabelAt(state: AppState, x: number, y: number): string | null {
 
 function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef: MutableRefObject<DOMRect | null>) {
   /** A toast for `ms` (3.2 s by default — longer for one that has more to say, see ROOM_NOTICE_MS). */
+  /**
+   * Re-read who holds what on this floor from the org. After a desk move the org may have changed
+   * more than the desk that was dropped on — the person's previous desk, the previous holder's —
+   * and the plan has to show that too.
+   */
+  const reloadAssignments = async () => {
+    if (!isFacilioApiConfigured) return;
+    try {
+      const assignments = await dataSource.getAssignments(state.floorId);
+      dispatch({ type: 'ASSIGNMENTS_LOADED', assignments });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[refresh] could not re-read assignments', err);
+    }
+  };
   const showToast = (message: string, ms: number = 3200) => {
     dispatch({ type: 'SHOW_TOAST', message });
     if (toastTimer) clearTimeout(toastTimer);
@@ -687,15 +703,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
      * and neither shows on the marker or in the sidebar until the map is re-read. Cheaper than a
      * full floor refresh, which would also re-fetch the plan image for a change that can't affect it.
      */
-    refreshAssignments: async () => {
-      try {
-        const assignments = await dataSource.getAssignments(state.floorId);
-        dispatch({ type: 'ASSIGNMENTS_LOADED', assignments });
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn('[refresh] could not re-read assignments', err);
-      }
-    },
+    refreshAssignments: reloadAssignments,
 
     /**
      * Clicking a spot with a desk/locker/parking tool no longer silently mints a new record —
@@ -1025,13 +1033,33 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       // they held — the local mirror of the Moves behaviour that was removed from the org write.
       const next = { ...state.assignments };
       const prevContactId = next[unitId];
+      const nameOf = (id: string) => personDisplayName(contactById(state, id)?.name) || MOCK_EMPLOYEES.find((c) => c.id === id)?.name || id;
+      // Dropped onto the desk they already hold: nothing to write. The org would record it as a
+      // move off and back onto the same desk — two records in the history for no change.
+      if (prevContactId === contactId) {
+        showToast(`${nameOf(contactId)} already holds ${target.label}`);
+        return;
+      }
       next[unitId] = contactId;
       dispatch({ type: 'ASSIGN', unitId, contactId, assignments: next });
+      const prevName = prevContactId ? nameOf(prevContactId) : null;
       // The record is being written: its marker spins and both surfaces showing it stop reporting
-      // a holder they are about to replace. Dropped again below whatever the write does.
+      // a holder they are about to replace — for the whole write, the org's included, so a second
+      // drop cannot land mid-move. Dropped again below whatever the write does.
       dispatch({ type: 'SET_UNIT_BUSY', id: unitId });
       try {
         await dataSource.assignUnit(unitId, contactId);
+        // The real assignment: a move record for a desk, a field write for a locker or stall. The
+        // org is the source of truth — a refusal is said out loud, and the floor's holders are
+        // re-read either way, since a desk move can clear another desk on this floor too.
+        if (isFacilioApiConfigured) {
+          const out = await assignUnitReal(target, contactId);
+          if (!out.ok) showToast(`Could not assign ${target.label} in Facilio — ${out.reason}`, 6000);
+          else showToast(`${nameOf(contactId)} assigned to ${target.label}` + (prevName ? ` — replaced ${prevName}` : ''));
+          await reloadAssignments();
+        } else {
+          showToast(`${nameOf(contactId)} assigned to ${target.label}` + (prevName ? ` — replaced ${prevName}` : ''));
+        }
       } finally {
         dispatch({ type: 'SET_UNIT_BUSY', id: null });
         // Who holds this desk just changed, so EVERY surface showing it re-reads — the popover's
@@ -1041,18 +1069,6 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
         // call sites each remembering to announce the same change is three chances to forget.
         dispatch({ type: 'RECORD_CHANGED' });
       }
-      // Best-effort real assignment (Moves for desks, a plain field update for lockers/parking)
-      // — never blocks or throws into the local assignment flow above, which is already the
-      // source of truth for this app's own read-path.
-      if (isFacilioApiConfigured) {
-        assignUnitReal(target, contactId).catch((err) => {
-          // eslint-disable-next-line no-console
-          console.warn('[facilio-api] real assignment failed', err);
-        });
-      }
-      const contactName = MOCK_EMPLOYEES.find((c) => c.id === contactId)?.name ?? contactId;
-      const prevName = prevContactId ? MOCK_EMPLOYEES.find((c) => c.id === prevContactId)?.name : null;
-      showToast(`${contactName} assigned to ${target.label}` + (prevName ? ` — replaced ${prevName}` : ''));
     },
     vacate: async (unitId: string) => {
       const target = unitById(state, unitId);
@@ -1060,21 +1076,24 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       const next = { ...state.assignments };
       delete next[unitId];
       dispatch({ type: 'VACATE', unitId, assignments: next });
+      const prevName = prevContactId ? personDisplayName(contactById(state, prevContactId)?.name) || MOCK_EMPLOYEES.find((c) => c.id === prevContactId)?.name || null : null;
+      // Busy for the whole write, the org's included (see assign).
       dispatch({ type: 'SET_UNIT_BUSY', id: unitId });
       try {
         await dataSource.vacateUnit(unitId);
+        if (isFacilioApiConfigured && target && prevContactId) {
+          // A desk is vacated through a move record; the org clears the desk itself.
+          const out = await vacateUnitReal(target, prevContactId);
+          if (!out.ok) showToast(`Could not vacate ${target.label} in Facilio — ${out.reason}`, 6000);
+          else showToast(`${target.label} vacated` + (prevName ? ` — ${prevName} unassigned` : ''));
+          await reloadAssignments();
+        } else if (target) {
+          showToast(`${target.label} vacated` + (prevName ? ` — ${prevName} unassigned` : ''));
+        }
       } finally {
         dispatch({ type: 'SET_UNIT_BUSY', id: null });
         dispatch({ type: 'RECORD_CHANGED' });
       }
-      if (isFacilioApiConfigured && target && prevContactId) {
-        vacateUnitReal(target, prevContactId).catch((err) => {
-          // eslint-disable-next-line no-console
-          console.warn('[facilio-api] real vacate failed', err);
-        });
-      }
-      const prevName = prevContactId ? MOCK_EMPLOYEES.find((c) => c.id === prevContactId)?.name : null;
-      if (target) showToast(`${target.label} vacated` + (prevName ? ` — ${prevName} unassigned` : ''));
     },
     setDate: async (value: string) => {
       const bookings = await dataSource.getBookings(state.floorId, value);

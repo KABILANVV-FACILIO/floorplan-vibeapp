@@ -42,8 +42,10 @@ export function AssignEmployeeModal({ unit, onClose }: { unit: Unit; onClose: ()
       if (resolveUnitRecord(unit)) {
         await assignEmployeeToRecord(unit, employeeId);
         // The org has it; mirror it locally so the marker's initials and the sidebar's
-        // "Assigned · …" update now rather than on the next floor load.
+        // "Assigned · …" update now rather than on the next floor load — then re-read the floor's
+        // holders, since a desk move can clear another desk here (the person's previous one).
         actions.markAssigned(unit.id, employeeId);
+        void actions.refreshAssignments();
         actions.showToast(`${unit.label} assigned to ${name}`);
       } else {
         // No org record behind this unit (the local/demo tier): assign it the app's own way, and

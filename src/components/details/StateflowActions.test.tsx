@@ -17,13 +17,14 @@ const assign = vi.fn(async (_contactId: string, _unitId: string) => {});
 const refreshAssignments = vi.fn(async () => {});
 const invalidateUnitRecordInfo = vi.fn();
 const assignEmployeeToRecord = vi.fn(async (_unit: unknown, _employeeId: string) => {});
+const vacateUnitReal = vi.fn(async (_unit: unknown, _contactId: string) => ({ ok: true as const }));
 
 /**
  * A minimal stand-in for the store, mutable because two of the things under test are app state
  * rather than component state: which record has a write in flight (`busyUnitId`) and the fact that
  * one landed (`recordNonce`). Both are written by one surface and read by every other.
  */
-const store = { employees: [{ id: '7', name: 'Niviya' }], busyUnitId: null as string | null, recordNonce: 0 };
+const store = { employees: [{ id: '7', name: 'Niviya' }], busyUnitId: null as string | null, recordNonce: 0, assignments: {} as Record<string, string> };
 // Mirrors the real action: writing a holder onto the record announces the change itself, so
 // every surface showing that record re-reads. The picker no longer announces on its behalf.
 const markAssigned = vi.fn(() => {
@@ -48,6 +49,7 @@ vi.mock('../../lib/facilioApiDataSource', () => ({
   resolveUnitRecord: (u: { id: string }) => (/^\d+$/.test(u.id) ? { moduleName: 'desks', recordId: Number(u.id) } : null),
   invalidateUnitRecordInfo,
   assignEmployeeToRecord: (unit: unknown, employeeId: string) => assignEmployeeToRecord(unit, employeeId),
+  vacateUnitReal: (unit: unknown, contactId: string) => vacateUnitReal(unit, contactId),
 }));
 vi.mock('../../lib/stateflowApi', async () => {
   const real = await vi.importActual<typeof import('../../lib/stateflowApi')>('../../lib/stateflowApi');
@@ -120,6 +122,40 @@ describe('what a button does depends on the transition', () => {
 
     await waitFor(() => expect(executeStateTransition).toHaveBeenCalledWith('desks', 1676024, 1, undefined));
     expect(openPanel).not.toHaveBeenCalled();
+    // No holder on record here, so no move record either — the transition is the whole action.
+    expect(vacateUnitReal).not.toHaveBeenCalled();
+  });
+
+  it('vacates a HELD desk through a move record first, then the transition', async () => {
+    // The move clears the desk and writes its activity; done the other way round, the transition
+    // would empty the desk and the move would have no one to take off it.
+    store.assignments = { '1676024': '7' };
+    try {
+      fetchAvailableStates.mockResolvedValue(flow(['Vacate']));
+      render(<StateflowActions unit={unit} />);
+      (await screen.findByRole('button', { name: 'Vacate' })).click();
+
+      await waitFor(() => expect(executeStateTransition).toHaveBeenCalledWith('desks', 1676024, 1, undefined));
+      expect(vacateUnitReal).toHaveBeenCalledWith(unit, '7');
+      expect(vacateUnitReal.mock.invocationCallOrder[0]).toBeLessThan(executeStateTransition.mock.invocationCallOrder[0]);
+    } finally {
+      store.assignments = {};
+    }
+  });
+
+  it('reports a refused move and leaves the transition unfired', async () => {
+    store.assignments = { '1676024': '7' };
+    vacateUnitReal.mockResolvedValueOnce({ ok: false, reason: 'Current desk of the employee does not match with the given data' } as any);
+    try {
+      fetchAvailableStates.mockResolvedValue(flow(['Vacate']));
+      render(<StateflowActions unit={unit} />);
+      (await screen.findByRole('button', { name: 'Vacate' })).click();
+
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.stringContaining('Current desk of the employee does not match')));
+      expect(executeStateTransition).not.toHaveBeenCalled();
+    } finally {
+      store.assignments = {};
+    }
   });
 
   it.each(['Assign', 'Re-assign', 'Allocate'])('opens the people picker for %s instead of firing', async (name) => {

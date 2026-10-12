@@ -2540,14 +2540,97 @@ export function fetchUnitRecordInfo(unit: Pick<Unit, 'id' | 'type'>): Promise<Un
 }
 
 /**
- * Writes an employee onto the record itself — `desks.employee`, `lockers.employee`,
- * `parkingstall.employee` (all real fields on those modules) — and then lets the record's own
- * stateflow catch up.
+ * A DESK MOVE — the org's own record of who moved onto, or off, a desk (`moves`). Assigning,
+ * re-assigning and vacating a desk go through one of these rather than writing the desk's
+ * `employee` field directly: the org's own create chain (APIv3Config › moves) then updates the
+ * desk record — and every other desk the move touches — and writes the desk's activity, the same
+ * way Facilio's own floorplan does.
  *
- * Writing the field alone does NOT move the state: a desk stays "Yet to Assign" with a holder on
+ * What the org does with it, read off `ValidateMovesCommand` / `UpdateEmployeeInDesksCommandV3`:
+ *  - `to` + `employee`: the person moves ONTO the desk. If they already hold a desk, that desk is
+ *    filled in as `from` and VACATED (one desk per person — the org's rule, not this app's). If
+ *    the desk is held by someone else, that person is moved off it first (a second move record,
+ *    created by the org). Both desks' `employee` and `department` are written by the org.
+ *  - `from` alone: the desk is VACATED; the org takes the person from the desk itself. Naming the
+ *    person is deliberately avoided — the org rejects a `from` that is not that person's current
+ *    desk, and a stale local holder would turn every vacate into an error.
+ *  - `moveType` 1 is INSTANT; 2 is SCHEDULED (`scheduledTime`), not used here.
+ *  - The move only EXECUTES when `timeOfMove` is at or before the org's clock — and nothing runs
+ *    an instant move later. A browser clock a few seconds ahead of the server would create a
+ *    record that changes nothing, silently; so the stamp is set a minute back.
+ *  - `siteId` is what Facilio's own floorplan sends alongside; `department` the org fills in.
+ *
+ * Desks only: `from`/`to` are desk lookups. Lockers and parking stalls keep the direct field write.
+ */
+export interface DeskMoveInput {
+  /** The desk the person moves onto. */
+  to?: number;
+  /** The desk the person leaves. */
+  from?: number;
+  /** The person — for a move onto a desk. Omitted for a vacate (the org reads it off the desk). */
+  employeeId?: string;
+  siteId?: number;
+}
+export type DeskMoveResult = { ok: true; id: number | null } | { ok: false; reason: string };
+/** How far back the move is stamped, so a browser clock ahead of the org's never leaves it unexecuted. */
+export const MOVE_TIME_MARGIN_MS = 60_000;
+
+export async function createDeskMove(input: DeskMoveInput): Promise<DeskMoveResult> {
+  if (!isFacilioApiConfigured) return { ok: false, reason: 'not configured' };
+  if (!input.to && !input.from) return { ok: false, reason: 'a move needs a desk to move onto or off' };
+  const employee = input.employeeId != null ? Number(input.employeeId) : NaN;
+  if (input.employeeId != null && !(Number.isInteger(employee) && employee > 0)) return { ok: false, reason: `"${input.employeeId}" is not an org employee id` };
+  const data: Record<string, unknown> = {
+    ...(input.to ? { to: { id: input.to } } : {}),
+    ...(input.from ? { from: { id: input.from } } : {}),
+    ...(input.employeeId != null ? { employee: { id: employee } } : {}),
+    moveType: 1,
+    timeOfMove: Date.now() - MOVE_TIME_MARGIN_MS,
+    ...(input.siteId ? { siteId: input.siteId } : {}),
+  };
+  const res = await facilioApi.createRecord<any>('moves', { data }).catch((err: unknown) => ({ error: { message: (err as Error)?.message ?? 'request failed' } }) as any);
+  if (res?.error) {
+    const reason = res.error.message || `code ${res.error.code ?? '?'}`;
+    // eslint-disable-next-line no-console
+    console.warn('[moves] the org refused the move', { data, reason });
+    return { ok: false, reason };
+  }
+  const id = recordOf<any>(res, 'moves')?.id ?? null;
+  // eslint-disable-next-line no-console
+  console.info(`[moves] created move #${id ?? '?'}: ${input.employeeId != null ? `employee ${input.employeeId} ` : ''}${input.from ? `from desk ${input.from} ` : ''}${input.to ? `to desk ${input.to}` : ''}`.trim());
+  return { ok: true, id: typeof id === 'number' ? id : id != null ? Number(id) : null };
+}
+
+/** The site a floor belongs to, for the move's `siteId` — read once per floor. */
+const floorSiteIdCache = new Map<string, Promise<number | undefined>>();
+function siteIdOfFloor(floorId: string): Promise<number | undefined> {
+  let p = floorSiteIdCache.get(floorId);
+  if (!p) {
+    p = fetchFloorPath(floorId)
+      .then((path) => (path?.siteId && Number.isFinite(Number(path.siteId)) ? Number(path.siteId) : undefined))
+      .catch(() => undefined);
+    floorSiteIdCache.set(floorId, p);
+  }
+  return p;
+}
+
+/** The desk record behind a unit: its own id when it is an org desk, else the record its marker names (created if need be). */
+async function deskRecordId(unit: Unit): Promise<number | null> {
+  const direct = resolveUnitRecord(unit);
+  if (direct) return direct.recordId;
+  const ref = await ensureRealSpaceRecord(unit);
+  return ref?.recordId ?? null;
+}
+
+/**
+ * Assigns a person to a placed unit for real — a DESK through a move record (see createDeskMove);
+ * a locker or parking stall by writing its `employee` field (there is no move for those) — and
+ * then lets the record's own stateflow catch up.
+ *
+ * Writing the holder alone does NOT move the state: a desk stays "Yet to Assign" with a holder on
  * it, so the flow keeps offering Assign and never offers Vacate. `runAssignTransition` fires the
  * flow's own assign step if the current state still has one, which is why it runs after the write
- * rather than instead of it.
+ * rather than instead of it. Throws with the org's reason when the write is refused.
  */
 export async function assignEmployeeToRecord(unit: Unit, employeeId: string): Promise<void> {
   const moduleName = REAL_SPACE_MODULE[unit.type];
@@ -2555,16 +2638,25 @@ export async function assignEmployeeToRecord(unit: Unit, employeeId: string): Pr
   const id = Number(employeeId);
   if (!Number.isFinite(id)) throw new Error(`facilio-api: "${employeeId}" is not a real employee id`);
 
-  // Resolves the backing record, creating one when the unit was placed but never given a record.
-  const ref = await ensureRealSpaceRecord(unit);
-  if (!ref) throw new Error(`facilio-api: could not resolve an org record for ${unit.label}`);
-
-  const res = await facilioApi.updateRecord(moduleName, { id: ref.recordId, data: { employee: { id } } });
-  if (res.error) throw new Error(res.error.message || `assign failed (code ${res.error.code ?? '?'})`);
-  await runAssignTransition(moduleName, ref.recordId).catch((err) => {
+  let recordId: number;
+  if (unit.type === 'workstation') {
+    const deskId = await deskRecordId(unit);
+    if (!deskId) throw new Error(`facilio-api: could not resolve an org desk for ${unit.label}`);
+    const move = await createDeskMove({ to: deskId, employeeId, siteId: await siteIdOfFloor(unit.floor) });
+    if (!move.ok) throw new Error(move.reason);
+    recordId = deskId;
+  } else {
+    // Resolves the backing record, creating one when the unit was placed but never given a record.
+    const ref = await ensureRealSpaceRecord(unit);
+    if (!ref) throw new Error(`facilio-api: could not resolve an org record for ${unit.label}`);
+    const res = await facilioApi.updateRecord(moduleName, { id: ref.recordId, data: { employee: { id } } });
+    if (res.error) throw new Error(res.error.message || `assign failed (code ${res.error.code ?? '?'})`);
+    recordId = ref.recordId;
+  }
+  await runAssignTransition(moduleName, recordId).catch((err) => {
     // The holder is written either way; the state just didn't move.
     // eslint-disable-next-line no-console
-    console.warn(`[facilio-api] assigned ${moduleName} #${ref.recordId} but its state did not advance`, err);
+    console.warn(`[facilio-api] assigned ${moduleName} #${recordId} but its state did not advance`, err);
   });
   invalidateUnitRecordInfo(unit);
 }
@@ -2646,51 +2738,60 @@ export async function findUnitIdForDeskRecord(floorId: string, deskRecordId: num
   return marker?.geoId ?? null;
 }
 
+/** What a real write came to — the context toasts the reason and re-reads the floor either way. */
+export type RealWriteOutcome = { ok: true } | { ok: false; reason: string };
+
 /**
- * Assigns an employee to a placed workstation/locker/parking-stall for real — a plain `employee`
- * field write on the record, for every type.
- *
- * Desks used to go through a `moves` record instead. That is the org's reassignment mechanism and
- * it auto-unassigns whatever desk the employee already held, so handing someone a second desk
- * quietly took away their first. One person may hold any number of desks, which rules Moves out.
+ * The real assignment behind a drag-and-drop or a sheet pick — the same write as the picker's
+ * (`assignEmployeeToRecord`: a move for a desk, a field write for a locker or stall), reported as
+ * an outcome rather than thrown: the local assignment is already on screen, and the caller
+ * decides what to say.
  */
-export async function assignUnitReal(unit: Unit, contactId: string): Promise<void> {
-  if (!isFacilioApiConfigured) return;
-  if (!REAL_SPACE_MODULE[unit.type]) return;
-  if (!Number.isFinite(Number(contactId))) return; // mock employee ids (e.g. "c1") aren't real backend ids.
-  // Same write as the picker's, best-effort: the drag-and-drop flow treats the local assignment as
-  // done and must not throw into it.
-  await assignEmployeeToRecord(unit, contactId).catch((err) => {
+export async function assignUnitReal(unit: Unit, contactId: string): Promise<RealWriteOutcome> {
+  if (!isFacilioApiConfigured) return { ok: true };
+  if (!REAL_SPACE_MODULE[unit.type]) return { ok: false, reason: `${unit.type} has no assignable record` };
+  if (!Number.isFinite(Number(contactId))) return { ok: false, reason: 'not an org employee' }; // mock employee ids (e.g. "c1") aren't real backend ids.
+  try {
+    await assignEmployeeToRecord(unit, contactId);
+    return { ok: true };
+  } catch (err) {
     // eslint-disable-next-line no-console
     console.warn(`[facilio-api] assign failed for unit ${unit.id}`, err);
-  });
+    return { ok: false, reason: (err as Error)?.message ?? 'the org refused it' };
+  }
 }
 
 /**
- * Vacates a placed workstation/locker/parking-stall for real — clears `employee` on that record,
- * for every type. It releases THIS unit and nothing else, which is what vacate means when one
- * person can hold several. The mirror of `assignUnitReal`.
+ * Vacates a placed unit for real: a DESK through a `from`-only move (the org reads the person off
+ * the desk, clears the desk and writes its activity — see createDeskMove); a locker or parking
+ * stall by clearing its `employee` field. `contactId` is who the app thinks holds it — unused for
+ * a desk on purpose (a stale holder would make the org reject the move), kept for the field write.
  */
-export async function vacateUnitReal(unit: Unit, contactId: string): Promise<void> {
-  if (!isFacilioApiConfigured) return;
+export async function vacateUnitReal(unit: Unit, contactId: string): Promise<RealWriteOutcome> {
+  if (!isFacilioApiConfigured) return { ok: true };
   const moduleName = REAL_SPACE_MODULE[unit.type];
-  if (!moduleName) return;
-  const id = Number(contactId);
-  if (!Number.isFinite(id)) return;
+  if (!moduleName) return { ok: false, reason: `${unit.type} has no assignable record` };
 
-  const ref = await ensureRealSpaceRecord(unit);
-  if (!ref) return;
-
-  {
-    // Clears the field on THIS record, for every type — the mirror of the assign write above.
-    // A Moves-based vacate would also be reading a move that no longer exists, now that desks are
-    // assigned by writing `employee` rather than by moving anyone.
-    const res = await facilioApi.updateRecord(moduleName, { id: ref.recordId, data: { employee: null } });
-    if (res.error) {
-      // eslint-disable-next-line no-console
-      console.warn(`[facilio-api] vacate update failed for unit ${unit.id}`, res.error);
-    }
+  if (unit.type === 'workstation') {
+    const deskId = await deskRecordId(unit);
+    if (!deskId) return { ok: false, reason: `could not resolve an org desk for ${unit.label}` };
+    const move = await createDeskMove({ from: deskId, siteId: await siteIdOfFloor(unit.floor) });
+    if (move.ok) invalidateUnitRecordInfo(unit);
+    return move.ok ? { ok: true } : { ok: false, reason: move.reason };
   }
+
+  if (!Number.isFinite(Number(contactId))) return { ok: false, reason: 'not an org employee' };
+  const ref = await ensureRealSpaceRecord(unit);
+  if (!ref) return { ok: false, reason: `could not resolve an org record for ${unit.label}` };
+  // Clears the field on THIS record — the mirror of the assign write above.
+  const res = await facilioApi.updateRecord(moduleName, { id: ref.recordId, data: { employee: null } });
+  if (res.error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[facilio-api] vacate update failed for unit ${unit.id}`, res.error);
+    return { ok: false, reason: res.error.message || `code ${res.error.code ?? '?'}` };
+  }
+  invalidateUnitRecordInfo(unit);
+  return { ok: true };
 }
 
 /** moduleName -> its numeric moduleId (spacebooking's `parentModuleId`). Session cache. */
