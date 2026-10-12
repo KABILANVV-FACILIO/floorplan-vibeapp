@@ -243,19 +243,17 @@ interface Where {
   floor: string;
 }
 
-/** "HQ - Abu Dhabi / C Block / 06 Floor": the site in bold, the rest of the path after it. */
+/**
+ * The floor's name, large and in full — it is what the sheet is of — with the site and building
+ * under it in smaller type. One line of path in a 60%-wide box used to end in "Test Flo…", the
+ * floor being the part cut off.
+ */
 function LocationBox({ where }: { where: Where }) {
-  const rest = [where.building, where.floor].filter(Boolean).join(' / ');
+  const path = [where.site, where.building].filter(Boolean).join(' / ');
   return (
     <div className={styles.where}>
-      {where.site ? (
-        <>
-          <b>{where.site}</b>
-          {rest && <span className={styles.wherePath}> / {rest}</span>}
-        </>
-      ) : (
-        <b>{where.floor}</b>
-      )}
+      <div className={styles.whereFloor}>{where.floor}</div>
+      {path && <div className={styles.wherePath}>{path}</div>}
     </div>
   );
 }
