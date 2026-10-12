@@ -2524,7 +2524,8 @@ export function fetchUnitRecordInfo(unit: Pick<Unit, 'id' | 'type'>): Promise<Un
 
   // Deliberately NOT cached. This is the live state of a record the user is acting on — a
   // transition, an assignment or an edit changes it, and a card showing a remembered answer after
-  // a button click is worse than one extra read.
+  // a button click is worse than one extra read. (The read itself goes to the org, never to the
+  // host's record cache — see crudFetchRecord in facilioApi.)
   return facilioApi
     .fetchRecord<any>(moduleName, { id })
     .then((res) => {

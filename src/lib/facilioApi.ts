@@ -345,10 +345,20 @@ async function crudFetchAll(moduleName: string, params: Record<string, unknown> 
   return devFetchAll(moduleName, params);
 }
 
+/**
+ * One record by id. In connected mode this goes to the org over the raw request path — NOT the
+ * SDK's `api.fetchRecord`. That one is answered by the HOST page, whose API layer de-dupes and
+ * CACHES record reads (its own fetchRecord takes a `force` flag to get past the cache), so a read
+ * after a write handed back the record as it was before: a desk's popover kept naming its previous
+ * holder while the org already had the new one. The raw path has no cache. The v3 envelope
+ * (`{ code, data: { <module>: … } }`) is returned as the SDK would return it, so `recordOf` reads
+ * both alike.
+ */
 async function crudFetchRecord<T = any>(moduleName: string, params: { id: string | number; [k: string]: unknown }): Promise<FacilioApiResult<T>> {
   if (isConnectedApp) {
-    const app = await facilioAppReady();
-    return app.api.fetchRecord(moduleName, params);
+    const { id, ...rest } = params;
+    const env = v3Envelope(await customGet(`v3/modules/${moduleName}/${id}`, rest));
+    return env as FacilioApiResult<T>;
   }
   return devFetchRecord<T>(moduleName, params);
 }
