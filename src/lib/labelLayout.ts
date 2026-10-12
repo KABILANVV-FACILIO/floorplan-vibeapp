@@ -121,6 +121,8 @@ export interface LabelLayoutOptions {
    * card may cover.
    */
   reserved?: Box[];
+  /** Room names only: how much the name grows over its base size at this zoom (see LABEL_MAX_SCALE); 1 when unsaid. */
+  labelScale?: number;
 }
 
 export interface Box {
@@ -181,6 +183,22 @@ export function typographyOf(style: LabelStyle = DEFAULT_LABEL_STYLE): LabelTypo
 export const DEFAULT_LABEL_TYPOGRAPHY: LabelTypography = typographyOf(DEFAULT_LABEL_STYLE);
 
 /**
+ * The most the labels grow zooming in, over their set size. Text pinned to one screen size read
+ * backwards next to a drawing that grows — like the chips did — so the labels track the drawing
+ * too (the same factor as the chips, see chipScreenSize), up to this; past it the text holds.
+ */
+export const LABEL_MAX_SCALE = 2;
+/** The type at a zoom: every font `k`× its set size, line heights to match. `k` = 1 is the type as set. */
+export function scaleTypography(t: LabelTypography, k: number): LabelTypography {
+  if (k === 1) return t;
+  const f = (px: number) => Math.round(px * k * 2) / 2;
+  const nameFont = f(t.nameFont);
+  const subFont = f(t.subFont);
+  const deptFont = f(t.deptFont);
+  return { nameFont, nameWeight: t.nameWeight, nameLine: lineHeightFor(nameFont), subFont, subWeight: t.subWeight, subLine: lineHeightFor(subFont), deptFont, deptWeight: t.deptWeight, deptLine: lineHeightFor(deptFont) };
+}
+
+/**
  * Outlined text: a white halo around the letters instead of a box behind them, so a label reads
  * over the drawing without hiding it. The stroke is painted BEHIND the fill (paint-order), so it
  * never eats into the letterforms; the soft shadow carries the halo on an engine without it.
@@ -209,9 +227,16 @@ export const CARD_MAX_PX = 180;
 const FULL_NARROWER_PX = [140, 110];
 const NAME_SUB_NARROWER_PX = [100];
 const NAME_NARROWER_PX = [84];
-/** Characters a holder line holds at CARD_MAX_PX — past this a name is shortened to first + last. */
+/**
+ * How much wider the cards may be for this type than for the default: the width caps are set for
+ * the default size, and a larger type needs proportionally more room or it holds fewer characters.
+ */
+export function cardWidthScale(t: LabelTypography): number {
+  return t.nameFont / DEFAULT_LABEL_TYPOGRAPHY.nameFont;
+}
+/** Characters a holder line holds at the card's widest — past this a name is shortened to first + last. */
 export function subMaxChars(t: LabelTypography = DEFAULT_LABEL_TYPOGRAPHY): number {
-  return Math.floor((CARD_MAX_PX - CARD_EXTRA_W) / (t.subFont * 0.55));
+  return Math.floor((CARD_MAX_PX * cardWidthScale(t) - CARD_EXTRA_W) / (t.subFont * 0.55));
 }
 /** The "Your desk" pill carries an icon and more generous padding than a plain label. */
 const PILL_EXTRA = 26;
@@ -385,11 +410,13 @@ export function planMarkerLabels(inputs: MarkerLabelInput[], opts: LabelLayoutOp
       const subW = i.sub ? (i.subW ?? estimateTextWidth(i.sub, t.subFont)) : 0;
       const deptW = i.dept ? (i.deptW ?? estimateTextWidth(i.dept, t.deptFont)) : 0;
 
-      // What the card may carry, most first; for each, its own width then narrower ones.
+      // What the card may carry, most first; for each, its own width then narrower ones. The caps
+      // are set for the default type and scale with the one in use (see cardWidthScale).
+      const ws = cardWidthScale(t);
       type Variant = { sub: boolean; dept: boolean; widths: number[] };
       const widthsFor = (natural: number, narrower: number[]) => {
-        const own = Math.min(natural + CARD_EXTRA_W, CARD_MAX_PX);
-        return [own, ...narrower.filter((n) => n < own)];
+        const own = Math.min(natural + CARD_EXTRA_W, Math.round(CARD_MAX_PX * ws));
+        return [own, ...narrower.map((n) => Math.round(n * ws)).filter((n) => n < own)];
       };
       const variants: Variant[] = [];
       if (i.sub && i.dept) variants.push({ sub: true, dept: true, widths: widthsFor(Math.max(nameW, subW, deptW), FULL_NARROWER_PX) });
@@ -484,6 +511,9 @@ export interface RoomLabelPlacement {
   outside: boolean;
   /** The reserved box in screen px at this zoom — what the desk cards keep clear of. */
   box: Box;
+  /** The font the name was reserved for at this zoom (ROOM_FONT × the label scale), and its line height. */
+  fontPx: number;
+  linePx: number;
 }
 
 export const ROOM_FONT = 11;
@@ -494,14 +524,19 @@ const ROOM_PAD = 2;
 const ROOM_TWO_LINE_MAX_PX = 150;
 
 /** Width of a room's name on one line, in px: its text plus the halo's padding. */
-export function estimateRoomLabelWidth(text: string): number {
-  return Math.round(text.length * ROOM_FONT * 0.6) + 2 * ROOM_PAD;
+export function estimateRoomLabelWidth(text: string, fontPx: number = ROOM_FONT): number {
+  return Math.round(text.length * fontPx * 0.6) + 2 * ROOM_PAD;
 }
 
 export function planRoomLabels(inputs: RoomLabelInput[], opts: LabelLayoutOptions): Map<string, RoomLabelPlacement> {
   const out = new Map<string, RoomLabelPlacement>();
   if (inputs.length === 0) return out;
   const { planW, planH, zoom } = opts;
+  // The name's size at this zoom: the base size times the label scale, the measured widths
+  // (taken at the base size) scaled with it.
+  const k = opts.labelScale ?? 1;
+  const fontPx = Math.round(ROOM_FONT * k * 2) / 2;
+  const linePx = Math.round(fontPx * 1.27);
   const sized = inputs.map((i) => {
     let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
     for (const [x, y] of i.pts) {
@@ -517,13 +552,13 @@ export function planRoomLabels(inputs: RoomLabelInput[], opts: LabelLayoutOption
     const cx = i.x * planW * zoom;
     const cy = i.y * planH * zoom;
     const sub = i.subHeight ? i.subHeight + 2 : 0;
-    const w1 = i.nameW != null ? Math.ceil(i.nameW) + 2 * ROOM_PAD : estimateRoomLabelWidth(i.name);
-    const h1 = ROOM_LINE_PX + 2 * ROOM_PAD + sub;
+    const w1 = i.nameW != null ? Math.ceil(i.nameW * k) + 2 * ROOM_PAD : estimateRoomLabelWidth(i.name, fontPx);
+    const h1 = linePx + 2 * ROOM_PAD + sub;
     // Two lines: half the text with slack for the break landing between words — and never
     // narrower than the longest word, which must not be cut ("Konferenzra / um").
-    const longestWord = (i.wordW != null ? Math.ceil(i.wordW) : Math.max(0, ...i.name.split(/\s+/).map((wd) => wd.length)) * ROOM_FONT * 0.6) + 2 * ROOM_PAD;
-    const w2 = Math.max(48, longestWord, Math.min(ROOM_TWO_LINE_MAX_PX, Math.ceil(w1 / 2) + ROOM_FONT));
-    const h2 = 2 * ROOM_LINE_PX + 2 * ROOM_PAD + sub;
+    const longestWord = (i.wordW != null ? Math.ceil(i.wordW * k) : Math.max(0, ...i.name.split(/\s+/).map((wd) => wd.length)) * fontPx * 0.6) + 2 * ROOM_PAD;
+    const w2 = Math.max(48, longestWord, Math.min(Math.round(ROOM_TWO_LINE_MAX_PX * k), Math.ceil(w1 / 2) + fontPx));
+    const h2 = 2 * linePx + 2 * ROOM_PAD + sub;
     return { i, area: roomW * roomH, left, top, roomW, roomH, cx, cy, w1, h1, w2, h2 };
   });
   const order = sized.sort((a, b) => Number(!!b.i.must) - Number(!!a.i.must) || b.area - a.area || (a.i.id < b.i.id ? -1 : 1));
@@ -541,6 +576,8 @@ export function planRoomLabels(inputs: RoomLabelInput[], opts: LabelLayoutOption
       lines,
       outside,
       box: { x: s.cx + dx - w / 2, y: s.cy + dy - h / 2, w, h },
+      fontPx,
+      linePx,
     });
     // Inside first, one line then two; then outside, below then above. The bounding box centre is
     // the anchor outside — a name under a room belongs under its middle, wherever the centroid of

@@ -12,7 +12,7 @@ import { ZoomControls } from './ZoomControls';
 import { Tooltip } from './Tooltip';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
 import { isBookable, markerLabelInputs, planMarkers, planRooms, roomLabelInputs, visibleUnits } from '../../state/selectors';
-import { CHIP_FOOTPRINT_OF_PITCH, CHIP_PX, chipScreenSize, HALO_TEXT, planMarkerLabels, planRoomLabels, ROOM_FONT, ROOM_LINE_PX, typographyOf } from '../../lib/labelLayout';
+import { CHIP_FOOTPRINT_OF_PITCH, CHIP_PX, chipScreenSize, HALO_TEXT, LABEL_MAX_SCALE, planMarkerLabels, planRoomLabels, ROOM_FONT, ROOM_LINE_PX, scaleTypography, typographyOf } from '../../lib/labelLayout';
 import type { LabelPlacement, RoomLabelPlacement } from '../../lib/labelLayout';
 import { markerModel } from '../../lib/markerModel';
 import { sharedLabelTextMeasurer } from '../../lib/textMeasure';
@@ -573,9 +573,11 @@ export function Canvas() {
   // (see lib/labelLayout). The zoom is the one view field this depends on.
   // Each step builds on the last plan, so a card keeps its spot while it still fits (see
   // LabelLayoutOptions.previous) — read through a ref, so the plan is not its own dependency.
-  // The type the labels are drawn in (Settings › Desks › Desk labels) — one object per setting
-  // change, so the markers' memo holds.
-  const typography = useMemo(() => typographyOf(data.labelStyle), [data.labelStyle]);
+  // The type the labels are drawn in (Settings › Desks › Desk labels), at this zoom: it grows with
+  // the drawing as the chips do, up to LABEL_MAX_SCALE× — one object per step, so the markers'
+  // memo holds between steps.
+  const labelScale = Math.min(LABEL_MAX_SCALE, chipSize / CHIP_PX);
+  const typography = useMemo(() => scaleTypography(typographyOf(data.labelStyle), labelScale), [data.labelStyle, labelScale]);
   // The chips, as boxes on screen at this zoom: taken before anything else is placed.
   const chipBoxes = useMemo(
     () =>
@@ -590,15 +592,15 @@ export function Canvas() {
   // Room names next: where each goes at this zoom — inside its room, or just outside a room too
   // small for it, never under a chip (see planRoomLabels). The desk cards then keep clear of them.
   const roomLabelPlan = useMemo(
-    () => planRoomLabels(roomLabelInputs(data, rooms, { measure: sharedLabelTextMeasurer() }), { planW: IMG_W, planH: IMG_H, zoom: state.view.z, reserved: chipBoxes }),
-    [data, rooms, state.view.z, chipBoxes],
+    () => planRoomLabels(roomLabelInputs(data, rooms, { measure: sharedLabelTextMeasurer() }), { planW: IMG_W, planH: IMG_H, zoom: state.view.z, reserved: chipBoxes, labelScale }),
+    [data, rooms, state.view.z, chipBoxes, labelScale],
   );
   const roomLabelBoxes = useMemo(() => [...roomLabelPlan.values()].map((p) => p.box), [roomLabelPlan]);
   const prevPlanRef = useRef<Map<string, LabelPlacement>>(new Map());
   const labelPlan = useStablePlacements(
     useMemo(
       () =>
-        planMarkerLabels(markerLabelInputs(data, markers, { measure: sharedLabelTextMeasurer(), chipSize }), {
+        planMarkerLabels(markerLabelInputs(data, markers, { measure: sharedLabelTextMeasurer(), chipSize, typography }), {
           planW: IMG_W,
           planH: IMG_H,
           zoom: state.view.z,
@@ -844,6 +846,8 @@ export function RoomLabel({ unit, placement }: { unit: Unit; placement: RoomLabe
   // be transitioned from the same buttons a desk can — and it has no marker to spin, so the
   // waiting shows on the label, which is the room's only fixture on the plan.
   const busy = state.busyUnitId === unit.id;
+  // The line under the name, at the name's scale.
+  const subPx = Math.round((placement.fontPx / ROOM_FONT) * 10 * 2) / 2;
 
   let sub = '';
   let subFg = 'var(--ink-600)';
@@ -886,7 +890,7 @@ export function RoomLabel({ unit, placement }: { unit: Unit; placement: RoomLabe
       <span
         style={{
           color: 'var(--ink-900)',
-          font: `600 ${ROOM_FONT}px/${ROOM_LINE_PX}px var(--font-sans)`,
+          font: `600 ${placement.fontPx}px/${placement.linePx}px var(--font-sans)`,
           textAlign: 'center',
           // One line, or the two the layout reserved for a long name in a wide room.
           // Two lines break between words only (break-word cuts a word only when it cannot fit a line alone).
@@ -896,13 +900,13 @@ export function RoomLabel({ unit, placement }: { unit: Unit; placement: RoomLabe
         {unit.label}
       </span>
       {busy ? (
-        <span style={{ display: 'flex', alignItems: 'center', color: 'var(--ink-600)', font: '500 10px/1 var(--font-sans)', whiteSpace: 'nowrap' }}>
+        <span style={{ display: 'flex', alignItems: 'center', color: 'var(--ink-600)', font: `500 ${subPx}px/1 var(--font-sans)`, whiteSpace: 'nowrap' }}>
           <ButtonSpinner />
           Working…
         </span>
       ) : (
         sub && (
-          <span style={{ color: subFg, font: '500 10px/1 var(--font-sans)', whiteSpace: 'nowrap' }}>
+          <span style={{ color: subFg, font: `500 ${subPx}px/1 var(--font-sans)`, whiteSpace: 'nowrap' }}>
             {sub}
           </span>
         )

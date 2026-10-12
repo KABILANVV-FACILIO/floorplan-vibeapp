@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CARD_PAD_X, CHIP_MAX_SCALE, CHIP_PX, cardOffset, chipScreenSize, planMarkerLabels, planRoomLabels, typographyOf } from './labelLayout';
+import { CARD_PAD_X, CHIP_MAX_SCALE, CHIP_PX, DEFAULT_LABEL_TYPOGRAPHY, cardOffset, chipScreenSize, planMarkerLabels, planRoomLabels, scaleTypography, typographyOf } from './labelLayout';
 import type { LabelPlacement, MarkerLabelInput, RoomLabelInput } from './labelLayout';
 
 /**
@@ -313,5 +313,35 @@ describe('chipScreenSize', () => {
     const plan = planMarkerLabels(inputs, { planW: 1000, planH: 1000, zoom: 2 });
     expect(plan.get('a')?.half).toBe(24);
     expect(plan.get('a')?.name).toBe(true);
+  });
+});
+
+describe('the labels grow with the drawing', () => {
+  it('scales every font and its line height, and leaves the type alone at 1', () => {
+    const t = DEFAULT_LABEL_TYPOGRAPHY;
+    expect(scaleTypography(t, 1)).toBe(t);
+    const big = scaleTypography(t, 2);
+    expect(big.nameFont).toBe(17);
+    expect(big.subFont).toBe(16);
+    expect(big.deptFont).toBe(15);
+    expect(big.nameLine).toBe(Math.round(17 * 1.2));
+    expect(big.nameWeight).toBe(t.nameWeight);
+  });
+
+  it('reserves a wider card for a larger type rather than cutting the same text shorter', () => {
+    const input: MarkerLabelInput = { id: 'a', x: 0.5, y: 0.5, size: 24, name: 'WS-01', sub: 'Someone With A Long Name', dept: 'Project Implementation', rank: 2 };
+    const base = planMarkerLabels([input], { planW: 1000, planH: 1000, zoom: 1 }).get('a')!;
+    const big = planMarkerLabels([input], { planW: 1000, planH: 1000, zoom: 1, typography: scaleTypography(DEFAULT_LABEL_TYPOGRAPHY, 2) }).get('a')!;
+    expect(big.w).toBeGreaterThan(base.w!);
+    expect(big.dept).toBe(true);
+  });
+
+  it('reserves a room name at its scaled size and says which size it reserved', () => {
+    const r: RoomLabelInput = { id: 'r', pts: [[0.1, 0.1], [0.5, 0.1], [0.5, 0.4], [0.1, 0.4]], x: 0.3, y: 0.25, name: 'Board Room' };
+    const base = planRoomLabels([r], { planW: 1000, planH: 1000, zoom: 1 }).get('r')!;
+    const big = planRoomLabels([r], { planW: 1000, planH: 1000, zoom: 1, labelScale: 2 }).get('r')!;
+    expect(big.fontPx).toBe(22);
+    expect(big.h).toBeGreaterThan(base.h);
+    expect(big.w).toBeGreaterThan(base.w);
   });
 });

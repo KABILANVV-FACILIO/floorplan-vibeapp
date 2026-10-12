@@ -1,5 +1,6 @@
 import { isModuleEnabled, isRoomLike, unitOnPlan } from '../lib/types';
 import { ROOM_FONT, subMaxChars, typographyOf } from '../lib/labelLayout';
+import type { LabelTypography } from '../lib/labelLayout';
 import type { LabelTextMeasure } from '../lib/textMeasure';
 import type { MarkerLabelInput, RoomLabelInput } from '../lib/labelLayout';
 import { polygonCentroid } from '../lib/geometry';
@@ -248,12 +249,12 @@ export function roomLabelInputs(state: AppState, rooms: Unit[], opts: { measure?
  * (or the "Your desk" pill in its place), and the holder with their department below. Shared with
  * the print sheet so a label reads the same on paper as on screen.
  */
-export function markerLabelInputs(state: AppState, markers: Unit[], opts: { personal?: boolean; measure?: LabelTextMeasure; /** The chip's screen size at the current zoom (see chipScreenSize); 24 when unsaid. */ chipSize?: number } = {}): MarkerLabelInput[] {
+export function markerLabelInputs(state: AppState, markers: Unit[], opts: { personal?: boolean; measure?: LabelTextMeasure; /** The chip's screen size at the current zoom (see chipScreenSize); 24 when unsaid. */ chipSize?: number; /** The type the cards are drawn in at this zoom (see scaleTypography); the setting's own size when unsaid. */ typography?: LabelTypography } = {}): MarkerLabelInput[] {
   // `personal: false` (the print sheet): no "Your desk" pill — a sheet on a wall is read by everyone.
   const mineId = opts.personal === false ? null : (myAssignedUnit(state)?.id ?? null);
   const labelsOn = state.mode === 'assign' || state.mode === 'book';
   const measure = opts.measure;
-  const t = typographyOf(state.labelStyle);
+  const t = opts.typography ?? typographyOf(state.labelStyle);
   return markers
     .filter((m) => labelsOn || m.type === 'amenity')
     .map((m) => {
