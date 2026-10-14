@@ -54,6 +54,48 @@ const DDL = [
      color text not null,
      updated_at text not null default ''
    )`,
+  /*
+   * Who may see what. TWO tables, because "everyone" and "these 7 roles" are different facts.
+   *
+   * A SURFACE is a tab, or a mode within the floorplan tab — the things a person either sees or
+   * does not. Dotted keys are a mode of their parent tab:
+   *
+   *   map            the floorplan tab          bookings   the bookings calendar
+   *   map.assign     its Assign mode            people     the people directory
+   *   map.book       its Book mode              settings   the settings screen
+   *   map.edit       its Edit mode
+   *
+   * fp_surface carries `all_roles` per surface. It is NOT shorthand for "write a row for each of
+   * the org's roles": an org has dozens of roles and adds more, and a surface open to everyone
+   * must stay open to a role created next month. Stored as a list, every new role would silently
+   * arrive denied.
+   *
+   * fp_permission carries the explicit grants, one row per (surface, role), and is read only when
+   * that surface's all_roles is 0. Roles are the ORG's, so no role list is hardcoded here —
+   * whatever id the app sends is stored as given.
+   *
+   * `allowed` / `all_roles` are 0/1 rather than booleans: handler parameters may only be string or
+   * number, and keeping the columns the same shape as the wire value means no translation to get
+   * wrong.
+   *
+   * Absence is NOT denial — a surface with no fp_surface record falls back to the client's own
+   * default, so an org that never opens the grid behaves exactly as it does today.
+   */
+  `create table if not exists fp_surface (
+     surface text primary key,
+     all_roles integer not null default 0,
+     updated_at text not null default '',
+     updated_by text not null default ''
+   )`,
+  `create table if not exists fp_permission (
+     surface text not null,
+     role text not null,
+     allowed integer not null default 0,
+     updated_at text not null default '',
+     updated_by text not null default '',
+     primary key (surface, role)
+   )`,
+  `create index if not exists fp_permission_role_idx on fp_permission (role)`,
   `create table if not exists fp_floorplan_file (
      floor_id text not null,
      plan_id text not null,
@@ -310,6 +352,193 @@ server.addHandler({
   execute: async (args) => {
     connect().query('delete from fp_department_color where department_id = $1', [String(args.departmentId ?? '')]);
     return { ok: true };
+  },
+});
+
+/** Every surface the grid governs: the four tabs, plus the floorplan's three modes. */
+const SURFACES = ['map', 'map.assign', 'map.book', 'map.edit', 'bookings', 'people', 'settings'];
+
+/**
+ * The TABS a person navigates between. The floorplan's modes are deliberately not here: a mode is
+ * only reachable through `map`, so a role holding only `map.edit` still has somewhere to land.
+ */
+const TABS = ['map', 'bookings', 'people', 'settings'];
+
+/**
+ * Settings is never taken from these, whatever is stored or sent. Without this floor a single bad
+ * write locks the only people who could undo it out of the screen that undoes it, and recovery
+ * would be a database edit. Enforced here rather than in the browser so no client bug, and no
+ * direct call to this function, can get past it.
+ */
+const ALWAYS_SETTINGS = ['super-admin', 'administrator'];
+
+/** Roles are the ORG's — dozens of them, and more tomorrow. None are hardcoded. */
+function readGrid(db: any): Record<string, { all: boolean; roles: string[] }> {
+  const out: Record<string, { all: boolean; roles: string[] }> = {};
+  const surfaces = db.query('select surface, all_roles from fp_surface');
+  for (const r of surfaces.rows) out[String(r.surface)] = { all: Number(r.all_roles) === 1, roles: [] };
+  const grants = db.query('select surface, role from fp_permission where allowed = 1');
+  for (const r of grants.rows) {
+    const key = String(r.surface);
+    if (!out[key]) out[key] = { all: false, roles: [] };
+    out[key].roles.push(String(r.role));
+  }
+  for (const role of ALWAYS_SETTINGS) {
+    if (!out.settings) out.settings = { all: false, roles: [] };
+    if (!out.settings.all && out.settings.roles.indexOf(role) === -1) out.settings.roles.push(role);
+  }
+  return out;
+}
+
+/** Does `role` still reach at least one TAB under `grid`? */
+function hasAnyTab(grid: Record<string, { all: boolean; roles: string[] }>, role: string): boolean {
+  for (const tab of TABS) {
+    const cell = grid[tab];
+    if (!cell) continue;
+    if (cell.all || cell.roles.indexOf(role) !== -1) return true;
+  }
+  return false;
+}
+
+/**
+ * Every role named anywhere in the grid must keep a tab. A role with none has nothing to open:
+ * the app would authenticate them and then show an empty shell, which reads as broken rather than
+ * as configured. Refused here as well as in the browser, for the same reason as the Settings floor.
+ */
+function assertEveryRoleHasATab(grid: Record<string, { all: boolean; roles: string[] }>): void {
+  const named: string[] = [];
+  for (const key of Object.keys(grid)) {
+    for (const role of grid[key].roles) if (named.indexOf(role) === -1) named.push(role);
+  }
+  const stranded = named.filter((role) => !hasAnyTab(grid, role));
+  if (stranded.length) {
+    throw new Error('these roles would be left with no tab at all: ' + stranded.join(', '));
+  }
+}
+
+function writeSurface(db: any, surface: string, all: boolean, roles: string[], at: string, by: string): void {
+  db.query(
+    `insert into fp_surface (surface, all_roles, updated_at, updated_by)
+     values ($1, $2, $3, $4)
+     on conflict (surface) do update set
+       all_roles = excluded.all_roles,
+       updated_at = excluded.updated_at,
+       updated_by = excluded.updated_by`,
+    [surface, all ? 1 : 0, at, by]
+  );
+  // A role dropped from the list is DENIED rather than deleted, so the log can still show that it
+  // was turned off and by whom.
+  db.query('update fp_permission set allowed = 0, updated_at = $2, updated_by = $3 where surface = $1 and allowed = 1', [surface, at, by]);
+  for (const role of roles) {
+    db.query(
+      `insert into fp_permission (surface, role, allowed, updated_at, updated_by)
+       values ($1, $2, 1, $3, $4)
+       on conflict (surface, role) do update set
+         allowed = 1,
+         updated_at = excluded.updated_at,
+         updated_by = excluded.updated_by`,
+      [surface, role, at, by]
+    );
+  }
+}
+
+server.addHandler({
+  name: 'get-permissions',
+  description: "The grid as the app reads it on load: { map: { all: true, roles: [] }, people: { all: false, roles: ['hr-director', ...] } }. `all` means every role the org has, including ones added later. Settings always carries super-admin and administrator. A surface with no record is absent, and the client falls back to its own default for it.",
+  parameters: {},
+  execute: async () => readGrid(connect()),
+});
+
+server.addHandler({
+  name: 'get-permission-log',
+  description: 'Every stored cell with its last change — surface, role, allowed, who changed it and when, newest first; plus the per-surface all_roles flag and its own last change. The audit read; get-permissions is the one the app asks on load.',
+  parameters: {},
+  execute: async () => {
+    const db = connect();
+    const grants = db.query(
+      'select surface, role, allowed, updated_at, updated_by from fp_permission order by updated_at desc, surface, role'
+    );
+    const surfaces = db.query(
+      'select surface, all_roles, updated_at, updated_by from fp_surface order by updated_at desc, surface'
+    );
+    return {
+      surfaces: surfaces.rows.map((r: any) => ({
+        surface: String(r.surface),
+        allRoles: Number(r.all_roles) === 1,
+        updatedAt: String(r.updated_at ?? ''),
+        updatedBy: String(r.updated_by ?? ''),
+      })),
+      grants: grants.rows.map((r: any) => ({
+        surface: String(r.surface),
+        role: String(r.role),
+        allowed: Number(r.allowed) === 1,
+        updatedAt: String(r.updated_at ?? ''),
+        updatedBy: String(r.updated_by ?? ''),
+      })),
+    };
+  },
+});
+
+server.addHandler({
+  name: 'set-surface-access',
+  description: "Set one surface's audience in a single write: either every role, or an explicit list. Refused if it would strand a named role with no tab, or strip Settings from super-admin or administrator.",
+  parameters: {
+    surface: { description: 'Surface key: map | map.assign | map.book | map.edit | bookings | people | settings', type: 'string' },
+    allRoles: { description: '1 for every role the org has (now and later), 0 for the explicit list', type: 'number' },
+    rolesJson: { description: 'JSON array of role ids, used when allRoles is 0', type: 'string' },
+    updatedBy: { description: 'Who made the change — the signed-in user, as the app knows them', type: 'string' },
+  },
+  execute: async (args) => {
+    const surface = String(args.surface ?? '').trim();
+    if (SURFACES.indexOf(surface) === -1) throw new Error('unknown surface: ' + surface);
+    const all = Number(args.allRoles) === 1;
+    const roles = all ? [] : parseJson<string[]>(args.rolesJson, []).map(String).filter((r) => r !== '');
+    if (surface === 'settings' && !all) {
+      for (const role of ALWAYS_SETTINGS) if (roles.indexOf(role) === -1) roles.push(role);
+    }
+
+    const db = connect();
+    const grid = readGrid(db);
+    grid[surface] = { all, roles };
+    assertEveryRoleHasATab(grid);
+
+    writeSurface(db, surface, all, roles, new Date().toISOString(), String(args.updatedBy ?? ''));
+    return { ok: true, surface, allRoles: all, roles };
+  },
+});
+
+server.addHandler({
+  name: 'save-permissions',
+  description: 'Replace the whole grid in one write, from the same shape get-permissions returns. Refused as a whole if it would strand a named role with no tab.',
+  parameters: {
+    gridJson: { description: 'JSON object of surface -> { all: boolean, roles: string[] }', type: 'string' },
+    updatedBy: { description: 'Who made the change — the signed-in user, as the app knows them', type: 'string' },
+  },
+  execute: async (args) => {
+    const grid = parseJson<Record<string, { all?: boolean; roles?: string[] }>>(args.gridJson, null as any);
+    if (!grid || typeof grid !== 'object') throw new Error('gridJson must be a JSON object');
+
+    const next: Record<string, { all: boolean; roles: string[] }> = {};
+    for (const surface of Object.keys(grid)) {
+      if (SURFACES.indexOf(surface) === -1) throw new Error('unknown surface: ' + surface);
+      const all = grid[surface]?.all === true;
+      const roles = all ? [] : (Array.isArray(grid[surface]?.roles) ? grid[surface]!.roles!.map(String) : []).filter((r) => r !== '');
+      if (surface === 'settings' && !all) {
+        for (const role of ALWAYS_SETTINGS) if (roles.indexOf(role) === -1) roles.push(role);
+      }
+      next[surface] = { all, roles };
+    }
+    assertEveryRoleHasATab(next);
+
+    const db = connect();
+    const at = new Date().toISOString();
+    const by = String(args.updatedBy ?? '');
+    let written = 0;
+    for (const surface of Object.keys(next)) {
+      writeSurface(db, surface, next[surface].all, next[surface].roles, at, by);
+      written += 1;
+    }
+    return { ok: true, surfaces: written };
   },
 });
 

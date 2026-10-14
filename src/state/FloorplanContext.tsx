@@ -4,11 +4,11 @@ import { dataSource, clearLocalData } from '../lib/dataSource';
 import type { CreateSpaceLoc } from '../lib/dataSource';
 import { PORTFOLIO as MOCK_PORTFOLIO, EMPLOYEES as MOCK_EMPLOYEES, seedBookings, seedUnits, seedAssignments } from '../lib/mockData';
 import { floorImageKey, isRoomLike, planForPlacement, resolveMarkerDef, TYPE_META, unitOnPlan } from '../lib/types';
-import type { AmenityIcon, Booking, FloorSearchHit, MarkerDef, ModuleKey, PlanId, Role, Site, Unit, UnitType } from '../lib/types';
+import type { AmenityIcon, Booking, FloorSearchHit, MarkerDef, ModuleKey, OrgRole, PlanId, Site, Surface, SurfaceAccess, Unit, UnitType } from '../lib/types';
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
-import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchCurrentPeopleId, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, fetchOrgBookingsForRange, fetchOrgTimezone, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, takeRoomOutlineReadFailure, vacateUnitReal } from '../lib/facilioApiDataSource';
+import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchCurrentPeopleId, fetchCurrentRole, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, fetchOrgBookingsForRange, fetchOrgRoles, fetchOrgTimezone, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, takeRoomOutlineReadFailure, vacateUnitReal } from '../lib/facilioApiDataSource';
 import { ROOM_OUTLINE_WRITES } from '../lib/featureFlags';
 import { personDisplayName } from '../lib/displayNames';
 import { measureImageDataUrl } from '../lib/geoReference';
@@ -679,6 +679,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     },
 
     setSpaceFilter: (filter: AppState['spaceFilter']) => dispatch({ type: 'SET_SPACE_FILTER', filter }),
+    setSpaceDepartment: (department: string | null) => dispatch({ type: 'SET_SPACE_DEPARTMENT', department }),
     setSpaceSearch: (value: string) => dispatch({ type: 'SET_SPACE_SEARCH', value }),
 
     selectUnit: (id: string | null) => dispatch({ type: 'SELECT_UNIT', id }),
@@ -1258,14 +1259,23 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     },
     setSchedView: (view: AppState['schedView']) => dispatch({ type: 'SET_SCHED_VIEW', view }),
 
-    setRole: (role: Role) => {
-      dispatch({ type: 'SET_ROLE', role });
-      showToast(`Viewing as ${role[0].toUpperCase()}${role.slice(1)}`);
+    /** One tab's audience, from the Settings grid. */
+    setSurfaceAccess: (surface: Surface, value: SurfaceAccess) => dispatch({ type: 'SET_SURFACE_ACCESS', surface, value }),
+    /** The whole grid, as Save sends it. */
+    setAccess: (access: AppState['access']) => dispatch({ type: 'SET_ACCESS', access }),
+    resetAccess: () => {
+      dispatch({ type: 'RESET_ACCESS' });
+      showToast('Access reset to defaults');
     },
-    togglePerm: (action: keyof AppState['perms'], role: Role) => dispatch({ type: 'TOGGLE_PERM', action, role }),
-    resetPerms: () => {
-      dispatch({ type: 'RESET_PERMS' });
-      showToast('Permissions reset to defaults');
+    /**
+     * The org's roles, for the Settings picker only — gating never needs the list, so this is not
+     * read on boot. Failure is silent and leaves the list empty: the grid then offers nothing to
+     * add, which is visible, while a toast on a screen nobody opened is not.
+     */
+    loadOrgRoles: async () => {
+      dispatch({ type: 'ORG_ROLES_LOADING' });
+      const roles = await fetchOrgRoles().catch(() => [] as OrgRole[]);
+      dispatch({ type: 'ORG_ROLES_LOADED', roles });
     },
 
     /**
@@ -1479,6 +1489,18 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  /*
+   * Who is looking. Resolved once on mount, off the account payload; the reducer re-clamps the
+   * active view against the answer, because resolving a role can hide the tab already on screen.
+   * A failure leaves `viewerRole` null, which `canSee` reads as "show everything" — a tab the org
+   * meant to hide is a far smaller problem than an app with nothing in it.
+   */
+  useEffect(() => {
+    fetchCurrentRole()
+      .then((role) => dispatch({ type: 'SET_VIEWER_ROLE', role }))
+      .catch(() => dispatch({ type: 'SET_VIEWER_ROLE', role: null }));
+  }, []);
+
   // Load persisted settings (vibe-db when deployed, else localStorage) once on mount.
   useEffect(() => {
     loadSettings()
@@ -1502,7 +1524,7 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(saveTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    state.perms,
+    state.access,
     state.moduleColors,
     state.colorBy,
     state.labelStyle,

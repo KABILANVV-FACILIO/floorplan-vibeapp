@@ -150,7 +150,7 @@ export const ALL_PLAN_TYPES: { id: PlanId; name: string }[] = [
 ];
 export type AppMode = 'assign' | 'book' | 'edit';
 export type EditTool = 'select' | 'room' | 'delivery' | 'workstation' | 'locker' | 'parking' | 'amenity' | 'asset' | 'calibrate';
-export type Role = 'admin' | 'manager' | 'employee';
+
 
 /** Each plan type on a floor can have its own background image — key floorImages by both. */
 export function floorImageKey(floorId: string, planId: PlanId): string {
@@ -360,26 +360,58 @@ export const TYPE_META: Record<UnitType, { name: string; prefix: string }> = {
   amenity: { name: 'Amenity', prefix: 'AM' },
 };
 
-export const ROLES: { id: Role; name: string }[] = [
-  { id: 'admin', name: 'Admin' },
-  { id: 'manager', name: 'Manager' },
-  { id: 'employee', name: 'Employee' },
+/**
+ * ACCESS — which of the org's roles reach which TAB.
+ *
+ * A surface is a tab, and only a tab. What someone may DO once they are on the plan — assign,
+ * book, edit — is answered by the org's own stateflow and by the module settings; asking it twice
+ * would mean two configurations that can disagree, and the one in this app would quietly win.
+ */
+export type Surface = 'map' | 'bookings' | 'people' | 'settings';
+
+export const SURFACES: { id: Surface; name: string; desc: string }[] = [
+  { id: 'map', name: 'Floorplans', desc: 'The plan itself, and everything on it' },
+  { id: 'bookings', name: 'Bookings', desc: 'The org-wide booking calendar' },
+  { id: 'people', name: 'People', desc: 'The employee directory' },
+  { id: 'settings', name: 'Settings', desc: 'This screen and every other configuration' },
 ];
 
-export type PermsAction = 'edit' | 'assign' | 'book';
-export type Perms = Record<PermsAction, Role[]>;
+/**
+ * Who reaches one surface. `all` is a state rather than a list of every role id: an org has dozens
+ * of roles and adds more, and a tab open to everyone must stay open to a role created next month.
+ * Held as a list, every new role would silently arrive denied.
+ */
+export interface SurfaceAccess {
+  all: boolean;
+  /** Role record ids, as strings. Ids, never names — a role can be renamed. */
+  roles: string[];
+}
 
-export const DEFAULT_PERMS: Perms = {
-  edit: ['admin'],
-  assign: ['admin', 'manager'],
-  book: ['admin', 'manager', 'employee'],
+/** One of the org's roles, as the picker lists them. */
+export interface OrgRole {
+  id: string;
+  name: string;
+}
+
+export type Access = Partial<Record<Surface, SurfaceAccess>>;
+
+/**
+ * Everything open. A surface absent from the stored blob falls back to its entry here, so an org
+ * that never opens the grid behaves exactly as it did before this existed.
+ *
+ * Settings included: the roles that may configure the app are the org's own admin roles, whose
+ * record ids this app does not know until someone picks them. Defaulting it closed would lock
+ * every org out of its own settings on upgrade.
+ */
+export const DEFAULT_ACCESS: Record<Surface, SurfaceAccess> = {
+  map: { all: true, roles: [] },
+  bookings: { all: true, roles: [] },
+  people: { all: true, roles: [] },
+  settings: { all: true, roles: [] },
 };
 
-export const ACTIONS: { id: PermsAction; name: string; desc: string }[] = [
-  { id: 'edit', name: 'Edit floorplan', desc: 'Draw rooms, place units, calibrate scale' },
-  { id: 'assign', name: 'Assign desks & lockers', desc: 'Give a permanent desk or locker to a person' },
-  { id: 'book', name: 'Book spaces', desc: 'Reserve hot desks, rooms, parking' },
-];
+/** The order a hidden tab falls back through — the plan first, settings last. */
+export const SURFACE_ORDER: Surface[] = ['map', 'bookings', 'people', 'settings'];
 
 export interface StateDef {
   key: string;

@@ -1,10 +1,10 @@
-import { isModuleEnabled, isRoomLike, unitOnPlan } from '../lib/types';
+import { DEFAULT_ACCESS, SURFACE_ORDER, isModuleEnabled, isRoomLike, unitOnPlan } from '../lib/types';
 import { ROOM_FONT, subMaxChars, typographyOf } from '../lib/labelLayout';
 import type { LabelTypography } from '../lib/labelLayout';
 import type { LabelTextMeasure } from '../lib/textMeasure';
 import type { MarkerLabelInput, RoomLabelInput } from '../lib/labelLayout';
 import { polygonCentroid } from '../lib/geometry';
-import type { Booking, Employee, Unit, UnitType } from '../lib/types';
+import type { Booking, Employee, Surface, Unit, UnitType } from '../lib/types';
 import type { AppState } from './types';
 import { departmentDisplayName, personDisplayName, personInitials, shortPersonName } from '../lib/displayNames';
 
@@ -283,4 +283,32 @@ export function markerLabelInputs(state: AppState, markers: Unit[], opts: { pers
           : {}),
       };
     });
+}
+
+/**
+ * Whether the signed-in user reaches a tab.
+ *
+ * Open by default, deliberately: an unknown viewer role, an unconfigured surface and an org that
+ * never opened the grid all mean "show it". Access is a setting someone turns ON for a reason, and
+ * a failed read of the account payload must not empty the app.
+ */
+export function canSee(state: AppState, surface: Surface): boolean {
+  const rule = state.access[surface] ?? DEFAULT_ACCESS[surface];
+  if (rule.all) return true;
+  if (!state.viewerRole) return true;
+  return rule.roles.includes(state.viewerRole.id);
+}
+
+/** The tabs this viewer reaches, in nav order. Never empty — see `canSee`. */
+export function visibleSurfaces(state: AppState): Surface[] {
+  return SURFACE_ORDER.filter((s) => canSee(state, s));
+}
+
+/**
+ * The view to show. The one asked for when it is allowed, else the first tab that is — so a tab
+ * hidden while someone is standing on it moves them somewhere real instead of rendering nothing.
+ */
+export function clampView(state: AppState, wanted: AppState['activeView']): AppState['activeView'] {
+  if (canSee(state, wanted as Surface)) return wanted;
+  return visibleSurfaces(state)[0] ?? 'map';
 }

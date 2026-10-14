@@ -1,11 +1,12 @@
-import { DEFAULT_ENABLED_MODULES, DEFAULT_PERMS, floorImageKey, isRoomLike, planForPlacement } from '../lib/types';
+import { DEFAULT_ENABLED_MODULES, floorImageKey, isRoomLike, planForPlacement } from '../lib/types';
 import { DEFAULT_LABEL_STYLE } from '../lib/labelLayout';
 import type { LabelStyle } from '../lib/labelLayout';
-import type { Booking, Building, Floor, FloorSearchHit, MarkerDef, ModuleKey, PlanId, Site, Unit } from '../lib/types';
+import type { Booking, Building, Floor, FloorSearchHit, MarkerDef, ModuleKey, OrgRole, PlanId, Site, Surface, SurfaceAccess, Unit } from '../lib/types';
 import { clamp, fitView } from '../lib/geometry';
 import { seedBookings } from '../lib/mockData';
 import { viewFromLocation } from '../lib/routes';
 import type { AppState } from './types';
+import { clampView } from './selectors';
 
 function todayIso(): string {
   const d = new Date();
@@ -68,6 +69,7 @@ export function buildInitialState(): AppState {
     viewAnim: false,
     userZoomed: false,
     spaceFilter: 'all',
+    spaceDepartment: null,
     spaceSearch: '',
 
     units: [],
@@ -112,8 +114,10 @@ export function buildInitialState(): AppState {
     bookingsNonce: 0,
     schedView: 'list',
 
-    role: 'admin',
-    perms: { ...DEFAULT_PERMS },
+    viewerRole: null,
+    access: {},
+    orgRoles: [],
+    orgRolesLoading: false,
 
     // Each bottom-nav view is a path route (see lib/routes.ts) — boot straight into whatever
     // the URL says, so a refresh/deep link on /bookings etc. lands on that tab.
@@ -174,6 +178,7 @@ export type Action =
   | { type: 'SET_VIEW'; view: AppState['view']; animate?: boolean }
   | { type: 'MARK_USER_ZOOMED'; value: boolean }
   | { type: 'SET_SPACE_FILTER'; filter: AppState['spaceFilter'] }
+  | { type: 'SET_SPACE_DEPARTMENT'; department: string | null }
   | { type: 'SET_SPACE_SEARCH'; value: string }
   | { type: 'PORTFOLIO_LOADED'; portfolio: Site[]; employees: AppState['employees'] }
   | { type: 'EMPLOYEES_LOADED'; employees: AppState['employees'] }
@@ -216,9 +221,12 @@ export type Action =
   | { type: 'ADD_BOOKING'; booking: Booking }
   | { type: 'CANCEL_BOOKING'; id: string }
   | { type: 'SET_SCHED_VIEW'; view: AppState['schedView'] }
-  | { type: 'SET_ROLE'; role: AppState['role'] }
-  | { type: 'TOGGLE_PERM'; action: keyof AppState['perms']; role: AppState['role'] }
-  | { type: 'RESET_PERMS' }
+  | { type: 'SET_VIEWER_ROLE'; role: AppState['viewerRole'] }
+  | { type: 'SET_SURFACE_ACCESS'; surface: Surface; value: SurfaceAccess }
+  | { type: 'SET_ACCESS'; access: AppState['access'] }
+  | { type: 'ORG_ROLES_LOADING' }
+  | { type: 'ORG_ROLES_LOADED'; roles: OrgRole[] }
+  | { type: 'RESET_ACCESS' }
   | { type: 'SET_ACTIVE_VIEW'; view: AppState['activeView'] }
   | { type: 'SET_PENDING_PLACEMENT'; placement: AppState['pendingPlacement'] }
   | { type: 'PLACE_EXISTING_UNIT'; unitId: string; geom: Unit['geom']; room: string | null }
@@ -347,6 +355,7 @@ export function reducer(state: AppState, action: Action): AppState {
         navView: 'spaces',
         spaceSearch: '',
         spaceFilter: 'all',
+        spaceDepartment: null,
         loading: true,
         // Switching floors: shimmer immediately (cleared once the new floor's image resolves), so
         // the new floor's markers never briefly render over the old/blank background.
@@ -460,6 +469,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, userZoomed: action.value };
     case 'SET_SPACE_FILTER':
       return { ...state, spaceFilter: action.filter };
+    case 'SET_SPACE_DEPARTMENT':
+      return { ...state, spaceDepartment: action.department };
     case 'SET_SPACE_SEARCH':
       return { ...state, spaceSearch: action.value };
     case 'PORTFOLIO_LOADED':
@@ -629,7 +640,7 @@ export function reducer(state: AppState, action: Action): AppState {
       const c = action.config;
       return {
         ...state,
-        perms: c.perms ?? state.perms,
+        access: c.access ?? state.access,
         moduleColors: c.moduleColors ?? state.moduleColors,
         colorBy: c.colorBy ?? state.colorBy,
         slotGranularity: c.slotGranularity ?? state.slotGranularity,
@@ -659,22 +670,36 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'SET_SCHED_VIEW':
       return { ...state, schedView: action.view };
 
-    case 'SET_ROLE':
-      return { ...state, role: action.role };
-    case 'TOGGLE_PERM': {
-      const cur = state.perms[action.action];
-      const has = cur.includes(action.role);
-      const next = has ? cur.filter((r) => r !== action.role) : [...cur, action.role];
-      return { ...state, perms: { ...state.perms, [action.action]: next } };
+    // Resolving who is looking can hide the tab they are standing on, so the view is re-clamped
+    // against the new answer rather than left pointing at something they may no longer reach.
+    case 'SET_VIEWER_ROLE': {
+      const next = { ...state, viewerRole: action.role };
+      return { ...next, activeView: clampView(next, next.activeView) };
     }
-    case 'RESET_PERMS':
-      return { ...state, perms: { ...DEFAULT_PERMS } };
+    case 'SET_SURFACE_ACCESS': {
+      const next = { ...state, access: { ...state.access, [action.surface]: action.value } };
+      return { ...next, activeView: clampView(next, next.activeView) };
+    }
+    case 'SET_ACCESS': {
+      const next = { ...state, access: action.access };
+      return { ...next, activeView: clampView(next, next.activeView) };
+    }
+    case 'ORG_ROLES_LOADING':
+      return { ...state, orgRolesLoading: true };
+    case 'ORG_ROLES_LOADED':
+      return { ...state, orgRoles: action.roles, orgRolesLoading: false };
+    case 'RESET_ACCESS':
+      return { ...state, access: {} };
 
-    case 'SET_ACTIVE_VIEW':
+    case 'SET_ACTIVE_VIEW': {
+      // Clamped, not trusted: this is also the landing point for a deep link, which can name a tab
+      // this viewer's role does not reach.
+      const view = clampView(state, action.view);
       // Idempotent so the hash<->state sync in FloorplanContext can dispatch freely on every
       // hashchange without triggering render churn (or a dispatch->hash->dispatch loop).
-      if (state.activeView === action.view) return state;
-      return { ...state, activeView: action.view };
+      if (state.activeView === view) return state;
+      return { ...state, activeView: view };
+    }
     case 'SET_SETTINGS_TAB':
       return { ...state, settingsTab: action.tab };
     case 'SET_MODULE_COLOR':

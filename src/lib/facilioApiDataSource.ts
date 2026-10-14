@@ -9,6 +9,7 @@ import { renderPdfToDataUrl } from './pdfPreview';
 import { computeSyntheticGeometry, geometryStringToQuad, lngLatToQuadFraction, quadFittingPoints, quadToGeometryString, quadToLngLat } from './geoReference';
 import type { CreateSpaceLoc, FloorplanDataSource } from './dataSource';
 import type { Asset } from './assets';
+import type { OrgRole } from './types';
 import { isRoomLike, TYPE_META } from './types';
 import { ROOM_OUTLINE_WRITES } from './featureFlags';
 import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, PlanId, PointGeom, PolyGeom, Site, Unit, UnitType } from './types';
@@ -3196,6 +3197,65 @@ export function fetchOrgTimezone(): Promise<string | null> {
  * (it is not the login user id). From the account payload; null when the session names none.
  */
 let peopleIdCache: Promise<number | null> | null = null;
+let viewerRoleCache: Promise<OrgRole | null> | null = null;
+
+/**
+ * The signed-in user's ROLE, off the same account payload `fetchCurrentPeopleId` reads.
+ *
+ * Shapes differ by region and by how the app is embedded, so every known spelling is tried and a
+ * miss is not an error: null means "the payload did not say", and the caller treats that as no
+ * gating at all. Locking someone out because a field moved is far worse than showing them a tab.
+ */
+export function fetchCurrentRole(): Promise<OrgRole | null> {
+  if (!isFacilioApiConfigured) return Promise.resolve(null);
+  if (!viewerRoleCache) {
+    viewerRoleCache = (async () => {
+      for (const [path, params] of [
+        ['v2/fetchAccount', { optimized: true }],
+        ['v2/account', undefined],
+      ] as const) {
+        const body = await customGet(path, params as Record<string, unknown> | undefined).catch(() => null);
+        if (!body) continue;
+        const account = body?.result?.account ?? body?.account ?? body?.data?.account ?? body?.result ?? body?.data ?? body;
+        const user = account?.user ?? body?.result?.user ?? body?.user ?? null;
+        const role = user?.role ?? user?.roleObj ?? null;
+        const id = role?.id ?? user?.roleId ?? user?.roleID ?? null;
+        if (id == null) continue;
+        const name = String(role?.name ?? role?.displayName ?? role?.linkName ?? user?.roleName ?? `Role ${id}`);
+        // eslint-disable-next-line no-console
+        console.info(`[facilio-api] viewer role: ${name} (#${id})`);
+        return { id: String(id), name };
+      }
+      // eslint-disable-next-line no-console
+      console.info('[facilio-api] the account payload carried no role — every tab stays visible');
+      return null;
+    })();
+    viewerRoleCache.catch(() => {
+      viewerRoleCache = null;
+    });
+  }
+  return viewerRoleCache;
+}
+
+/**
+ * The org's roles, for the Settings access grid. Read only when that screen opens — gating works
+ * off the viewer's own role and never needs the list.
+ */
+export async function fetchOrgRoles(): Promise<OrgRole[]> {
+  if (!isFacilioApiConfigured) return [];
+  const body = await customGet('v2/roles', undefined).catch(() => null);
+  const raw = body?.result?.roles ?? body?.result ?? body?.roles ?? body?.data ?? null;
+  if (!Array.isArray(raw)) {
+    // eslint-disable-next-line no-console
+    console.warn('[facilio-api] the roles read returned no list — the access grid will offer nothing to add');
+    return [];
+  }
+  return raw
+    .map((r: any) => ({ id: String(r?.id ?? r?.roleId ?? ''), name: String(r?.name ?? r?.displayName ?? r?.linkName ?? '') }))
+    .filter((r: OrgRole) => r.id !== '' && r.name !== '')
+    .sort((a: OrgRole, b: OrgRole) => a.name.localeCompare(b.name));
+}
+
 export function fetchCurrentPeopleId(): Promise<number | null> {
   if (!isFacilioApiConfigured) return Promise.resolve(null);
   if (!peopleIdCache) {
