@@ -153,9 +153,15 @@ export function StateflowActions({
     }
   }
 
-  // No record behind this unit, or no flow on its module: the org has no opinion about what you
-  // may do to it, so the caller's own controls stand in.
-  if (!ref || failed) return <>{fallback}</>;
+  // The caller's own controls (the app's "Select employee") stand in for exactly two cases, both
+  // ones where the org has no opinion: no org record behind this unit (the demo tier), and a module
+  // with no stateflow. Anywhere else the actions ARE the org's transitions, and the app's own
+  // buttons would write somewhere the flow never sees.
+  if (!ref) return <>{fallback}</>;
+  // The flow could not be READ — no Facilio host to ask, or the request failed. That is not the org
+  // saying "no flow", and it must not be treated as one: with no host, the app's own Assign writes to
+  // this browser alone and then reports it done. So nothing is offered.
+  if (failed) return null;
   const transitions = flow?.transitions ?? [];
   // Still reading the flow — show nothing rather than flashing the fallback's buttons and
   // replacing them a moment later with the org's.
@@ -164,7 +170,9 @@ export function StateflowActions({
   // The popover already reports the state in its pill; repeating it here is the duplication that
   // made a vacant desk say the same thing three times.
   const withState = showState && !!flow.currentStateName;
-  if (!withState && transitions.length === 0) return <>{fallback}</>;
+  // A flow, at a state that offers no transition: the org's answer is "nothing to do here", and
+  // the app's own Assign must not override it.
+  if (!withState && transitions.length === 0) return null;
   // A write to this record is in flight — possibly started on another surface showing the same
   // record, which must not leave a live second button here pointed at a record mid-transition.
   const recordBusy = state.busyUnitId === unit.id;

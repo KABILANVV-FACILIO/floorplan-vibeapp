@@ -17,6 +17,7 @@ import { loadSettings, saveSettings, settingsFromState } from '../lib/settingsSt
 import { loadDepartmentColors, saveDepartmentColor } from '../lib/departmentColorStore';
 import { pathForView, viewFromLocation } from '../lib/routes';
 import { bootFloorCandidates, readUrlFloorId, writeUrlFloorId } from '../lib/urlFloor';
+import { refuseOrgWrite } from '../lib/orgWrites';
 import { NotSavedToOrgError, persistUnits, ROOM_NOTICE_MS, ROOM_OUTLINES_FAILED_NOTICE, ROOM_READ_ONLY_HINT, savedNotice } from './persistUnits';
 import { buildInitialState, reducer } from './reducer';
 import { useDataState } from './useDataState';
@@ -1034,6 +1035,9 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     },
 
     assign: async (contactId: string, unitId: string) => {
+      // Before anything is written here: with no Facilio host, the assignment would live in this
+      // browser alone while the toast said it was made.
+      if (refuseOrgWrite(showToast)) return;
       const target = unitById(state, unitId);
       if (!target) return;
       // No eviction: one person may hold any number of desks, so assigning them a second one
@@ -1079,6 +1083,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       }
     },
     vacate: async (unitId: string) => {
+      if (refuseOrgWrite(showToast)) return;
       const target = unitById(state, unitId);
       const prevContactId = state.assignments[unitId];
       const next = { ...state.assignments };

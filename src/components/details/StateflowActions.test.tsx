@@ -337,10 +337,29 @@ describe('the caller\'s own controls stand in only when there is no flow', () =>
     expect(fetchAvailableStates).not.toHaveBeenCalled();
   });
 
-  it('shows the fallback when the flow endpoint is unreachable', async () => {
-    fetchAvailableStates.mockRejectedValue(new Error('404'));
-    render(<StateflowActions unit={unit} fallback={fallback} />);
-    expect(await screen.findByRole('button', { name: 'Select employee' })).toBeDefined();
+  /*
+   * The flow could not be READ — no Facilio host to ask, or the request failed. This used to count
+   * as "no flow" and show the app's own Select employee, which then assigned in the browser alone
+   * and said "assigned" — while the org, which never received it, still had the old holder.
+   */
+  it('offers NOTHING when the flow cannot be read — never the app\'s own assign', async () => {
+    fetchAvailableStates.mockRejectedValue(new Error('facilio-api: not configured'));
+    const { container } = render(<StateflowActions unit={unit} fallback={fallback} />);
+    await waitFor(() => expect(fetchAvailableStates).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByRole('button', { name: 'Select employee' })).toBeNull();
+    expect(container.textContent).toBe('');
+  });
+
+  it('offers nothing when the flow is at a state with nothing to do — the org has answered', async () => {
+    // The popover hides the state (its pill already shows it), so this is the case that used to
+    // fall through to the app's own Select employee.
+    fetchAvailableStates.mockResolvedValue({ currentStateName: 'Occupied', transitions: [] });
+    const { container } = render(<StateflowActions unit={unit} showState={false} fallback={fallback} />);
+    await waitFor(() => expect(fetchAvailableStates).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByRole('button', { name: 'Select employee' })).toBeNull();
+    expect(container.textContent).toBe('');
   });
 
   it('shows the fallback when the module has a record but no transitions or state', async () => {
