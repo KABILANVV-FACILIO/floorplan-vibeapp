@@ -1,5 +1,5 @@
 import { useFloorplanData } from '../../state/FloorplanContext';
-import { myAssignedUnit } from '../../state/selectors';
+import { canEdit, myAssignedUnit } from '../../state/selectors';
 import { usePrintViewer } from '../print/PrintController';
 import styles from './Toolbar.module.css';
 
@@ -28,17 +28,20 @@ export function Toolbar({ leftPad, rightPad }: { leftPad: number; rightPad: numb
           </button>
         </div>
 
-        <button
-          className={[styles.editBtn, state.mode === 'edit' ? styles.editBtnActive : ''].join(' ')}
-          data-tip={state.mode === 'edit' ? 'Exit edit mode' : 'Edit floorplan (admin)'}
-          onClick={actions.toggleEdit}
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 20h9" />
-            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
-          </svg>
-          Edit
-        </button>
+        {/* Shown while editing even if the right was just withdrawn, so the way out never vanishes. */}
+        {(canEdit(state) || state.mode === 'edit') && (
+          <button
+            className={[styles.editBtn, state.mode === 'edit' ? styles.editBtnActive : ''].join(' ')}
+            data-tip={state.mode === 'edit' ? 'Exit edit mode' : 'Edit floorplan'}
+            onClick={actions.toggleEdit}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
+            </svg>
+            Edit
+          </button>
+        )}
 
         {/* Personal wayfinding has no place while editing the plan itself. */}
         {hasMyDesk && state.mode !== 'edit' && (

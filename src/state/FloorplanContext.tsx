@@ -23,7 +23,7 @@ import { useDataState } from './useDataState';
 import type { Action } from './reducer';
 import type { AppState, BookFormTarget } from './types';
 import type { LabelStyle } from '../lib/labelLayout';
-import { conflictsFor, contactById, isAssignable, nextLabel, planMarkers, unitById } from './selectors';
+import { canEdit, conflictsFor, contactById, isAssignable, nextLabel, planMarkers, unitById } from './selectors';
 import { calibratedPxPerMeter, clampPanelPos, defaultPanelPos, distNormToPx, fitUnitsView, fitView as fitViewFn, focusUnitView, pointInPoly, zoomAt as zoomAtFn } from '../lib/geometry';
 
 interface Ctx {
@@ -892,7 +892,12 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     },
     clearDraft: () => dispatch({ type: 'CLEAR_DRAFT' }),
 
-    openAutoMap: (groups: CadGroup[]) => dispatch({ type: 'SET_AUTOMAP_GROUPS', groups }),
+    /** Auto-mapping places units on the plan — editing, so the same rule as upload. */
+    openAutoMap: (groups: CadGroup[]) => {
+      if (!canEdit(state)) return;
+      if (state.mode !== 'edit') dispatch({ type: 'SET_MODE', mode: 'edit' });
+      dispatch({ type: 'SET_AUTOMAP_GROUPS', groups });
+    },
     closeAutoMap: () => dispatch({ type: 'SET_AUTOMAP_GROUPS', groups: null }),
     /** Keep a CAD file's analysis for the session so Edit → "Auto-map CAD units" can re-open it. */
     storeCadAnalysis: (floorId: string, planId: PlanId, groups: CadGroup[]) =>
@@ -1378,7 +1383,18 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     setMobTimePick: (which: AppState['mobTimePick']) => dispatch({ type: 'SET_MOB_TIME_PICK', which }),
     setMobAssignEdit: (value: boolean) => dispatch({ type: 'SET_MOB_ASSIGN_EDIT', value }),
 
-    setUploadOpen: (open: boolean) => dispatch({ type: 'SET_UPLOAD_OPEN', open }),
+    /**
+     * Uploading a plan is editing it, so it happens IN Edit mode: opening the upload enters Edit
+     * first, and the person lands straight in the editor for the plan they just added. Refused
+     * without the edit right — the reducer would not let them into Edit anyway.
+     */
+    setUploadOpen: (open: boolean) => {
+      if (open) {
+        if (!canEdit(state)) return;
+        if (state.mode !== 'edit') dispatch({ type: 'SET_MODE', mode: 'edit' });
+      }
+      dispatch({ type: 'SET_UPLOAD_OPEN', open });
+    },
     setFloorImage: (floorId: string, planId: PlanId, dataUrl: string) => {
       dispatch({ type: 'SET_FLOOR_IMAGE', floorId, planId, dataUrl });
       // Persist the uploaded floorplan so a deployed app reloads it after a refresh. Best-effort

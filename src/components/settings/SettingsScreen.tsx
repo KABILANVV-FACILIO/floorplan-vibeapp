@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
-import { DEFAULT_ACCESS, STATE_DEFS, STATE_SWATCHES, SURFACES, TOGGLEABLE_MODULES, TYPE_META } from '../../lib/types';
+import { DEFAULT_ACCESS, STATE_DEFS, STATE_SWATCHES, SURFACE_ORDER, SURFACES, TOGGLEABLE_MODULES, TYPE_META } from '../../lib/types';
 import type { ModuleKey, OrgRole, Surface, SurfaceAccess, UnitType } from '../../lib/types';
 import { Modal, ModalFooter, ModalHeader } from '../primitives/Modal';
 import { moduleEnabled } from '../../state/selectors';
@@ -371,9 +371,12 @@ function AccessModal({ onClose }: { onClose: () => void }) {
   const adminIds = state.orgRoles.filter((r) => r.isAdmin).map((r) => r.id);
   const lockedFor = (surface: Surface): string[] => (surface === 'settings' ? adminIds : []);
 
-  /** How many tabs a role still reaches under `next`. */
+  /**
+   * How many TABS a role still reaches under `next`. Tabs only: the edit right is not somewhere to
+   * land, so a role holding nothing but it is as stranded as one holding nothing at all.
+   */
   function tabsFor(next: Record<Surface, SurfaceAccess>, roleId: string): number {
-    return SURFACES.filter((s) => next[s.id].all || next[s.id].roles.includes(roleId)).length;
+    return SURFACE_ORDER.filter((t) => next[t].all || next[t].roles.includes(roleId)).length;
   }
   /** Every role named anywhere in the draft — the only ones a change can strand. */
   function namedRoles(next: Record<Surface, SurfaceAccess>): string[] {

@@ -6,7 +6,7 @@ import { clamp, fitView } from '../lib/geometry';
 import { seedBookings } from '../lib/mockData';
 import { viewFromLocation } from '../lib/routes';
 import type { AppState } from './types';
-import { clampView } from './selectors';
+import { canEdit, clampView } from './selectors';
 
 function todayIso(): string {
   const d = new Date();
@@ -292,11 +292,27 @@ function poolEntryFor(u: Unit): Unit | null {
   return { ...u, geom: { kind: 'poly', pts: [] }, plan: 'custom', unplaced: true };
 }
 
+/**
+ * After who is looking, or what they may reach, has changed: keep them somewhere they are allowed to
+ * be. A tab they lost moves them to the first one they keep; Edit mode they lost drops them back to
+ * the plan's Assign view. Resolving the viewer's role at boot is the usual trigger — it can arrive
+ * after someone is already standing on a tab, or already in Edit.
+ */
+function settleAccess(next: AppState): AppState {
+  const activeView = clampView(next, next.activeView);
+  const mode = next.mode === 'edit' && !canEdit(next) ? 'assign' : next.mode;
+  if (activeView === next.activeView && mode === next.mode) return next;
+  return { ...next, activeView, mode, ...(mode !== next.mode ? { tool: 'select' as const, ...resetSelectionState(next) } : {}) };
+}
+
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case 'SET_MODE':
+      // Entering Edit needs the right to; leaving it never does, so no one is ever trapped in it.
+      if (action.mode === 'edit' && state.mode !== 'edit' && !canEdit(state)) return state;
       return { ...state, mode: action.mode, tool: 'select', ...resetSelectionState(state) };
     case 'TOGGLE_EDIT':
+      if (state.mode !== 'edit' && !canEdit(state)) return state;
       return { ...state, mode: state.mode === 'edit' ? 'assign' : 'edit', tool: 'select', ...resetSelectionState(state) };
     case 'SET_TOOL':
       return { ...state, tool: action.tool, draft: [], calib: [], calibLen: '', placingUnitId: null, multiSelected: [] };
@@ -682,15 +698,15 @@ export function reducer(state: AppState, action: Action): AppState {
     // against the new answer rather than left pointing at something they may no longer reach.
     case 'SET_VIEWER_ROLE': {
       const next = { ...state, viewerRole: action.role };
-      return { ...next, activeView: clampView(next, next.activeView) };
+      return settleAccess(next);
     }
     case 'SET_SURFACE_ACCESS': {
       const next = { ...state, access: { ...state.access, [action.surface]: action.value } };
-      return { ...next, activeView: clampView(next, next.activeView) };
+      return settleAccess(next);
     }
     case 'SET_ACCESS': {
       const next = { ...state, access: action.access };
-      return { ...next, activeView: clampView(next, next.activeView) };
+      return settleAccess(next);
     }
     case 'ORG_ROLES_LOADING':
       return { ...state, orgRolesLoading: true };

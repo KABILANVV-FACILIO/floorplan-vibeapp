@@ -367,10 +367,19 @@ export const TYPE_META: Record<UnitType, { name: string; prefix: string }> = {
  * book, edit — is answered by the org's own stateflow and by the module settings; asking it twice
  * would mean two configurations that can disagree, and the one in this app would quietly win.
  */
-export type Surface = 'map' | 'bookings' | 'people' | 'settings';
+/** A tab someone can navigate to. The bottom nav, the view clamp and the last-tab rule use only these. */
+export type Tab = 'map' | 'bookings' | 'people' | 'settings';
+
+/**
+ * Everything the grid governs: the four tabs, plus editing the plan. Editing is a capability, not a
+ * place — it is never somewhere the app sends someone, so it is kept out of `Tab`. Keyed `map.edit`
+ * because the floorplanApi function already stores it under that key; the UI shows only its name.
+ */
+export type Surface = Tab | 'map.edit';
 
 export const SURFACES: { id: Surface; name: string; desc: string }[] = [
   { id: 'map', name: 'Floorplans', desc: 'The plan itself, and everything on it' },
+  { id: 'map.edit', name: 'Edit floorplans', desc: 'Upload plans, auto-map and place units. Web only — the mobile app has no edit mode' },
   { id: 'bookings', name: 'Bookings', desc: 'The org-wide booking calendar' },
   { id: 'people', name: 'People', desc: 'The employee directory' },
   { id: 'settings', name: 'Settings', desc: 'This screen and every other configuration' },
@@ -410,13 +419,16 @@ export type Access = Partial<Record<Surface, SurfaceAccess>>;
  */
 export const DEFAULT_ACCESS: Record<Surface, SurfaceAccess> = {
   map: { all: true, roles: [] },
+  // Open, as editing was before this grid existed: restricting it is a decision an admin makes,
+  // not one an upgrade should make for them by quietly taking the Edit button away.
+  'map.edit': { all: true, roles: [] },
   bookings: { all: true, roles: [] },
   people: { all: true, roles: [] },
   settings: { all: true, roles: [] },
 };
 
-/** The order a hidden tab falls back through — the plan first, settings last. */
-export const SURFACE_ORDER: Surface[] = ['map', 'bookings', 'people', 'settings'];
+/** The order a hidden tab falls back through — the plan first, settings last. Tabs only. */
+export const SURFACE_ORDER: Tab[] = ['map', 'bookings', 'people', 'settings'];
 
 export interface StateDef {
   key: string;

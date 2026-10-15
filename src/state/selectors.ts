@@ -4,7 +4,7 @@ import type { LabelTypography } from '../lib/labelLayout';
 import type { LabelTextMeasure } from '../lib/textMeasure';
 import type { MarkerLabelInput, RoomLabelInput } from '../lib/labelLayout';
 import { polygonCentroid } from '../lib/geometry';
-import type { Booking, Employee, Surface, Unit, UnitType } from '../lib/types';
+import type { Booking, Employee, Surface, Tab, Unit, UnitType } from '../lib/types';
 import type { AppState } from './types';
 import { departmentDisplayName, personDisplayName, personInitials, shortPersonName } from '../lib/displayNames';
 
@@ -302,8 +302,8 @@ export function canSee(state: AppState, surface: Surface): boolean {
   return rule.roles.includes(state.viewerRole.id);
 }
 
-/** The tabs this viewer reaches, in nav order. Never empty — see `canSee`. */
-export function visibleSurfaces(state: AppState): Surface[] {
+/** The tabs this viewer reaches, in nav order. Tabs only — editing is never somewhere to land. */
+export function visibleSurfaces(state: AppState): Tab[] {
   return SURFACE_ORDER.filter((s) => canSee(state, s));
 }
 
@@ -312,6 +312,14 @@ export function visibleSurfaces(state: AppState): Surface[] {
  * hidden while someone is standing on it moves them somewhere real instead of rendering nothing.
  */
 export function clampView(state: AppState, wanted: AppState['activeView']): AppState['activeView'] {
-  if (canSee(state, wanted as Surface)) return wanted;
+  if (canSee(state, wanted)) return wanted;
   return visibleSurfaces(state)[0] ?? 'map';
+}
+
+/**
+ * Whether this viewer may edit the plan. Needs the plan as well as the edit right: editing a tab
+ * you cannot open means nothing, and a role granted only the edit row has nowhere to use it.
+ */
+export function canEdit(state: AppState): boolean {
+  return canSee(state, 'map') && canSee(state, 'map.edit');
 }
