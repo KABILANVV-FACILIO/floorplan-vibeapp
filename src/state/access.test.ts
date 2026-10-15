@@ -67,3 +67,17 @@ describe('landing somewhere real', () => {
     expect(clampView(base({ access: shut, viewerRole: TECH }), 'people')).toBe('map');
   });
 });
+
+describe('the admin floor', () => {
+  it('keeps Settings for an admin role even when the grid leaves them off it', () => {
+    const access: Access = { settings: { all: false, roles: ['412'] } };
+    const admin: OrgRole = { id: '1', name: 'Super Admin', isAdmin: true };
+    expect(canSee(base({ access, viewerRole: admin }), 'settings')).toBe(true);
+  });
+
+  it('gives an admin role no other tab for free', () => {
+    const access: Access = { people: { all: false, roles: ['412'] } };
+    const admin: OrgRole = { id: '1', name: 'Super Admin', isAdmin: true };
+    expect(canSee(base({ access, viewerRole: admin }), 'people')).toBe(false);
+  });
+});

@@ -296,6 +296,9 @@ export function canSee(state: AppState, surface: Surface): boolean {
   const rule = state.access[surface] ?? DEFAULT_ACCESS[surface];
   if (rule.all) return true;
   if (!state.viewerRole) return true;
+  // The org's admin roles never lose Settings, whatever the grid says — otherwise one bad save
+  // locks out the only people who could undo it.
+  if (surface === 'settings' && state.viewerRole.isAdmin) return true;
   return rule.roles.includes(state.viewerRole.id);
 }
 

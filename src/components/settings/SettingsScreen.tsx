@@ -88,7 +88,7 @@ function BookingsSettingsTab() {
           onConfigure={() => setEditing(true)}
         />
         <SummaryRow name="Active module" desc={active?.desc}>
-          <span className={styles.labelChip}>{active?.name}</span>
+          <span className={[styles.pill, styles.pillOn].join(' ')}>{active?.name}</span>
         </SummaryRow>
         <div className={styles.footNote}>
           A booking is the org&rsquo;s own {state.bookingModule === 'space' ? 'spacebooking' : 'facilitybooking'} record — any start and end, across days if
@@ -188,14 +188,12 @@ function CardHead({ title, desc, onConfigure, action = 'Configure' }: { title: s
 /** One read-only line of a card: what the thing is, and what it is set to. */
 function SummaryRow({ name, desc, children }: { name: string; desc?: ReactNode; children: ReactNode }) {
   return (
-    <div className={styles.labelRow}>
-      <div className={styles.stateText}>
-        <div className={styles.rowName}>{name}</div>
-        {desc != null && <div className={styles.rowDesc}>{desc}</div>}
+    <div className={styles.sumRow}>
+      <div className={styles.sumText}>
+        <div className={styles.sumName}>{name}</div>
+        {desc != null && <div className={styles.sumDesc}>{desc}</div>}
       </div>
-      <div className={styles.labelChoices} style={{ justifyContent: 'flex-end' }}>
-        {children}
-      </div>
+      <div className={styles.sumValue}>{children}</div>
     </div>
   );
 }
@@ -228,7 +226,7 @@ function StagedModal({
       <ModalHeader title={title} subtitle={subtitle} onClose={onCancel} />
       <div style={{ padding: '4px 0', maxHeight: '58vh', overflowY: 'auto' }}>{children}</div>
       {refused && (
-        <div role="status" className={styles.footNote} style={{ color: 'var(--danger-600, #9a3412)' }}>
+        <div role="status" className={styles.refused}>
           {refused}
         </div>
       )}
@@ -293,21 +291,15 @@ function PermissionsTab() {
         {SURFACES.map((s) => {
           const rule = accessOf(s.id);
           return (
-            <div key={s.id} className={styles.labelRow}>
-              <div className={styles.stateText}>
-                <div className={styles.rowName}>{s.name}</div>
-                <div className={styles.rowDesc}>{s.desc}</div>
-              </div>
-              <div className={styles.labelChoices} style={{ justifyContent: 'flex-end' }}>
-                {rule.all ? (
-                  <span className={styles.labelChip}>Everyone</span>
-                ) : rule.roles.length ? (
-                  <RoleChips ids={rule.roles} roles={state.orgRoles} />
-                ) : (
-                  <span className={styles.rowDesc}>No role &mdash; hidden for everyone</span>
-                )}
-              </div>
-            </div>
+            <SummaryRow key={s.id} name={s.name} desc={s.desc}>
+              {rule.all ? (
+                <span className={[styles.pill, styles.pillOn].join(' ')}>Everyone</span>
+              ) : rule.roles.length ? (
+                <RoleChips ids={rule.roles} roles={state.orgRoles} />
+              ) : (
+                <span className={[styles.pill, styles.pillMuted].join(' ')}>Hidden for everyone</span>
+              )}
+            </SummaryRow>
           );
         })}
         {state.viewerRole ? (
@@ -334,11 +326,11 @@ function RoleChips({ ids, roles }: { ids: string[]; roles: OrgRole[] }) {
   return (
     <>
       {shown.map((n) => (
-        <span key={n} className={styles.labelChip}>
+        <span key={n} className={styles.pill}>
           {n}
         </span>
       ))}
-      {rest > 0 && <span className={styles.labelChip}>+{rest} more</span>}
+      {rest > 0 && <span className={[styles.pill, styles.pillMuted].join(' ')}>+{rest} more</span>}
     </>
   );
 }
@@ -371,6 +363,14 @@ function AccessModal({ onClose }: { onClose: () => void }) {
 
   const roleName = (id: string) => state.orgRoles.find((r) => r.id === id)?.name ?? `Role ${id}`;
 
+  /**
+   * Roles that can never lose Settings: the org's own admin roles, by the flags Facilio puts on the
+   * role record (`isSuperAdmin` / `isPrevileged`) — not by id, so this holds for every org without
+   * knowing its ids, and survives a rename.
+   */
+  const adminIds = state.orgRoles.filter((r) => r.isAdmin).map((r) => r.id);
+  const lockedFor = (surface: Surface): string[] => (surface === 'settings' ? adminIds : []);
+
   /** How many tabs a role still reaches under `next`. */
   function tabsFor(next: Record<Surface, SurfaceAccess>, roleId: string): number {
     return SURFACES.filter((s) => next[s.id].all || next[s.id].roles.includes(roleId)).length;
@@ -397,13 +397,17 @@ function AccessModal({ onClose }: { onClose: () => void }) {
 
   function toggleRole(surface: Surface, roleId: string): void {
     const cur = draft[surface];
-    const has = cur.roles.includes(roleId);
-    const roles = has ? cur.roles.filter((r) => r !== roleId) : [...cur.roles, roleId];
+    if (cur.all || lockedFor(surface).includes(roleId)) return;
+    const roles = cur.roles.includes(roleId) ? cur.roles.filter((r) => r !== roleId) : [...cur.roles, roleId];
     commit({ ...draft, [surface]: { all: false, roles } });
   }
   function toggleAll(surface: Surface): void {
     const cur = draft[surface];
-    commit({ ...draft, [surface]: cur.all ? { all: false, roles: [] } : { all: true, roles: [] } });
+    // Turning "everyone" off starts from the roles that may never lose this tab, not from nothing.
+    commit({ ...draft, [surface]: cur.all ? { all: false, roles: [...lockedFor(surface)] } : { all: true, roles: [] } });
+  }
+  function clearRoles(surface: Surface): void {
+    commit({ ...draft, [surface]: { all: false, roles: [...lockedFor(surface)] } });
   }
 
   const changed = SURFACES.filter((s) => {
@@ -412,12 +416,13 @@ function AccessModal({ onClose }: { onClose: () => void }) {
     return a.all !== b.all || [...a.roles].sort().join() !== [...b.roles].sort().join();
   }).length;
 
-  const matches = (r: OrgRole) => !query.trim() || r.name.toLowerCase().includes(query.trim().toLowerCase());
+  const q = query.trim().toLowerCase();
+  const visibleRoles = q ? state.orgRoles.filter((r) => r.name.toLowerCase().includes(q)) : state.orgRoles;
 
   return (
     <StagedModal
       title="Configure access"
-      subtitle="Pick the roles that can reach each tab. Nothing changes until you save."
+      subtitle="Choose who can reach each tab. Nothing changes until you save."
       changed={changed}
       unit="tab"
       refused={refused}
@@ -427,79 +432,133 @@ function AccessModal({ onClose }: { onClose: () => void }) {
         onClose();
       }}
     >
-      <div>
-        {SURFACES.map((s) => (
-          <div key={s.id} className={styles.labelRow}>
-            <div className={styles.stateText}>
-              <div className={styles.rowName}>{s.name}</div>
-              <div className={styles.rowDesc}>{s.desc}</div>
+      {SURFACES.map((s) => {
+        const rule = draft[s.id];
+        const isOpen = open === s.id;
+        const locked = lockedFor(s.id);
+        const count = rule.all ? state.orgRoles.length : rule.roles.length;
+        return (
+          <div key={s.id} className={styles.editRow}>
+            <div className={styles.editLabel}>
+              <div className={styles.sumName}>{s.name}</div>
+              <div className={styles.sumDesc}>{s.desc}</div>
             </div>
-            <div style={{ position: 'relative', minWidth: 0, flex: '1 1 240px' }}>
+
+            <div className={styles.lookup}>
               <button
                 type="button"
-                className={styles.slotChip}
-                style={{ width: '100%', textAlign: 'left', minHeight: 36 }}
-                aria-expanded={open === s.id}
+                className={styles.lookupField}
+                aria-expanded={isOpen}
                 aria-haspopup="listbox"
+                aria-label={`Roles that can reach ${s.name}`}
                 onClick={() => {
-                  setOpen(open === s.id ? null : s.id);
+                  setOpen(isOpen ? null : s.id);
                   setQuery('');
                 }}
               >
-                {draft[s.id].all
-                  ? 'Everyone'
-                  : draft[s.id].roles.length
-                    ? `${draft[s.id].roles.length} role${draft[s.id].roles.length === 1 ? '' : 's'}: ${draft[s.id].roles.slice(0, 2).map(roleName).join(', ')}${draft[s.id].roles.length > 2 ? '…' : ''}`
-                    : 'Select roles'}
-              </button>
-              {open === s.id && (
-                <div
-                  role="listbox"
-                  aria-multiselectable
-                  style={{
-                    position: 'absolute', zIndex: 20, top: 'calc(100% + 4px)', left: 0, right: 0,
-                    background: 'var(--surface, #fff)', border: '1px solid var(--ink-200)', borderRadius: 8,
-                    boxShadow: '0 10px 26px rgba(10,18,28,.16)', padding: 4, maxHeight: 260, overflowY: 'auto',
-                  }}
-                >
-                  <input
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    placeholder={`Search ${state.orgRoles.length || ''} roles`.trim()}
-                    aria-label="Search roles"
-                    style={{ width: '100%', border: 'none', borderBottom: '1px solid var(--ink-100)', padding: '7px 8px', font: '400 13px var(--font-sans)', outline: 'none', background: 'transparent', color: 'var(--ink-900)' }}
-                  />
-                  <button type="button" className={draft[s.id].all ? styles.slotChipActive : styles.slotChip} style={{ width: '100%', margin: '4px 0', minHeight: 34 }} onClick={() => toggleAll(s.id)}>
-                    Everyone — all roles, including any added later
-                  </button>
-                  {state.orgRolesLoading && <div className={styles.rowDesc} style={{ padding: 10 }}>Loading roles…</div>}
-                  {!state.orgRolesLoading && !state.orgRoles.length && (
-                    <div className={styles.rowDesc} style={{ padding: 10 }}>No roles came back from the org, so there is nothing to add here.</div>
+                <span className={styles.lookupValues}>
+                  {rule.all ? (
+                    <span className={[styles.pill, styles.pillOn].join(' ')}>Everyone</span>
+                  ) : rule.roles.length ? (
+                    <RoleChips ids={rule.roles} roles={state.orgRoles} />
+                  ) : (
+                    <span className={styles.lookupPlaceholder}>Choose roles</span>
                   )}
-                  {state.orgRoles.filter(matches).map((r) => {
-                    const on = draft[s.id].all || draft[s.id].roles.includes(r.id);
-                    return (
-                      <button key={r.id} type="button" role="option" aria-selected={on} className={on ? styles.slotChipActive : styles.slotChip} style={{ width: '100%', margin: '2px 0', minHeight: 34, textAlign: 'left' }} onClick={() => toggleRole(s.id, r.id)}>
-                        {r.name}
+                </span>
+                <svg className={styles.caret} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </button>
+
+              {isOpen && (
+                <div className={styles.menu}>
+                  <div className={styles.menuSearch}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+                      <circle cx="11" cy="11" r="7" />
+                      <path d="M21 21l-4.3-4.3" />
+                    </svg>
+                    <input
+                      autoFocus
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder={state.orgRoles.length ? `Search ${state.orgRoles.length} roles` : 'Search roles'}
+                      aria-label="Search roles"
+                    />
+                  </div>
+
+                  <div className={styles.menuList} role="listbox" aria-multiselectable>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={rule.all}
+                      className={[styles.opt, styles.optAll, rule.all ? styles.optOn : ''].join(' ')}
+                      onClick={() => toggleAll(s.id)}
+                    >
+                      <span className={styles.optBox}>{rule.all && <Tick />}</span>
+                      Everyone
+                      <span className={styles.optTag}>including roles added later</span>
+                    </button>
+
+                    {state.orgRolesLoading ? (
+                      <div className={styles.menuEmpty}>Loading roles…</div>
+                    ) : !state.orgRoles.length ? (
+                      <div className={styles.menuEmpty}>The org&rsquo;s roles could not be loaded, so only Everyone can be chosen here.</div>
+                    ) : !visibleRoles.length ? (
+                      <div className={styles.menuEmpty}>No role matches &ldquo;{query}&rdquo;.</div>
+                    ) : (
+                      visibleRoles.map((r) => {
+                        const isLocked = locked.includes(r.id);
+                        const on = rule.all || isLocked || rule.roles.includes(r.id);
+                        return (
+                          <button
+                            key={r.id}
+                            type="button"
+                            role="option"
+                            aria-selected={on}
+                            disabled={rule.all || isLocked}
+                            className={[styles.opt, on ? styles.optOn : ''].join(' ')}
+                            onClick={() => toggleRole(s.id, r.id)}
+                          >
+                            <span className={styles.optBox}>{on && <Tick />}</span>
+                            {r.name}
+                            {isLocked && <span className={styles.optTag}>always has Settings</span>}
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  <div className={styles.menuFoot}>
+                    <span>
+                      {rule.all
+                        ? 'Everyone is on — turn it off to choose specific roles.'
+                        : `${count} of ${state.orgRoles.length || '?'} selected`}
+                    </span>
+                    {!rule.all && rule.roles.length > locked.length && (
+                      <button type="button" className={styles.opt} style={{ width: 'auto', minHeight: 0, padding: '2px 6px', color: 'var(--blue-600)' }} onClick={() => clearRoles(s.id)}>
+                        Clear
                       </button>
-                    );
-                  })}
+                    )}
+                  </div>
                 </div>
               )}
             </div>
           </div>
-        ))}
-      </div>
+        );
+      })}
     </StagedModal>
   );
 }
 
-/**
- * Which modules this workplace runs. Switching one off hides it everywhere — plan, legend, edit
- * tools, filters, panels and its own settings tab — so an org that has no lockers never sees the
- * word. Stored with the rest of settings (the app's vibe DB when deployed), so the choice is the
- * workplace's, not one browser's.
- */
+/** The check inside a selected option's box. */
+function Tick() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M20 6L9 17l-5-5" />
+    </svg>
+  );
+}
+
 function ModulesTab() {
   const { state, actions } = useFloorplanData();
   const [editing, setEditing] = useState(false);
@@ -514,7 +573,11 @@ function ModulesTab() {
         />
         {TOGGLEABLE_MODULES.map((m) => (
           <SummaryRow key={m} name={TYPE_META[m].name} desc={MODULE_BLURB[m]}>
-            {state.enabledModules[m] ? <span className={styles.labelChip}>In use</span> : <span className={styles.rowDesc}>Hidden</span>}
+            {state.enabledModules[m] ? (
+              <span className={[styles.pill, styles.pillOn].join(' ')}>In use</span>
+            ) : (
+              <span className={[styles.pill, styles.pillMuted].join(' ')}>Hidden</span>
+            )}
           </SummaryRow>
         ))}
         <p className={styles.footNote}>Facility markers (stairs, restrooms, extinguishers) always stay on the plan.</p>
@@ -557,7 +620,7 @@ function ModulesModal({ onClose }: { onClose: () => void }) {
     >
       {TOGGLEABLE_MODULES.map((m) => (
         <div key={m} className={styles.moduleRow}>
-          <div className={styles.stateText}>
+          <div className={styles.sumText} style={{ flex: 1 }}>
             <div className={styles.rowName}>{TYPE_META[m].name}</div>
             <div className={styles.rowDesc}>{MODULE_BLURB[m]}</div>
           </div>
@@ -598,7 +661,7 @@ function ModuleTab({ type }: { type: UnitType }) {
         />
         {defs.map((d) => (
           <SummaryRow key={d.key} name={d.label} desc={d.desc}>
-            <span className={styles.stateSwatch} style={{ background: moduleColor(state, type, d.key) }} />
+            <span className={styles.swatchLg} style={{ background: moduleColor(state, type, d.key) }} aria-label={`${d.label} colour`} />
           </SummaryRow>
         ))}
       </div>
@@ -637,7 +700,7 @@ function StateColorsModal({ type, onClose }: { type: UnitType; onClose: () => vo
       {defs.map((d) => (
         <div key={d.key} className={styles.stateRow}>
           <span className={styles.stateSwatch} style={{ background: draft[d.key] }} />
-          <div className={styles.stateText}>
+          <div className={styles.sumText} style={{ flex: 1 }}>
             <div className={styles.rowName}>{d.label}</div>
             <div className={styles.rowDesc}>{d.desc}</div>
           </div>
@@ -676,7 +739,7 @@ function DepartmentColors() {
         name={on ? 'Department' : 'Availability'}
         desc={on ? 'Each desk takes its department’s colour, keeping the holder’s initials.' : 'Free and assigned desks take the state colours above.'}
       >
-        <span className={styles.labelChip}>{on ? 'By department' : 'By availability'}</span>
+        <span className={[styles.pill, styles.pillOn].join(' ')}>{on ? 'By department' : 'By availability'}</span>
       </SummaryRow>
 
       {departments.length === 0 ? (
@@ -690,7 +753,7 @@ function DepartmentColors() {
             name={departmentDisplayName(dept.name)}
             desc={`${state.units.filter((u) => u.departmentId === dept.id).length || 'No'} desks on this floor`}
           >
-            <span className={styles.stateSwatch} style={{ background: departmentColor(dept.id, state.departmentColors, ids) }} />
+            <span className={styles.swatchLg} style={{ background: departmentColor(dept.id, state.departmentColors, ids) }} aria-label={`${dept.name} colour`} />
           </SummaryRow>
         ))
       )}
@@ -730,7 +793,7 @@ function DepartmentColorsModal({ onClose }: { onClose: () => void }) {
       }}
     >
       <div className={styles.stateRow}>
-        <div className={styles.stateText}>
+        <div className={styles.sumText} style={{ flex: 1 }}>
           <div className={styles.rowName}>What the colours mean</div>
           <div className={styles.rowDesc}>Assignment view only; Booking view always shows what is free.</div>
         </div>
@@ -746,7 +809,7 @@ function DepartmentColorsModal({ onClose }: { onClose: () => void }) {
 
       {departments.length === 0 ? (
         <div className={styles.stateRow}>
-          <div className={styles.stateText}>
+          <div className={styles.sumText} style={{ flex: 1 }}>
             <div className={styles.rowDesc}>No desk on the floors loaded so far carries a department, so there is nothing to colour yet.</div>
           </div>
         </div>
@@ -754,7 +817,7 @@ function DepartmentColorsModal({ onClose }: { onClose: () => void }) {
         departments.map((dept) => (
           <div key={dept.id} className={styles.stateRow}>
             <span className={styles.stateSwatch} style={{ background: draft[dept.id] }} />
-            <div className={styles.stateText}>
+            <div className={styles.sumText} style={{ flex: 1 }}>
               <div className={styles.rowName}>{departmentDisplayName(dept.name)}</div>
               <div className={styles.rowDesc}>
                 {state.units.filter((u) => u.departmentId === dept.id).length || 'No'} desks on this floor

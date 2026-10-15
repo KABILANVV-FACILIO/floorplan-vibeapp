@@ -3218,13 +3218,16 @@ export function fetchCurrentRole(): Promise<OrgRole | null> {
         if (!body) continue;
         const account = body?.result?.account ?? body?.account ?? body?.data?.account ?? body?.result ?? body?.data ?? body;
         const user = account?.user ?? body?.result?.user ?? body?.user ?? null;
-        const role = user?.role ?? user?.roleObj ?? null;
-        const id = role?.id ?? user?.roleId ?? user?.roleID ?? null;
-        if (id == null) continue;
-        const name = String(role?.name ?? role?.displayName ?? role?.linkName ?? user?.roleName ?? `Role ${id}`);
+        const role = user?.role ?? null;
+        // `User.roleId` is a Java long, so a user with no role arrives as 0, not null. Read as a
+        // role, 0 would be "Role 0" — a real-looking id that is on no tab's list, hiding every
+        // configured tab from them. Only a positive id names a role.
+        const id = Number(role?.roleId ?? role?.id ?? user?.roleId);
+        if (!Number.isFinite(id) || id <= 0) continue;
+        const name = String(role?.name ?? role?.label ?? `Role ${id}`);
         // eslint-disable-next-line no-console
         console.info(`[facilio-api] viewer role: ${name} (#${id})`);
-        return { id: String(id), name };
+        return { id: String(id), name, isAdmin: isAdminRole(role) };
       }
       // eslint-disable-next-line no-console
       console.info('[facilio-api] the account payload carried no role — every tab stays visible');
@@ -3238,22 +3241,45 @@ export function fetchCurrentRole(): Promise<OrgRole | null> {
 }
 
 /**
+ * Facilio marks an admin role on the role record itself: `isSuperAdmin` (a boxed Boolean, so it may
+ * also arrive as `superAdmin` from its primitive getter) and `isPrevileged` — Facilio's spelling.
+ */
+function isAdminRole(role: any): boolean {
+  if (!role || typeof role !== 'object') return false;
+  return role.isSuperAdmin === true || role.superAdmin === true || role.isPrevileged === true;
+}
+
+/**
  * The org's roles, for the Settings access grid. Read only when that screen opens — gating works
  * off the viewer's own role and never needs the list.
+ *
+ * `v2/setup/getRoles` is the endpoint Facilio's own Setup and UI call; the older `v2/getRoles` is
+ * marked deprecated. Its handler does `setResult("Roles", roles)`, but the envelope differs by how
+ * the app is reached — `Roles` at the top, or under `result` / `data` — so the first array that
+ * looks like roles is used rather than one guessed key. Facilio's labs client reads it the same way.
  */
 export async function fetchOrgRoles(): Promise<OrgRole[]> {
   if (!isFacilioApiConfigured) return [];
-  const body = await customGet('v2/roles', undefined).catch(() => null);
-  const raw = body?.result?.roles ?? body?.result ?? body?.roles ?? body?.data ?? null;
-  if (!Array.isArray(raw)) {
+  const body = await customGet('v2/setup/getRoles', undefined).catch(() => null);
+  const looksLikeRoles = (v: unknown): v is any[] =>
+    Array.isArray(v) && v.some((x) => x && (x.roleId != null || x.id != null) && (x.name || x.label));
+  let raw: any[] | null = null;
+  const stack: unknown[] = [body];
+  while (stack.length && !raw) {
+    const cur = stack.pop();
+    if (looksLikeRoles(cur)) raw = cur;
+    else if (cur && typeof cur === 'object' && !Array.isArray(cur)) stack.push(...Object.values(cur as object));
+  }
+  if (!raw) {
     // eslint-disable-next-line no-console
-    console.warn('[facilio-api] the roles read returned no list — the access grid will offer nothing to add');
+    console.warn('[facilio-api] v2/setup/getRoles returned no role list — the access grid will offer Everyone only');
     return [];
   }
   return raw
-    .map((r: any) => ({ id: String(r?.id ?? r?.roleId ?? ''), name: String(r?.name ?? r?.displayName ?? r?.linkName ?? '') }))
-    .filter((r: OrgRole) => r.id !== '' && r.name !== '')
-    .sort((a: OrgRole, b: OrgRole) => a.name.localeCompare(b.name));
+    .map((r: any) => ({ id: Number(r?.roleId ?? r?.id), name: String(r?.label ?? r?.name ?? ''), isAdmin: isAdminRole(r) }))
+    .filter((r) => Number.isFinite(r.id) && r.id > 0 && r.name !== '')
+    .map((r) => ({ id: String(r.id), name: r.name, isAdmin: r.isAdmin }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function fetchCurrentPeopleId(): Promise<number | null> {

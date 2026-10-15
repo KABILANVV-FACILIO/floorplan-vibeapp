@@ -391,6 +391,11 @@ export interface SurfaceAccess {
 export interface OrgRole {
   id: string;
   name: string;
+  /**
+   * An admin role in the org's own terms — Facilio flags these on the role record (`isSuperAdmin`,
+   * `isPrevileged`) rather than by name. Such a role always keeps Settings.
+   */
+  isAdmin?: boolean;
 }
 
 export type Access = Partial<Record<Surface, SurfaceAccess>>;
