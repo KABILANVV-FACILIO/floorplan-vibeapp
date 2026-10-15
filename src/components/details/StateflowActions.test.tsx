@@ -18,6 +18,9 @@ const refreshAssignments = vi.fn(async () => {});
 const invalidateUnitRecordInfo = vi.fn();
 const assignEmployeeToRecord = vi.fn(async (_unit: unknown, _employeeId: string) => {});
 const vacateUnitReal = vi.fn(async (_unit: unknown, _contactId: string) => ({ ok: true as const }));
+// Resolves when the org has taken the holder off the desk. Default: it already has.
+const waitForDeskVacated = vi.fn(async (_unit: unknown, _holder: string) => ({ cleared: true }));
+const clearHolder = vi.fn();
 
 /**
  * A minimal stand-in for the store, mutable because two of the things under test are app state
@@ -40,7 +43,7 @@ const recordChanged = vi.fn(() => {
 vi.mock('../../state/FloorplanContext', () => {
   const ctx = () => ({
     state: { ...store },
-    actions: { openPanel, showToast, markAssigned, assign, setUnitBusy, refreshAssignments, recordChanged },
+    actions: { openPanel, showToast, markAssigned, assign, setUnitBusy, refreshAssignments, recordChanged, clearHolder },
   });
   // Both hooks read the same test store: nothing here pans the plan.
   return { useFloorplan: ctx, useFloorplanData: ctx };
@@ -50,6 +53,7 @@ vi.mock('../../lib/facilioApiDataSource', () => ({
   invalidateUnitRecordInfo,
   assignEmployeeToRecord: (unit: unknown, employeeId: string) => assignEmployeeToRecord(unit, employeeId),
   vacateUnitReal: (unit: unknown, contactId: string) => vacateUnitReal(unit, contactId),
+  waitForDeskVacated: (unit: unknown, holder: string) => waitForDeskVacated(unit, holder),
 }));
 vi.mock('../../lib/stateflowApi', async () => {
   const real = await vi.importActual<typeof import('../../lib/stateflowApi')>('../../lib/stateflowApi');
@@ -141,6 +145,78 @@ describe('what a button does depends on the transition', () => {
     } finally {
       store.assignments = {};
     }
+  });
+
+  /*
+   * The move is recorded by the request, but the org takes the holder off the desk while it
+   * PROCESSES the move, afterwards. Re-read at once and the desk showed "Temporarily Vacant" and
+   * "Assigned to <them>" together. These pin the order: wait for the org, then re-read, then say so.
+   */
+  it('keeps the desk busy and re-reads nothing until the org has taken the holder off', async () => {
+    store.assignments = { '1676024': '7' };
+    let release!: (v: { cleared: boolean }) => void;
+    waitForDeskVacated.mockImplementationOnce(() => new Promise((r) => (release = r)));
+    try {
+      fetchAvailableStates.mockResolvedValue(flow(['Vacate']));
+      render(<StateflowActions unit={unit} />);
+      (await screen.findByRole('button', { name: 'Vacate' })).click();
+
+      await waitFor(() => expect(waitForDeskVacated).toHaveBeenCalledWith(unit, '7'));
+      // The move and the transition are done, but the org has not let go yet.
+      expect(executeStateTransition).toHaveBeenCalled();
+      expect(refreshAssignments).not.toHaveBeenCalled();
+      expect(recordChanged).not.toHaveBeenCalled();
+      expect(store.busyUnitId).toBe(unit.id);
+
+      release({ cleared: true });
+      await waitFor(() => expect(recordChanged).toHaveBeenCalled());
+      expect(refreshAssignments).toHaveBeenCalled();
+      expect(store.busyUnitId).toBeNull();
+    } finally {
+      store.assignments = {};
+    }
+  });
+
+  it('marks the holder gone after the list read, so a stale list cannot put them back', async () => {
+    store.assignments = { '1676024': '7' };
+    try {
+      fetchAvailableStates.mockResolvedValue(flow(['Vacate']));
+      render(<StateflowActions unit={unit} />);
+      (await screen.findByRole('button', { name: 'Vacate' })).click();
+
+      await waitFor(() => expect(clearHolder).toHaveBeenCalledWith(unit.id));
+      expect(refreshAssignments.mock.invocationCallOrder[0]).toBeLessThan(clearHolder.mock.invocationCallOrder[0]);
+      expect(clearHolder.mock.invocationCallOrder[0]).toBeLessThan(recordChanged.mock.invocationCallOrder[0]);
+    } finally {
+      store.assignments = {};
+    }
+  });
+
+  it('says so plainly when the org is still updating, and claims nothing it has not seen', async () => {
+    store.assignments = { '1676024': '7' };
+    waitForDeskVacated.mockResolvedValueOnce({ cleared: false });
+    try {
+      fetchAvailableStates.mockResolvedValue(flow(['Vacate']));
+      render(<StateflowActions unit={unit} />);
+      (await screen.findByRole('button', { name: 'Vacate' })).click();
+
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.stringContaining('still updating'), 6000));
+      expect(clearHolder).not.toHaveBeenCalled();
+      // Still re-read, so whatever the org has by now does show.
+      expect(refreshAssignments).toHaveBeenCalled();
+    } finally {
+      store.assignments = {};
+    }
+  });
+
+  it('does not wait on an unheld desk — there is no holder to take off', async () => {
+    fetchAvailableStates.mockResolvedValue(flow(['Vacate']));
+    render(<StateflowActions unit={unit} />);
+    (await screen.findByRole('button', { name: 'Vacate' })).click();
+
+    await waitFor(() => expect(recordChanged).toHaveBeenCalled());
+    expect(waitForDeskVacated).not.toHaveBeenCalled();
+    expect(clearHolder).not.toHaveBeenCalled();
   });
 
   it('reports a refused move and leaves the transition unfired', async () => {

@@ -211,6 +211,7 @@ export type Action =
   | { type: 'DRAG_OVER_UNIT'; id: string | null }
   | { type: 'ASSIGN'; unitId: string; contactId: string; assignments: AppState['assignments'] }
   | { type: 'VACATE'; unitId: string; assignments: AppState['assignments'] }
+  | { type: 'CLEAR_HOLDER'; unitId: string }
   | { type: 'SET_DATE'; value: string; bookings: Booking[] }
   | { type: 'SET_TIME_RANGE'; start: number; end: number }
   | { type: 'SET_BOOK_MODAL'; open: boolean }
@@ -621,6 +622,13 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, assignments: action.assignments, dragOverId: null, dragContactId: null, selected: action.unitId };
     case 'VACATE':
       return { ...state, assignments: action.assignments };
+    // One holder off, computed here from the CURRENT map — a caller holding an older snapshot would
+    // otherwise overwrite whatever changed since it was taken.
+    case 'CLEAR_HOLDER': {
+      if (!(action.unitId in state.assignments)) return state;
+      const { [action.unitId]: _gone, ...rest } = state.assignments;
+      return { ...state, assignments: rest };
+    }
 
     case 'SET_DATE':
       return { ...state, date: action.value, bookings: action.bookings };

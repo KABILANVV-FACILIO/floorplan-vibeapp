@@ -686,6 +686,8 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
 
     /** Marks a record as having an org write in flight — its marker spins, its buttons lock. */
     setUnitBusy: (id: string | null) => dispatch({ type: 'SET_UNIT_BUSY', id }),
+    /** The org has confirmed this unit has no holder; reflect it without waiting on a list read. */
+    clearHolder: (unitId: string) => dispatch({ type: 'CLEAR_HOLDER', unitId }),
 
     /**
      * An org write landed on a record: everything showing that record re-reads it.

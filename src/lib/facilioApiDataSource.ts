@@ -2796,6 +2796,39 @@ export async function vacateUnitReal(unit: Unit, contactId: string): Promise<Rea
   return { ok: true };
 }
 
+/**
+ * Wait until the org has actually taken a desk's holder off it.
+ *
+ * Vacating a desk is a MOVE: `createDeskMove` records it, and the org then clears the desk's
+ * `employee` while processing that move — after the request returns, not during it. Reading the
+ * desk straight away therefore still names the old holder, and the plan showed the desk as
+ * "Temporarily Vacant" and "Assigned to <them>" at once, until some later refresh caught up.
+ *
+ * So the desk is re-read until its holder is gone. `fetchRecord` goes over the raw request path,
+ * which the host does not cache, so each read is the org's current answer. Bounded well inside the
+ * 20 s the plan keeps a record marked busy, so the spinner never stops before this does.
+ */
+export async function waitForDeskVacated(
+  unit: Unit,
+  holderId: string,
+  { timeoutMs = 12000, intervalMs = 800 }: { timeoutMs?: number; intervalMs?: number } = {}
+): Promise<{ cleared: boolean }> {
+  if (!isFacilioApiConfigured || unit.type !== 'workstation') return { cleared: true };
+  const deskId = await deskRecordId(unit);
+  if (!deskId) return { cleared: false };
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const res = await facilioApi.fetchRecord<any>('desks', { id: deskId }).catch(() => null);
+    const desk = res ? recordOf<any>(res, 'desks') : null;
+    if (desk) {
+      const holder = lookupId(desk, 'employee');
+      if (holder == null || String(holder) !== String(holderId)) return { cleared: true };
+    }
+    if (Date.now() + intervalMs > deadline) return { cleared: false };
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
 /** moduleName -> its numeric moduleId (spacebooking's `parentModuleId`). Session cache. */
 const moduleIdCache = new Map<string, number>();
 async function moduleIdFor(moduleName: string, sampleRecordId: number): Promise<number | null> {

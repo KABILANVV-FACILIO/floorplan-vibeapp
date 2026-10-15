@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
-import { invalidateUnitRecordInfo, resolveUnitRecord, vacateUnitReal } from '../../lib/facilioApiDataSource';
+import { invalidateUnitRecordInfo, resolveUnitRecord, vacateUnitReal, waitForDeskVacated } from '../../lib/facilioApiDataSource';
 import { executeStateTransition, fetchAvailableStates, isAssignTransition, isVacateTransition } from '../../lib/stateflowApi';
 import type { FlowState, TransitionOption } from '../../lib/stateflowApi';
 import type { Unit } from '../../lib/types';
@@ -118,18 +118,32 @@ export function StateflowActions({
       // the state transition second — the other way round, the transition would empty the desk
       // and the move would have no one to take off it.
       const holder = state.assignments?.[unit.id];
-      if (unit.type === 'workstation' && isVacateTransition(t) && holder) {
+      const vacatingDesk = unit.type === 'workstation' && isVacateTransition(t) && !!holder;
+      if (vacatingDesk) {
         const out = await vacateUnitReal(unit, holder);
         if (!out.ok) throw new Error(out.reason);
       }
       await executeStateTransition(moduleName, recordId, t.id, data);
+      // The move is recorded, but the org clears the desk's `employee` while PROCESSING it, after
+      // the request returns. Re-reading now would still name the old holder beside the new
+      // "Temporarily Vacant" state. So the desk stays busy until the org has actually let go of
+      // them, and only then is anything re-read.
+      const settled = vacatingDesk ? await waitForDeskVacated(unit, holder) : { cleared: true };
       invalidateUnitRecordInfo(unit);
       // Re-read the record: a transition is exactly what changes its state and its holder, and
       // Vacate clears `employee`, which drives the marker's initials and the sidebar's pill.
       // `recordChanged` re-reads it on every surface showing it, not just this one.
       await actions.refreshAssignments();
+      // After the list read, not before: a list answered from an older copy would otherwise put
+      // the holder straight back. The org has confirmed it, so the plan says so.
+      if (vacatingDesk && settled.cleared) actions.clearHolder(unit.id);
       actions.recordChanged();
-      actions.showToast(`${unit.label}: ${t.name}`);
+      actions.showToast(
+        settled.cleared
+          ? `${unit.label}: ${t.name}`
+          : `${unit.label}: ${t.name} — Facilio is still updating the desk; it will show as free on the next refresh`,
+        settled.cleared ? undefined : 6000
+      );
     } catch (err) {
       actions.showToast(`Could not ${t.name} — ${(err as Error)?.message ?? 'the org refused it'}`);
     } finally {
