@@ -10,6 +10,7 @@ import { computeSyntheticGeometry, geometryStringToQuad, lngLatToQuadFraction, q
 import type { CreateSpaceLoc, FloorplanDataSource } from './dataSource';
 import type { Asset } from './assets';
 import type { OrgRole } from './types';
+import { isVibeApp, vibe } from './vibe';
 import { isRoomLike, TYPE_META } from './types';
 import { ROOM_OUTLINE_WRITES } from './featureFlags';
 import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, PlanId, PointGeom, PolyGeom, Site, Unit, UnitType } from './types';
@@ -3274,26 +3275,18 @@ export function fetchCurrentRole(): Promise<OrgRole | null> {
 }
 
 /**
- * Facilio marks an admin role on the role record itself: `isSuperAdmin` (a boxed Boolean, so it may
- * also arrive as `superAdmin` from its primitive getter) and `isPrevileged` — Facilio's spelling.
+ * Whether a role record is one of the org's admin roles. Facilio flags these on the record itself,
+ * and spells the flag two ways depending on who answers: the connector says `isPrivileged`, the
+ * backend `Role` class says `isPrevileged`. Missing either one misses ENEC's "CAFM Administrator",
+ * which carries only the privileged flag. `isSuperAdmin` may also arrive as `superAdmin`.
  */
 function isAdminRole(role: any): boolean {
   if (!role || typeof role !== 'object') return false;
-  return role.isSuperAdmin === true || role.superAdmin === true || role.isPrevileged === true;
+  return role.isSuperAdmin === true || role.superAdmin === true || role.isPrivileged === true || role.isPrevileged === true;
 }
 
-/**
- * The org's roles, for the Settings access grid. Read only when that screen opens — gating works
- * off the viewer's own role and never needs the list.
- *
- * `v2/setup/getRoles` is the endpoint Facilio's own Setup and UI call; the older `v2/getRoles` is
- * marked deprecated. Its handler does `setResult("Roles", roles)`, but the envelope differs by how
- * the app is reached — `Roles` at the top, or under `result` / `data` — so the first array that
- * looks like roles is used rather than one guessed key. Facilio's labs client reads it the same way.
- */
-export async function fetchOrgRoles(): Promise<OrgRole[]> {
-  if (!isFacilioApiConfigured) return [];
-  const body = await customGet('v2/setup/getRoles', undefined).catch(() => null);
+/** The first array in `body` that looks like roles, whatever envelope carried it, as OrgRoles. */
+function rolesFrom(body: unknown): OrgRole[] {
   const looksLikeRoles = (v: unknown): v is any[] =>
     Array.isArray(v) && v.some((x) => x && (x.roleId != null || x.id != null) && (x.name || x.label));
   let raw: any[] | null = null;
@@ -3303,16 +3296,41 @@ export async function fetchOrgRoles(): Promise<OrgRole[]> {
     if (looksLikeRoles(cur)) raw = cur;
     else if (cur && typeof cur === 'object' && !Array.isArray(cur)) stack.push(...Object.values(cur as object));
   }
-  if (!raw) {
-    // eslint-disable-next-line no-console
-    console.warn('[facilio-api] v2/setup/getRoles returned no role list — the access grid will offer Everyone only');
-    return [];
-  }
-  return raw
+  return (raw ?? [])
     .map((r: any) => ({ id: Number(r?.roleId ?? r?.id), name: String(r?.label ?? r?.name ?? ''), isAdmin: isAdminRole(r) }))
     .filter((r) => Number.isFinite(r.id) && r.id > 0 && r.name !== '')
     .map((r) => ({ id: String(r.id), name: r.name, isAdmin: r.isAdmin }))
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * The org's roles, for the Settings access grid. Read only when that screen opens — gating works
+ * off the viewer's own role and never needs the list.
+ *
+ * The connector first: `facilio-user-management.list-roles` goes through the platform, not the
+ * Facilio page, so it answers however the app was opened — and the V3 route below needs the host
+ * bridge, which is exactly what was missing when the grid came up with no roles. V3 stays as the
+ * fallback: `v2/setup/getRoles` is what Facilio's own Setup calls.
+ */
+export async function fetchOrgRoles(): Promise<OrgRole[]> {
+  if (isVibeApp) {
+    try {
+      const roles = rolesFrom(await vibe.executeAction<unknown>('facilio-user-management', 'list-roles', {}));
+      if (roles.length) return roles;
+      // eslint-disable-next-line no-console
+      console.warn('[roles] the connector answered with no roles — trying the Facilio API');
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[roles] the connector could not list roles — trying the Facilio API', err);
+    }
+  }
+  if (!isFacilioApiConfigured) return [];
+  const roles = rolesFrom(await customGet('v2/setup/getRoles', undefined).catch(() => null));
+  if (!roles.length) {
+    // eslint-disable-next-line no-console
+    console.warn('[roles] v2/setup/getRoles returned no role list — the access grid will offer Everyone only');
+  }
+  return roles;
 }
 
 export function fetchCurrentPeopleId(): Promise<number | null> {

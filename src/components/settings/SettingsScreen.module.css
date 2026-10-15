@@ -549,3 +549,36 @@
     padding-top: 0;
   }
 }
+
+/* The role list floats over the modal, positioned against its field (see RoleLookup). Above the
+   modal (z 200), level with the Select primitive's listbox (z 300). The panel takes the height
+   computePlacement allows and the role list scrolls inside it, so a long list never runs off
+   the screen — the search box and the count stay put. */
+.menuFloating {
+  position: fixed;
+  z-index: 300;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+.menuFloating .menuList {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+.menuClear {
+  border: none;
+  background: transparent;
+  color: var(--blue-600);
+  font: 600 12px/1 var(--font-sans);
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.menuClear:hover {
+  background: var(--blue-050);
+}
+.menuClear:focus-visible {
+  outline: 2px solid var(--blue-500);
+  outline-offset: 1px;
+}

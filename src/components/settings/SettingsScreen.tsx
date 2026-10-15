@@ -1,9 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { DEFAULT_ACCESS, STATE_DEFS, STATE_SWATCHES, SURFACE_ORDER, SURFACES, TOGGLEABLE_MODULES, TYPE_META } from '../../lib/types';
 import type { ModuleKey, OrgRole, Surface, SurfaceAccess, UnitType } from '../../lib/types';
 import { Modal, ModalFooter, ModalHeader } from '../primitives/Modal';
+import { computePlacement } from '../primitives/Select';
+
+type Placement = ReturnType<typeof computePlacement>;
 import { moduleEnabled } from '../../state/selectors';
 import { Button } from '../primitives/Button';
 import { moduleColor } from '../../lib/unitStatus';
@@ -341,6 +345,205 @@ function RoleChips({ ids, roles }: { ids: string[]; roles: OrgRole[] }) {
  * Two rules are enforced here AND in the function behind it, because either side alone can be
  * bypassed: Settings keeps its locked roles, and no role may be left without a single tab.
  */
+/**
+ * Choosing roles for one tab: a field that opens a floating list, the way Facilio's own FSelect
+ * does. The list is portaled to <body> and positioned against the field with the app's own
+ * `computePlacement` — the same mechanics as the `Select` primitive — so it floats OVER the modal
+ * instead of opening inside its row, flips upward near the bottom, and is never clipped by the
+ * modal's scrolling body. It closes like FSelect: a click anywhere else, Escape, or focus leaving it.
+ */
+export function RoleLookup({
+  label,
+  rule,
+  roles,
+  loading,
+  locked,
+  onToggleAll,
+  onToggleRole,
+  onClear,
+}: {
+  label: string;
+  rule: SurfaceAccess;
+  roles: OrgRole[];
+  loading: boolean;
+  locked: string[];
+  onToggleAll: () => void;
+  onToggleRole: (id: string) => void;
+  onClear: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [placement, setPlacement] = useState<Placement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const shown = open && placement != null;
+
+  // Focus the search box once the list is actually on screen — NOT with `autoFocus`. React applies
+  // autoFocus before the list's own ref is attached, so the focus-leaving check below saw focus land
+  // on an element it did not yet know as its own, and closed the list the instant it opened.
+  // Keyed on `shown`, not on placement, so a scroll that repositions the list does not pull focus
+  // back to the search box from wherever the person has moved it.
+  useEffect(() => {
+    if (shown) searchRef.current?.focus();
+  }, [shown]);
+
+  useEffect(() => {
+    if (!open) return;
+    const reposition = () => triggerRef.current && setPlacement(computePlacement(triggerRef.current));
+    const inside = (n: Node | null) => !!n && (!!triggerRef.current?.contains(n) || !!menuRef.current?.contains(n));
+    const onDown = (e: MouseEvent) => {
+      if (!inside(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    // Focus moving somewhere else — Tab past the last option — closes it, as FSelect does.
+    const onFocusIn = (e: FocusEvent) => {
+      if (!inside(e.target as Node)) setOpen(false);
+    };
+    reposition();
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey, true);
+    document.addEventListener('focusin', onFocusIn);
+    window.addEventListener('resize', reposition);
+    window.addEventListener('scroll', reposition, true);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('focusin', onFocusIn);
+      window.removeEventListener('resize', reposition);
+      window.removeEventListener('scroll', reposition, true);
+    };
+  }, [open]);
+
+  const q = query.trim().toLowerCase();
+  const visible = q ? roles.filter((r) => r.name.toLowerCase().includes(q)) : roles;
+  const count = rule.all ? roles.length : rule.roles.length;
+  // With no roles to choose from, turning Everyone off can only leave the tab empty — hidden from
+  // every role — so it is not offered.
+  const everyoneLocked = rule.all && !roles.length;
+
+  return (
+    <div className={styles.lookup}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className={styles.lookupField}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-label={`Roles that can reach ${label}`}
+        onClick={() => {
+          setOpen((o) => !o);
+          setQuery('');
+        }}
+      >
+        <span className={styles.lookupValues}>
+          {rule.all ? (
+            <span className={[styles.pill, styles.pillOn].join(' ')}>Everyone</span>
+          ) : rule.roles.length ? (
+            <RoleChips ids={rule.roles} roles={roles} />
+          ) : (
+            <span className={styles.lookupPlaceholder}>Choose roles</span>
+          )}
+        </span>
+        <svg className={styles.caret} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </button>
+
+      {open &&
+        placement &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className={[styles.menu, styles.menuFloating].join(' ')}
+            style={{
+              left: placement.left,
+              top: placement.top,
+              width: placement.width,
+              maxHeight: placement.maxHeight,
+              transform: placement.up ? 'translateY(-100%)' : undefined,
+            }}
+          >
+            <div className={styles.menuSearch}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+                <circle cx="11" cy="11" r="7" />
+                <path d="M21 21l-4.3-4.3" />
+              </svg>
+              <input
+                ref={searchRef}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={roles.length ? `Search ${roles.length} roles` : 'Search roles'}
+                aria-label="Search roles"
+              />
+            </div>
+
+            <div className={styles.menuList} role="listbox" aria-multiselectable>
+              <button
+                type="button"
+                role="option"
+                aria-selected={rule.all}
+                disabled={everyoneLocked}
+                className={[styles.opt, styles.optAll, rule.all ? styles.optOn : ''].join(' ')}
+                onClick={onToggleAll}
+              >
+                <span className={styles.optBox}>{rule.all && <Tick />}</span>
+                Everyone
+                <span className={styles.optTag}>including roles added later</span>
+              </button>
+
+              {loading ? (
+                <div className={styles.menuEmpty}>Loading roles…</div>
+              ) : !roles.length ? (
+                <div className={styles.menuEmpty}>The org&rsquo;s roles could not be loaded, so this tab stays open to everyone for now.</div>
+              ) : !visible.length ? (
+                <div className={styles.menuEmpty}>No role matches &ldquo;{query}&rdquo;.</div>
+              ) : (
+                visible.map((r) => {
+                  const isLocked = locked.includes(r.id);
+                  const on = rule.all || isLocked || rule.roles.includes(r.id);
+                  return (
+                    <button
+                      key={r.id}
+                      type="button"
+                      role="option"
+                      aria-selected={on}
+                      disabled={rule.all || isLocked}
+                      className={[styles.opt, on ? styles.optOn : ''].join(' ')}
+                      onClick={() => onToggleRole(r.id)}
+                    >
+                      <span className={styles.optBox}>{on && <Tick />}</span>
+                      {r.name}
+                      {isLocked && <span className={styles.optTag}>always has Settings</span>}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+
+            {roles.length > 0 && (
+              <div className={styles.menuFoot}>
+                <span>{rule.all ? 'Everyone is on — turn it off to choose specific roles.' : `${count} of ${roles.length} selected`}</span>
+                {!rule.all && rule.roles.length > locked.length && (
+                  <button type="button" className={styles.menuClear} onClick={onClear}>
+                    Clear
+                  </button>
+                )}
+              </div>
+            )}
+          </div>,
+          document.body
+        )}
+    </div>
+  );
+}
+
 function AccessModal({ onClose }: { onClose: () => void }) {
   const { state, actions } = useFloorplanData();
   const [draft, setDraft] = useState<Record<Surface, SurfaceAccess>>(() => {
@@ -351,8 +554,6 @@ function AccessModal({ onClose }: { onClose: () => void }) {
     }
     return out;
   });
-  const [open, setOpen] = useState<Surface | null>(null);
-  const [query, setQuery] = useState('');
   const [refused, setRefused] = useState('');
 
   // The role list is only needed here, so it is read when this opens rather than on boot.
@@ -406,6 +607,12 @@ function AccessModal({ onClose }: { onClose: () => void }) {
   }
   function toggleAll(surface: Surface): void {
     const cur = draft[surface];
+    if (cur.all && !state.orgRoles.length) {
+      // Nothing to choose instead, so turning Everyone off could only leave the tab empty —
+      // hidden from every role — and the save would lock everyone out of it.
+      setRefused("The org's roles haven't loaded, so this tab can only be open to everyone for now.");
+      return;
+    }
     // Turning "everyone" off starts from the roles that may never lose this tab, not from nothing.
     commit({ ...draft, [surface]: cur.all ? { all: false, roles: [...lockedFor(surface)] } : { all: true, roles: [] } });
   }
@@ -418,9 +625,6 @@ function AccessModal({ onClose }: { onClose: () => void }) {
     const b = draft[s.id];
     return a.all !== b.all || [...a.roles].sort().join() !== [...b.roles].sort().join();
   }).length;
-
-  const q = query.trim().toLowerCase();
-  const visibleRoles = q ? state.orgRoles.filter((r) => r.name.toLowerCase().includes(q)) : state.orgRoles;
 
   return (
     <StagedModal
@@ -435,120 +639,24 @@ function AccessModal({ onClose }: { onClose: () => void }) {
         onClose();
       }}
     >
-      {SURFACES.map((s) => {
-        const rule = draft[s.id];
-        const isOpen = open === s.id;
-        const locked = lockedFor(s.id);
-        const count = rule.all ? state.orgRoles.length : rule.roles.length;
-        return (
-          <div key={s.id} className={styles.editRow}>
-            <div className={styles.editLabel}>
-              <div className={styles.sumName}>{s.name}</div>
-              <div className={styles.sumDesc}>{s.desc}</div>
-            </div>
-
-            <div className={styles.lookup}>
-              <button
-                type="button"
-                className={styles.lookupField}
-                aria-expanded={isOpen}
-                aria-haspopup="listbox"
-                aria-label={`Roles that can reach ${s.name}`}
-                onClick={() => {
-                  setOpen(isOpen ? null : s.id);
-                  setQuery('');
-                }}
-              >
-                <span className={styles.lookupValues}>
-                  {rule.all ? (
-                    <span className={[styles.pill, styles.pillOn].join(' ')}>Everyone</span>
-                  ) : rule.roles.length ? (
-                    <RoleChips ids={rule.roles} roles={state.orgRoles} />
-                  ) : (
-                    <span className={styles.lookupPlaceholder}>Choose roles</span>
-                  )}
-                </span>
-                <svg className={styles.caret} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
-                  <path d="M6 9l6 6 6-6" />
-                </svg>
-              </button>
-
-              {isOpen && (
-                <div className={styles.menu}>
-                  <div className={styles.menuSearch}>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
-                      <circle cx="11" cy="11" r="7" />
-                      <path d="M21 21l-4.3-4.3" />
-                    </svg>
-                    <input
-                      autoFocus
-                      value={query}
-                      onChange={(e) => setQuery(e.target.value)}
-                      placeholder={state.orgRoles.length ? `Search ${state.orgRoles.length} roles` : 'Search roles'}
-                      aria-label="Search roles"
-                    />
-                  </div>
-
-                  <div className={styles.menuList} role="listbox" aria-multiselectable>
-                    <button
-                      type="button"
-                      role="option"
-                      aria-selected={rule.all}
-                      className={[styles.opt, styles.optAll, rule.all ? styles.optOn : ''].join(' ')}
-                      onClick={() => toggleAll(s.id)}
-                    >
-                      <span className={styles.optBox}>{rule.all && <Tick />}</span>
-                      Everyone
-                      <span className={styles.optTag}>including roles added later</span>
-                    </button>
-
-                    {state.orgRolesLoading ? (
-                      <div className={styles.menuEmpty}>Loading roles…</div>
-                    ) : !state.orgRoles.length ? (
-                      <div className={styles.menuEmpty}>The org&rsquo;s roles could not be loaded, so only Everyone can be chosen here.</div>
-                    ) : !visibleRoles.length ? (
-                      <div className={styles.menuEmpty}>No role matches &ldquo;{query}&rdquo;.</div>
-                    ) : (
-                      visibleRoles.map((r) => {
-                        const isLocked = locked.includes(r.id);
-                        const on = rule.all || isLocked || rule.roles.includes(r.id);
-                        return (
-                          <button
-                            key={r.id}
-                            type="button"
-                            role="option"
-                            aria-selected={on}
-                            disabled={rule.all || isLocked}
-                            className={[styles.opt, on ? styles.optOn : ''].join(' ')}
-                            onClick={() => toggleRole(s.id, r.id)}
-                          >
-                            <span className={styles.optBox}>{on && <Tick />}</span>
-                            {r.name}
-                            {isLocked && <span className={styles.optTag}>always has Settings</span>}
-                          </button>
-                        );
-                      })
-                    )}
-                  </div>
-
-                  <div className={styles.menuFoot}>
-                    <span>
-                      {rule.all
-                        ? 'Everyone is on — turn it off to choose specific roles.'
-                        : `${count} of ${state.orgRoles.length || '?'} selected`}
-                    </span>
-                    {!rule.all && rule.roles.length > locked.length && (
-                      <button type="button" className={styles.opt} style={{ width: 'auto', minHeight: 0, padding: '2px 6px', color: 'var(--blue-600)' }} onClick={() => clearRoles(s.id)}>
-                        Clear
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
+      {SURFACES.map((s) => (
+        <div key={s.id} className={styles.editRow}>
+          <div className={styles.editLabel}>
+            <div className={styles.sumName}>{s.name}</div>
+            <div className={styles.sumDesc}>{s.desc}</div>
           </div>
-        );
-      })}
+          <RoleLookup
+            label={s.name}
+            rule={draft[s.id]}
+            roles={state.orgRoles}
+            loading={state.orgRolesLoading}
+            locked={lockedFor(s.id)}
+            onToggleAll={() => toggleAll(s.id)}
+            onToggleRole={(id) => toggleRole(s.id, id)}
+            onClear={() => clearRoles(s.id)}
+          />
+        </div>
+      ))}
     </StagedModal>
   );
 }
