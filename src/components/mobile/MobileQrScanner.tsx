@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { isBookable, visibleUnits } from '../../state/selectors';
-import type { Unit } from '../../lib/types';
+import { matchSpaceCode } from '../../lib/qrMatch';
 import styles from './MobileQrScanner.module.css';
 
 /**
@@ -12,30 +12,6 @@ import styles from './MobileQrScanner.module.css';
  * against the floor's units and the booking form opens pre-filled with that
  * space.
  */
-
-/** QR payloads vary (plain label, id, or a URL) — try the obvious shapes. */
-function matchUnit(units: Unit[], raw: string): Unit | undefined {
-  const norm = (s: string) => s.trim().toLowerCase().replace(/[\s_-]+/g, '');
-  let code = raw.trim();
-  try {
-    const url = new URL(code);
-    code =
-      url.searchParams.get('qr') ??
-      url.searchParams.get('space') ??
-      url.searchParams.get('unit') ??
-      url.pathname.split('/').filter(Boolean).pop() ??
-      code;
-  } catch {
-    /* not a URL — use as-is */
-  }
-  const target = norm(code);
-  if (!target) return undefined;
-  return (
-    units.find((u) => norm(u.label) === target) ??
-    units.find((u) => norm(u.id) === target) ??
-    units.find((u) => norm(u.label).includes(target) || target.includes(norm(u.label)))
-  );
-}
 
 interface BarcodeDetectorLike {
   detect(source: CanvasImageSource): Promise<{ rawValue: string }[]>;
@@ -52,9 +28,16 @@ export function MobileQrScanner({ onClose }: { onClose: () => void }) {
   function handleCode(raw: string) {
     if (doneRef.current) return;
     // Scanning a code for a switched-off module must not resurrect it.
-    const unit = matchUnit(visibleUnits(state), raw);
+    // Exact matches only (see matchSpaceCode): a partial match booked the wrong desk.
+    const match = matchSpaceCode(visibleUnits(state), raw);
+    const unit = match.unit;
     if (!unit) {
-      setError(`No space matching “${raw.slice(0, 60)}” on this floor.`);
+      const shown = raw.slice(0, 60);
+      setError(
+        'reason' in match && match.reason === 'ambiguous'
+          ? `More than one space on this floor is called “${shown}” — pick it on the plan instead.`
+          : `No space matching “${shown}” on this floor.`
+      );
       return;
     }
     doneRef.current = true;
@@ -86,11 +69,17 @@ export function MobileQrScanner({ onClose }: { onClose: () => void }) {
 
     void (async () => {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        const acquired = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'environment' },
           audio: false,
         });
-        if (cancelled || !videoRef.current) return;
+        // Closed while the camera was still starting: the cleanup below already ran, with no stream
+        // to stop, so this one must be stopped here or the camera stays on with nothing showing it.
+        if (cancelled || !videoRef.current) {
+          acquired.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        stream = acquired;
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
         setCameraState('live');

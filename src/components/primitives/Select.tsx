@@ -102,17 +102,21 @@ export function Select<T extends string = string>({
       if (rootRef.current?.contains(target) || listRef.current?.contains(target)) return;
       setOpen(false);
     }
+    // Capture phase, stopped here: Escape closes the list and nothing else. A dialog the select
+    // sits in (Modal) listens for Escape too, and would otherwise close along with it.
     function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      setOpen(false);
     }
     reposition();
     document.addEventListener('mousedown', onDocDown);
-    document.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', onKey, true);
     window.addEventListener('resize', reposition);
     window.addEventListener('scroll', reposition, true);
     return () => {
       document.removeEventListener('mousedown', onDocDown);
-      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('keydown', onKey, true);
       window.removeEventListener('resize', reposition);
       window.removeEventListener('scroll', reposition, true);
     };

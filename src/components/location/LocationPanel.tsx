@@ -33,6 +33,16 @@ export function LocationPanel() {
   // (rooms / delivery areas) isn't in this list — those draw on whichever plan is showing.
   const plans = (isFacilioApiConfigured ? ALL_PLAN_TYPES : floor?.plans)?.filter((p) => moduleEnabled(state, p.id as UnitType));
 
+  /**
+   * The full path, for hover. The row shows `site › building` clipped to one line above the floor
+   * name, so on a long portfolio the half that says WHICH site and building you are on is exactly
+   * the half that gets cut off — and the row is also the control that opens the tree, so there is
+   * nowhere else to read it without navigating away.
+   */
+  const switcherTip = [meta?.site.name, meta?.building.name, floor?.name]
+    .filter(Boolean)
+    .join(' › ') || 'Choose a floor';
+
   return (
     <FloatingPanel
       x={drag.x}
@@ -51,7 +61,7 @@ export function LocationPanel() {
     >
       <div className={styles.body}>
         <div className={styles.switcherRow}>
-          <button className={styles.switcher} onClick={() => actions.setNavView(isTree ? 'spaces' : 'tree')}>
+          <button className={styles.switcher} data-tip={switcherTip} onClick={() => actions.setNavView(isTree ? 'spaces' : 'tree')}>
             <span className={styles.switcherIcon}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 2L2 7l10 5 10-5-10-5z M2 12l10 5 10-5 M2 17l10 5 10-5" />

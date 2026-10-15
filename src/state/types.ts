@@ -1,4 +1,5 @@
 import type {
+  Access,
   AppMode,
   Assignments,
   Booking,
@@ -7,10 +8,9 @@ import type {
   EnabledModules,
   FloorSearchHit,
   MarkerDef,
+  OrgRole,
   PanelsState,
-  Perms,
   PlanId,
-  Role,
   Site,
   Unit,
   UnitType,
@@ -68,6 +68,12 @@ export interface AppState {
   viewAnim: boolean;
   userZoomed: boolean;
   spaceFilter: SpaceFilter;
+  /**
+   * Spaces list only, like `spaceFilter`: the department whose desks the list is narrowed to,
+   * `null` for all of them. Read off the desk record's own `department` — the same field the
+   * plan colours by — so the list can answer "where does Finance sit" with the colours on.
+   */
+  spaceDepartment: string | null;
   spaceSearch: string;
 
   units: Unit[];
@@ -148,8 +154,17 @@ export interface AppState {
   bookingsNonce: number;
   schedView: 'list' | 'calendar';
 
-  role: Role;
-  perms: Perms;
+  /**
+   * The signed-in user's role in the org, resolved from the account payload. NULL when the payload
+   * carried none — a dev session, the mock tier, an older session. A missing fact must never lock
+   * anyone out, so null means every tab shows.
+   */
+  viewerRole: OrgRole | null;
+  /** Which roles reach which tab. A surface absent here falls back to DEFAULT_ACCESS. */
+  access: Access;
+  /** The org's roles, for the Settings picker. Read lazily — gating never needs the list. */
+  orgRoles: OrgRole[];
+  orgRolesLoading: boolean;
 
   activeView: 'map' | 'settings' | 'bookings' | 'people';
   settingsTab: 'permissions' | 'modules' | 'bookings' | UnitType;

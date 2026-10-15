@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
-import { invalidateUnitRecordInfo, resolveUnitRecord, vacateUnitReal } from '../../lib/facilioApiDataSource';
+import { invalidateUnitRecordInfo, resolveUnitRecord, vacateUnitReal, waitForDeskVacated } from '../../lib/facilioApiDataSource';
 import { executeStateTransition, fetchAvailableStates, isAssignTransition, isVacateTransition } from '../../lib/stateflowApi';
 import type { FlowState, TransitionOption } from '../../lib/stateflowApi';
 import type { Unit } from '../../lib/types';
@@ -118,18 +118,32 @@ export function StateflowActions({
       // the state transition second — the other way round, the transition would empty the desk
       // and the move would have no one to take off it.
       const holder = state.assignments?.[unit.id];
-      if (unit.type === 'workstation' && isVacateTransition(t) && holder) {
+      const vacatingDesk = unit.type === 'workstation' && isVacateTransition(t) && !!holder;
+      if (vacatingDesk) {
         const out = await vacateUnitReal(unit, holder);
         if (!out.ok) throw new Error(out.reason);
       }
       await executeStateTransition(moduleName, recordId, t.id, data);
+      // The move is recorded, but the org clears the desk's `employee` while PROCESSING it, after
+      // the request returns. Re-reading now would still name the old holder beside the new
+      // "Temporarily Vacant" state. So the desk stays busy until the org has actually let go of
+      // them, and only then is anything re-read.
+      const settled = vacatingDesk ? await waitForDeskVacated(unit, holder) : { cleared: true };
       invalidateUnitRecordInfo(unit);
       // Re-read the record: a transition is exactly what changes its state and its holder, and
       // Vacate clears `employee`, which drives the marker's initials and the sidebar's pill.
       // `recordChanged` re-reads it on every surface showing it, not just this one.
       await actions.refreshAssignments();
+      // After the list read, not before: a list answered from an older copy would otherwise put
+      // the holder straight back. The org has confirmed it, so the plan says so.
+      if (vacatingDesk && settled.cleared) actions.clearHolder(unit.id);
       actions.recordChanged();
-      actions.showToast(`${unit.label}: ${t.name}`);
+      actions.showToast(
+        settled.cleared
+          ? `${unit.label}: ${t.name}`
+          : `${unit.label}: ${t.name} — Facilio is still updating the desk; it will show as free on the next refresh`,
+        settled.cleared ? undefined : 6000
+      );
     } catch (err) {
       actions.showToast(`Could not ${t.name} — ${(err as Error)?.message ?? 'the org refused it'}`);
     } finally {
@@ -139,9 +153,15 @@ export function StateflowActions({
     }
   }
 
-  // No record behind this unit, or no flow on its module: the org has no opinion about what you
-  // may do to it, so the caller's own controls stand in.
-  if (!ref || failed) return <>{fallback}</>;
+  // The caller's own controls (the app's "Select employee") stand in for exactly two cases, both
+  // ones where the org has no opinion: no org record behind this unit (the demo tier), and a module
+  // with no stateflow. Anywhere else the actions ARE the org's transitions, and the app's own
+  // buttons would write somewhere the flow never sees.
+  if (!ref) return <>{fallback}</>;
+  // The flow could not be READ — no Facilio host to ask, or the request failed. That is not the org
+  // saying "no flow", and it must not be treated as one: with no host, the app's own Assign writes to
+  // this browser alone and then reports it done. So nothing is offered.
+  if (failed) return null;
   const transitions = flow?.transitions ?? [];
   // Still reading the flow — show nothing rather than flashing the fallback's buttons and
   // replacing them a moment later with the org's.
@@ -150,7 +170,9 @@ export function StateflowActions({
   // The popover already reports the state in its pill; repeating it here is the duplication that
   // made a vacant desk say the same thing three times.
   const withState = showState && !!flow.currentStateName;
-  if (!withState && transitions.length === 0) return <>{fallback}</>;
+  // A flow, at a state that offers no transition: the org's answer is "nothing to do here", and
+  // the app's own Assign must not override it.
+  if (!withState && transitions.length === 0) return null;
   // A write to this record is in flight — possibly started on another surface showing the same
   // record, which must not leave a live second button here pointed at a record mid-transition.
   const recordBusy = state.busyUnitId === unit.id;

@@ -9,6 +9,8 @@ import { renderPdfToDataUrl } from './pdfPreview';
 import { computeSyntheticGeometry, geometryStringToQuad, lngLatToQuadFraction, quadFittingPoints, quadToGeometryString, quadToLngLat } from './geoReference';
 import type { CreateSpaceLoc, FloorplanDataSource } from './dataSource';
 import type { Asset } from './assets';
+import type { OrgRole } from './types';
+import { isVibeApp, vibe } from './vibe';
 import { isRoomLike, TYPE_META } from './types';
 import { ROOM_OUTLINE_WRITES } from './featureFlags';
 import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, PlanId, PointGeom, PolyGeom, Site, Unit, UnitType } from './types';
@@ -1534,10 +1536,18 @@ export async function uploadFloorplanFile(
   floorId: string,
   planId: PlanId,
   file: File,
-  imageDimensions?: { width: number; height: number }
+  imageDimensions?: { width: number; height: number },
+  /**
+   * Cancel. A request already sent can't be called back, so this is checked BETWEEN the steps:
+   * before the file goes up, and — the step that matters — before the file becomes this floor's
+   * plan. Cancelled after the upload but before the attach, the file sits unused in the org's
+   * file store and the floor keeps the plan it had.
+   */
+  signal?: AbortSignal
 ): Promise<FloorplanFileUploadResult> {
   if (!isFacilioApiConfigured) throw new Error('facilio-api: not configured');
   if (!isRealFloorId(floorId)) throw new Error(`facilio-api: ${floorId} is not an org floor — nothing to attach a plan to`);
+  throwIfAborted(signal);
 
   const uploadRes = await facilioApi.uploadFiles([file]);
   if (uploadRes.error || !uploadRes.ids?.length) {
@@ -1550,6 +1560,7 @@ export async function uploadFloorplanFile(
   // Also grab the server-RENDERED image (no fetchOriginal) — the display source for files the
   // browser can't draw (PDF, DWG/DXF). Null when the server didn't rasterize it.
   const serverImageUrl = await fetchRenderedFileImage(fileId);
+  throwIfAborted(signal);
 
   let attachedToFloorPlan = false;
   let attachError: string | undefined;
@@ -1591,6 +1602,11 @@ export async function uploadFloorplanFile(
   }
 
   return { fileId, previewUrl, serverImageUrl, attachedToFloorPlan, attachError };
+}
+
+/** Thrown by a step that finds its work cancelled — told apart from a failure by its name. */
+export function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException('cancelled', 'AbortError');
 }
 
 /**
@@ -2795,6 +2811,39 @@ export async function vacateUnitReal(unit: Unit, contactId: string): Promise<Rea
   return { ok: true };
 }
 
+/**
+ * Wait until the org has actually taken a desk's holder off it.
+ *
+ * Vacating a desk is a MOVE: `createDeskMove` records it, and the org then clears the desk's
+ * `employee` while processing that move — after the request returns, not during it. Reading the
+ * desk straight away therefore still names the old holder, and the plan showed the desk as
+ * "Temporarily Vacant" and "Assigned to <them>" at once, until some later refresh caught up.
+ *
+ * So the desk is re-read until its holder is gone. `fetchRecord` goes over the raw request path,
+ * which the host does not cache, so each read is the org's current answer. Bounded well inside the
+ * 20 s the plan keeps a record marked busy, so the spinner never stops before this does.
+ */
+export async function waitForDeskVacated(
+  unit: Unit,
+  holderId: string,
+  { timeoutMs = 12000, intervalMs = 800 }: { timeoutMs?: number; intervalMs?: number } = {}
+): Promise<{ cleared: boolean }> {
+  if (!isFacilioApiConfigured || unit.type !== 'workstation') return { cleared: true };
+  const deskId = await deskRecordId(unit);
+  if (!deskId) return { cleared: false };
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const res = await facilioApi.fetchRecord<any>('desks', { id: deskId }).catch(() => null);
+    const desk = res ? recordOf<any>(res, 'desks') : null;
+    if (desk) {
+      const holder = lookupId(desk, 'employee');
+      if (holder == null || String(holder) !== String(holderId)) return { cleared: true };
+    }
+    if (Date.now() + intervalMs > deadline) return { cleared: false };
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
 /** moduleName -> its numeric moduleId (spacebooking's `parentModuleId`). Session cache. */
 const moduleIdCache = new Map<string, number>();
 async function moduleIdFor(moduleName: string, sampleRecordId: number): Promise<number | null> {
@@ -3196,6 +3245,108 @@ export function fetchOrgTimezone(): Promise<string | null> {
  * (it is not the login user id). From the account payload; null when the session names none.
  */
 let peopleIdCache: Promise<number | null> | null = null;
+let viewerRoleCache: Promise<OrgRole | null> | null = null;
+
+/**
+ * The signed-in user's ROLE, off the same account payload `fetchCurrentPeopleId` reads.
+ *
+ * Shapes differ by region and by how the app is embedded, so every known spelling is tried and a
+ * miss is not an error: null means "the payload did not say", and the caller treats that as no
+ * gating at all. Locking someone out because a field moved is far worse than showing them a tab.
+ */
+export function fetchCurrentRole(): Promise<OrgRole | null> {
+  if (!isFacilioApiConfigured) return Promise.resolve(null);
+  if (!viewerRoleCache) {
+    viewerRoleCache = (async () => {
+      for (const [path, params] of [
+        ['v2/fetchAccount', { optimized: true }],
+        ['v2/account', undefined],
+      ] as const) {
+        const body = await customGet(path, params as Record<string, unknown> | undefined).catch(() => null);
+        if (!body) continue;
+        const account = body?.result?.account ?? body?.account ?? body?.data?.account ?? body?.result ?? body?.data ?? body;
+        const user = account?.user ?? body?.result?.user ?? body?.user ?? null;
+        const role = user?.role ?? null;
+        // `User.roleId` is a Java long, so a user with no role arrives as 0, not null. Read as a
+        // role, 0 would be "Role 0" — a real-looking id that is on no tab's list, hiding every
+        // configured tab from them. Only a positive id names a role.
+        const id = Number(role?.roleId ?? role?.id ?? user?.roleId);
+        if (!Number.isFinite(id) || id <= 0) continue;
+        const name = String(role?.name ?? role?.label ?? `Role ${id}`);
+        // eslint-disable-next-line no-console
+        console.info(`[facilio-api] viewer role: ${name} (#${id})`);
+        return { id: String(id), name, isAdmin: isAdminRole(role) };
+      }
+      // eslint-disable-next-line no-console
+      console.info('[facilio-api] the account payload carried no role — every tab stays visible');
+      return null;
+    })();
+    viewerRoleCache.catch(() => {
+      viewerRoleCache = null;
+    });
+  }
+  return viewerRoleCache;
+}
+
+/**
+ * Whether a role record is one of the org's admin roles. Facilio flags these on the record itself,
+ * and spells the flag two ways depending on who answers: the connector says `isPrivileged`, the
+ * backend `Role` class says `isPrevileged`. Missing either one misses ENEC's "CAFM Administrator",
+ * which carries only the privileged flag. `isSuperAdmin` may also arrive as `superAdmin`.
+ */
+function isAdminRole(role: any): boolean {
+  if (!role || typeof role !== 'object') return false;
+  return role.isSuperAdmin === true || role.superAdmin === true || role.isPrivileged === true || role.isPrevileged === true;
+}
+
+/** The first array in `body` that looks like roles, whatever envelope carried it, as OrgRoles. */
+function rolesFrom(body: unknown): OrgRole[] {
+  const looksLikeRoles = (v: unknown): v is any[] =>
+    Array.isArray(v) && v.some((x) => x && (x.roleId != null || x.id != null) && (x.name || x.label));
+  let raw: any[] | null = null;
+  const stack: unknown[] = [body];
+  while (stack.length && !raw) {
+    const cur = stack.pop();
+    if (looksLikeRoles(cur)) raw = cur;
+    else if (cur && typeof cur === 'object' && !Array.isArray(cur)) stack.push(...Object.values(cur as object));
+  }
+  return (raw ?? [])
+    .map((r: any) => ({ id: Number(r?.roleId ?? r?.id), name: String(r?.label ?? r?.name ?? ''), isAdmin: isAdminRole(r) }))
+    .filter((r) => Number.isFinite(r.id) && r.id > 0 && r.name !== '')
+    .map((r) => ({ id: String(r.id), name: r.name, isAdmin: r.isAdmin }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * The org's roles, for the Settings access grid. Read only when that screen opens — gating works
+ * off the viewer's own role and never needs the list.
+ *
+ * The connector first: `facilio-user-management.list-roles` goes through the platform, not the
+ * Facilio page, so it answers however the app was opened — and the V3 route below needs the host
+ * bridge, which is exactly what was missing when the grid came up with no roles. V3 stays as the
+ * fallback: `v2/setup/getRoles` is what Facilio's own Setup calls.
+ */
+export async function fetchOrgRoles(): Promise<OrgRole[]> {
+  if (isVibeApp) {
+    try {
+      const roles = rolesFrom(await vibe.executeAction<unknown>('facilio-user-management', 'list-roles', {}));
+      if (roles.length) return roles;
+      // eslint-disable-next-line no-console
+      console.warn('[roles] the connector answered with no roles — trying the Facilio API');
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[roles] the connector could not list roles — trying the Facilio API', err);
+    }
+  }
+  if (!isFacilioApiConfigured) return [];
+  const roles = rolesFrom(await customGet('v2/setup/getRoles', undefined).catch(() => null));
+  if (!roles.length) {
+    // eslint-disable-next-line no-console
+    console.warn('[roles] v2/setup/getRoles returned no role list — the access grid will offer Everyone only');
+  }
+  return roles;
+}
+
 export function fetchCurrentPeopleId(): Promise<number | null> {
   if (!isFacilioApiConfigured) return Promise.resolve(null);
   if (!peopleIdCache) {

@@ -1,20 +1,30 @@
 import type { ReactNode } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
+import { canSee } from '../../state/selectors';
 import styles from './BottomNav.module.css';
 
-/** App-level navigation, moved out of the (removed) left sidebar into a floating bottom bar. */
+/**
+ * App-level navigation, moved out of the (removed) left sidebar into a floating bottom bar.
+ *
+ * A tab the signed-in user's role cannot reach is not rendered at all, rather than rendered
+ * disabled: a greyed-out tab is an invitation to ask who took it away, and the answer is a
+ * configuration they cannot see. `canSee` is open by default, so an unknown role shows all four.
+ */
 export function BottomNav() {
   const { state, actions } = useFloorplanData();
   const view = state.activeView;
 
   return (
     <nav className={styles.bar} aria-label="Primary">
+      {canSee(state, 'map') && (
       <NavBtn
         active={view === 'map'}
         label="Floorplans"
         onClick={actions.openMap}
         icon={<path d="M9 3L4 5v16l5-2 6 2 5-2V3l-5 2-6-2z M9 3v16M15 5v16" />}
       />
+      )}
+      {canSee(state, 'bookings') && (
       <NavBtn
         active={view === 'bookings'}
         label="Bookings"
@@ -22,18 +32,23 @@ export function BottomNav() {
         onClick={actions.openBookings}
         icon={<><rect x="3" y="4" width="18" height="17" rx="2" /><path d="M16 2v4M8 2v4M3 10h18" /></>}
       />
+      )}
+      {canSee(state, 'people') && (
       <NavBtn
         active={view === 'people'}
         label="People"
         onClick={actions.openPeople}
         icon={<><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /></>}
       />
+      )}
+      {canSee(state, 'settings') && (
       <NavBtn
         active={view === 'settings'}
         label="Settings"
         onClick={actions.openSettings}
         icon={<><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></>}
       />
+      )}
     </nav>
   );
 }

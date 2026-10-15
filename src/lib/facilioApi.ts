@@ -62,6 +62,20 @@ const absoluteBaseURL = isConnectedApp ? envBaseURL || `${hostParam('origin') ??
 /** True in connected-app mode (SDK bridge), or in dev mode with base URL + token set. */
 export const isFacilioApiConfigured = isConnectedApp || (devMode && !!envBaseURL && !!token);
 
+/*
+ * One line, once, saying how this page was opened and what that allows. Whether desk positions
+ * can be saved turns entirely on it — inside Facilio or the mobile app they can, from a page with no
+ * host they cannot — and without this line a "Save did nothing" report could only be guessed at.
+ */
+if (typeof window !== 'undefined') {
+  // eslint-disable-next-line no-console
+  console.info(
+    `[host] connected app: ${isConnectedApp ? 'YES' : 'NO'} ` +
+      `(in a frame: ${isEmbedded}, mobile app: ${isMobileHost}, capp_id: ${hostParam('capp_id') ?? '—'}) — ` +
+      `Facilio API ${isFacilioApiConfigured ? 'ON: desk positions save to Facilio' : 'OFF: desk positions save to this browser only'}`
+  );
+}
+
 if (!isFacilioApiConfigured && devMode) {
   // eslint-disable-next-line no-console
   console.warn(

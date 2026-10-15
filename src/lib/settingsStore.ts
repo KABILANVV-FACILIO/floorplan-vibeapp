@@ -1,4 +1,4 @@
-import type { EnabledModules, MarkerDef, Perms } from './types';
+import type { Access, EnabledModules, MarkerDef } from './types';
 import type { AppState } from '../state/types';
 import type { LabelStyle } from './labelLayout';
 import { isVibeApp, vibe } from './vibe';
@@ -22,7 +22,12 @@ import { fetchVibeSettings, storeVibeSettings } from './vibeDbDataSource';
  * used to stop the chain dead and leave the settings saved nowhere at all.
  */
 export interface SettingsConfig {
-  perms?: Perms;
+  /**
+   * Which roles reach which tab. Replaces the old `perms` key, which described three ACTIONS for a
+   * fixed three roles; a blob still carrying that key is ignored rather than translated — the
+   * surfaces changed meaning, so there is nothing faithful to carry across.
+   */
+  access?: Access;
   moduleColors?: Record<string, string>;
   /** Whether desk markers are coloured by availability or by department (Settings › Desks). */
   colorBy?: 'status' | 'department';
@@ -48,7 +53,7 @@ const SETTINGS_FILE = 'floorplan-settings.json';
 /** Extract the persisted slice of app state. */
 export function settingsFromState(state: AppState): SettingsConfig {
   return {
-    perms: state.perms,
+    access: state.access,
     moduleColors: state.moduleColors,
     colorBy: state.colorBy,
     slotGranularity: state.slotGranularity,

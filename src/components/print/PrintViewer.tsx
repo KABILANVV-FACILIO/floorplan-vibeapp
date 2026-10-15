@@ -69,13 +69,7 @@ export function PrintViewer({ onClose, printRequest = 0 }: { onClose: () => void
     return () => ro.disconnect();
   }, []);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  // Escape is the dialog's own (see Modal).
 
   // Print the pages as drawn here — pictures of them, fitted to whatever paper the printer holds —
   // so the printout is the preview (see printImages). Should the pictures fail, the browser prints

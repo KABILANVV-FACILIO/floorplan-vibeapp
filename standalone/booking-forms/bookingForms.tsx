@@ -376,6 +376,7 @@ const S: Record<string, CSSProperties> = {
   chipDisabled: { background: '#f2f4f7', color: '#b3bdc9', cursor: 'not-allowed' },
   button: { padding: '10px 16px', borderRadius: 8, border: 'none', background: '#0059d6', color: '#fff', font: '600 13.5px system-ui, sans-serif', cursor: 'pointer' },
   error: { color: '#b61919', font: '500 12.5px system-ui, sans-serif' },
+  success: { color: '#0a6b3d', font: '500 12.5px system-ui, sans-serif' },
 };
 
 function Field({ label, required, children }: { label: string; required?: boolean; children: ReactNode }) {
@@ -394,7 +395,11 @@ export interface FacilioBookingFormProps {
   unitType: BookableType;
   resourceId: number;
   resourceLabel: string;
-  onDone?: (bookingId: number) => void;
+  /**
+   * Called once the booking exists. `null` when Facilio created it but didn't return its id — it is
+   * still booked, so the form treats it as done either way (see onSubmit).
+   */
+  onDone?: (bookingId: number | null) => void;
   onCancel?: () => void;
 }
 
@@ -432,6 +437,8 @@ export function FacilioBookingForm({ unitType, resourceId, resourceLabel, onDone
   const [noOfAttendees, setNoOfAttendees] = useState('1');
   const [extras, setExtras] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
+  /** Set once the booking exists. From then on the form can't submit again — see onSubmit. */
+  const [booked, setBooked] = useState<{ id: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -452,6 +459,8 @@ export function FacilioBookingForm({ unitType, resourceId, resourceLabel, onDone
   const TIME_OPTIONS = useMemo(() => Array.from({ length: 1440 / 30 + 1 }, (_, i) => i * 30), []);
 
   async function onSubmit() {
+    // A double click, or Enter held down, must not send a second booking for the same window.
+    if (submitting || booked) return;
     setError(null);
     if (date < minDate || date > maxDate) {
       setError(isRoom ? 'Rooms can only be booked for today.' : 'Bookings can be made at most one week ahead.');
@@ -474,7 +483,6 @@ export function FacilioBookingForm({ unitType, resourceId, resourceLabel, onDone
       if (KNOWN_FIELDS.has(f.name) || RESOURCE_LOOKUPS.has((f.lookupModule ?? '').toLowerCase())) continue;
       if (f.required && !(extras[f.name] ?? '').trim()) return setError(`“${f.label || f.name}” is required.`);
     }
-    setSubmitting(true);
     const extraValues: Record<string, unknown> = {};
     for (const f of form?.fields ?? []) {
       const raw = (extras[f.name] ?? '').trim();
@@ -486,24 +494,41 @@ export function FacilioBookingForm({ unitType, resourceId, resourceLabel, onDone
       else if (f.type === 'DECISION_BOX') extraValues[f.name] = raw === '1';
       else extraValues[f.name] = raw;
     }
-    const res = await createSpaceBooking({
-      unitType,
-      resourceId,
-      resourceLabel,
-      dateISO: date,
-      startMinutes: start,
-      endMinutes: end,
-      name: name.trim() || undefined,
-      description: description.trim() || undefined,
-      host: host || undefined,
-      reservedBy: reservedBy || undefined,
-      noOfAttendees: Number(noOfAttendees) || 1,
-      formId: form?.id,
-      extras: extraValues,
-    });
-    setSubmitting(false);
-    if (!res.ok) setError(res.reason ?? 'Booking failed.');
-    else if (res.id) onDone?.(res.id);
+    // Whatever happens, the button comes back: an error thrown on the way (a dropped connection, a
+    // bridge that rejects) used to skip the line that cleared "Saving…", and the form sat on it for
+    // good with no way to retry.
+    setSubmitting(true);
+    let res: Awaited<ReturnType<typeof createSpaceBooking>>;
+    try {
+      res = await createSpaceBooking({
+        unitType,
+        resourceId,
+        resourceLabel,
+        dateISO: date,
+        startMinutes: start,
+        endMinutes: end,
+        name: name.trim() || undefined,
+        description: description.trim() || undefined,
+        host: host || undefined,
+        reservedBy: reservedBy || undefined,
+        noOfAttendees: Number(noOfAttendees) || 1,
+        formId: form?.id,
+        extras: extraValues,
+      });
+    } catch (err) {
+      setError(`Booking failed: ${(err as Error)?.message || 'the request did not go through'}. Nothing was booked — you can try again.`);
+      return;
+    } finally {
+      setSubmitting(false);
+    }
+    if (!res.ok) {
+      setError(res.reason ?? 'Booking failed.');
+      return;
+    }
+    // Booked — with or without an id back. A success that carried no id used to change nothing on
+    // screen, so people pressed Submit again and booked the same space twice.
+    setBooked({ id: res.id ?? null });
+    onDone?.(res.id ?? null);
   }
 
   const contactSelect = (value: number | '', onChange: (v: number | '') => void, label: string, required?: boolean) => (
@@ -610,14 +635,21 @@ export function FacilioBookingForm({ unitType, resourceId, resourceLabel, onDone
         ))}
 
       {error && <div style={S.error}>{error}</div>}
+      {booked && (
+        <div role="status" style={S.success}>
+          {booked.id != null
+            ? `Booked — booking #${booked.id}.`
+            : "Booked. Facilio didn't send back the booking's number, so check your bookings rather than submitting again."}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
         {onCancel && (
           <button type="button" style={{ ...S.button, background: '#fff', color: '#1c2733', border: '1.5px solid #d5dce4' }} onClick={onCancel} disabled={submitting}>
-            Cancel
+            {booked ? 'Close' : 'Cancel'}
           </button>
         )}
-        <button type="button" style={S.button} onClick={onSubmit} disabled={submitting}>
-          {submitting ? 'Saving…' : 'Submit Details'}
+        <button type="button" style={S.button} onClick={onSubmit} disabled={submitting || !!booked}>
+          {submitting ? 'Saving…' : booked ? 'Booked' : 'Submit Details'}
         </button>
       </div>
     </div>

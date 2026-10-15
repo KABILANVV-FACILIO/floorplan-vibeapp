@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
-import { floorMeta, isBookable, visibleUnits } from '../../state/selectors';
+import { canSee, floorMeta, isBookable, visibleUnits } from '../../state/selectors';
 import { isRoomLike } from '../../lib/types';
 import { fitView, fmtTime, polygonCentroid, zoomAt } from '../../lib/geometry';
 import type { ViewTransform } from '../../lib/geometry';
@@ -14,6 +14,7 @@ import { MobileSpacesSheet } from './MobileSpacesSheet';
 import { MobileMyBookings } from './MobileMyBookings';
 import { MobileDatePicker } from './MobileDatePicker';
 import { FloorplanSkeleton } from '../canvas/FloorplanSkeleton';
+import { EmptyFloorArt } from '../primitives/EmptyFloorArt';
 import { markerStyle } from '../../lib/unitStatus';
 import { MARKER_ICONS } from '../canvas/markerIcons';
 import { contactName, myAssignedUnit } from '../../state/selectors';
@@ -107,6 +108,8 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
               ) : (
                 <span className={styles.dateStatic}>{new Date(state.date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span>
               )}
+              {/* Your own bookings, from the calendar — so the Bookings right, as the web tab is. */}
+              {canSee(state, 'bookings') && (
               <button className={styles.qrBtn} onClick={() => setMyBookingsOpen(true)} data-tip="My bookings" aria-label="My bookings">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="3" y="4" width="18" height="17" rx="2" />
@@ -115,6 +118,7 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
                 </svg>
                 {myBookingsCount > 0 && <span className={styles.iconBadge}>{myBookingsCount}</span>}
               </button>
+              )}
               <button className={styles.qrBtn} onClick={() => setQrOpen(true)} data-tip="Scan a space QR" aria-label="Scan a space QR">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="3" y="3" width="7" height="7" rx="1" />
@@ -168,13 +172,19 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
               <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
                 <FloorplanSkeleton />
               </div>
+            ) : !canSee(state, 'map') ? (
+              // The mobile app IS the floorplan — there is no other tab to send someone to.
+              <div className={styles.noPlan}>
+                <EmptyFloorArt size={140} />
+                <div className={styles.noPlanTitle}>Floorplans aren't available to your role</div>
+                <div className={styles.noPlanSub}>Ask your workplace admin if you need access.</div>
+              </div>
             ) : hasPlan ? (
               <MobileMap rooms={rooms} markers={markers} legend={legend} onOpenSpaces={() => setSpacesOpen(true)} />
             ) : (
+              // No edit hint: the mobile app has no edit mode, so there is nothing to point an editor at.
               <div className={styles.noPlan}>
-                <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="var(--ink-300)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M9 3L4 5v16l5-2 6 2 5-2V3l-5 2-6-2z M9 3v16M15 5v16" />
-                </svg>
+                <EmptyFloorArt size={140} />
                 <div className={styles.noPlanTitle}>No floorplan for this floor</div>
                 <div className={styles.noPlanSub}>Choose another floor from the switcher above.</div>
               </div>
