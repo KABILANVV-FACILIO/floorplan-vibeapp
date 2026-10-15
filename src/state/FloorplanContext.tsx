@@ -17,7 +17,7 @@ import { loadSettings, saveSettings, settingsFromState } from '../lib/settingsSt
 import { loadDepartmentColors, saveDepartmentColor } from '../lib/departmentColorStore';
 import { pathForView, viewFromLocation } from '../lib/routes';
 import { bootFloorCandidates, readUrlFloorId, writeUrlFloorId } from '../lib/urlFloor';
-import { persistUnits, ROOM_NOTICE_MS, ROOM_OUTLINES_FAILED_NOTICE, ROOM_READ_ONLY_HINT, savedNotice } from './persistUnits';
+import { NotSavedToOrgError, persistUnits, ROOM_NOTICE_MS, ROOM_OUTLINES_FAILED_NOTICE, ROOM_READ_ONLY_HINT, savedNotice } from './persistUnits';
 import { buildInitialState, reducer } from './reducer';
 import { useDataState } from './useDataState';
 import type { Action } from './reducer';
@@ -446,8 +446,8 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
         const outcome = await persistUnits(floorId, units, savedUnits);
         dispatch({ type: 'MARK_SAVED', floorId, units, baseline: savedUnits, retry: outcome.roomsToRetry });
         if (outcome.roomsNotWritten.length) showSavedNotice(outcome);
-      } catch {
-        showToast('Could not save changes');
+      } catch (err) {
+        showToast(err instanceof NotSavedToOrgError ? err.message : 'Could not save changes', err instanceof NotSavedToOrgError ? ROOM_NOTICE_MS : undefined);
       } finally {
         dispatch({ type: 'SET_SAVING', value: false });
       }
@@ -1407,7 +1407,9 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
         dispatch({ type: 'MARK_SAVED', floorId, units, baseline: savedUnits, retry: outcome.roomsToRetry });
         showSavedNotice(outcome);
       } catch (err) {
-        showToast('Could not save changes');
+        // The browser-only case says where the changes went and how to save them properly; a
+        // generic "could not save" would read as if the edit were lost.
+        showToast(err instanceof NotSavedToOrgError ? err.message : 'Could not save changes', err instanceof NotSavedToOrgError ? ROOM_NOTICE_MS : undefined);
       } finally {
         dispatch({ type: 'SET_SAVING', value: false });
       }

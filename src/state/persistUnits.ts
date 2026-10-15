@@ -1,8 +1,24 @@
 import { dataSource } from '../lib/dataSource';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
+import { isVibeApp } from '../lib/vibe';
 import { isOrgZoneUnit, roomOutlineChanges, saveFloorplanMarkers, saveFloorplanZones } from '../lib/facilioApiDataSource';
 import { ROOM_OUTLINE_WRITES } from '../lib/featureFlags';
 import type { Unit } from '../lib/types';
+
+/**
+ * A save that reached this browser and nothing else, because the page has no way to write to the
+ * org. Its message is meant for the person who pressed Save, so callers show it as it stands.
+ *
+ * Desk positions reach Facilio through the host bridge (`invokeFacilioAPI`), which exists only when
+ * the app is opened inside Facilio or the mobile app. A preview link opened in its own tab has no
+ * host, so there is nowhere to send them — and it used to say "Changes saved" anyway.
+ */
+export class NotSavedToOrgError extends Error {
+  constructor() {
+    super('Saved in this browser only. To save to the floor, open Floorplan Manager from inside Facilio.');
+    this.name = 'NotSavedToOrgError';
+  }
+}
 
 /** What an explicit save could not get into the org although the save as a whole went through. */
 export interface PersistOutcome {
@@ -51,7 +67,13 @@ export interface PersistOutcome {
  */
 export async function persistUnits(floorId: string, units: Unit[], baseline?: Unit[]): Promise<PersistOutcome> {
   await dataSource.saveUnits(floorId, units);
-  if (!isFacilioApiConfigured) return { roomsNotWritten: [], roomsToRetry: [] };
+  if (!isFacilioApiConfigured) {
+    // Deployed, but with no host to write through: the browser copy is all that happened, and the
+    // contract above says a write that persisted nothing is not called a save. Plain local dev
+    // (`npm run dev`, no backend) lands here too, and there a browser-only save IS the whole job.
+    if (isVibeApp) throw new NotSavedToOrgError();
+    return { roomsNotWritten: [], roomsToRetry: [] };
+  }
   const result = await saveFloorplanMarkers(floorId, units);
   const hasPointUnits = units.some((u) => u.geom.kind === 'point' && u.type !== 'amenity');
   if (hasPointUnits && result.plansSynced === 0 && result.skipped.length) {
