@@ -1536,10 +1536,18 @@ export async function uploadFloorplanFile(
   floorId: string,
   planId: PlanId,
   file: File,
-  imageDimensions?: { width: number; height: number }
+  imageDimensions?: { width: number; height: number },
+  /**
+   * Cancel. A request already sent can't be called back, so this is checked BETWEEN the steps:
+   * before the file goes up, and — the step that matters — before the file becomes this floor's
+   * plan. Cancelled after the upload but before the attach, the file sits unused in the org's
+   * file store and the floor keeps the plan it had.
+   */
+  signal?: AbortSignal
 ): Promise<FloorplanFileUploadResult> {
   if (!isFacilioApiConfigured) throw new Error('facilio-api: not configured');
   if (!isRealFloorId(floorId)) throw new Error(`facilio-api: ${floorId} is not an org floor — nothing to attach a plan to`);
+  throwIfAborted(signal);
 
   const uploadRes = await facilioApi.uploadFiles([file]);
   if (uploadRes.error || !uploadRes.ids?.length) {
@@ -1552,6 +1560,7 @@ export async function uploadFloorplanFile(
   // Also grab the server-RENDERED image (no fetchOriginal) — the display source for files the
   // browser can't draw (PDF, DWG/DXF). Null when the server didn't rasterize it.
   const serverImageUrl = await fetchRenderedFileImage(fileId);
+  throwIfAborted(signal);
 
   let attachedToFloorPlan = false;
   let attachError: string | undefined;
@@ -1593,6 +1602,11 @@ export async function uploadFloorplanFile(
   }
 
   return { fileId, previewUrl, serverImageUrl, attachedToFloorPlan, attachError };
+}
+
+/** Thrown by a step that finds its work cancelled — told apart from a failure by its name. */
+export function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException('cancelled', 'AbortError');
 }
 
 /**

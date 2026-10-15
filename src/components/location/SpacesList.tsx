@@ -1,5 +1,6 @@
 import type { DragEvent as ReactDragEvent } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
+import { activateOnKey } from '../../lib/keyboard';
 import { contactName, moduleEnabled } from '../../state/selectors';
 import { unitSortCompare } from '../../lib/geometry';
 import { unitStatus } from '../../lib/unitStatus';
@@ -184,9 +185,22 @@ function SpaceRow({ unit }: { unit: Unit }) {
   const traceable = unplaced && isEdit && isRoomLike(unit.type);
   // Click-to-arm alternative to dragging: arm the record, then click the plan to place it.
   const placing = state.placingUnitId === unit.id;
+  const onActivate = unplaced
+    ? draggable || traceable
+      ? () => actions.setPlacingUnit(placing ? null : unit.id)
+      : undefined
+    : // A placed record is on the plan: centre on it and select it, so clicking the row and
+      // clicking the marker land in the same place.
+      () => actions.focusUnit(unit.id, state.stage.w, state.stage.h);
   return (
     <div
       className={[styles.row, selected ? styles.rowSelected : ''].join(' ')}
+      // A row that does something is reachable with Tab and works with Enter or Space, as a click.
+      role={onActivate ? 'button' : undefined}
+      tabIndex={onActivate ? 0 : undefined}
+      aria-pressed={onActivate && unplaced ? placing : undefined}
+      aria-current={selected ? 'true' : undefined}
+      onKeyDown={onActivate ? activateOnKey(onActivate) : undefined}
       style={
         unplaced || traceable
           ? placing
@@ -207,15 +221,7 @@ function SpaceRow({ unit }: { unit: Unit }) {
             }
           : undefined
       }
-      onClick={
-        unplaced
-          ? draggable || traceable
-            ? () => actions.setPlacingUnit(placing ? null : unit.id)
-            : undefined
-          // A placed record is on the plan: centre on it and select it, so clicking the row and
-          // clicking the marker land in the same place.
-          : () => actions.focusUnit(unit.id, state.stage.w, state.stage.h)
-      }
+      onClick={onActivate}
       data-tip={
         draggable
           ? 'Drag onto the floorplan, or click and then click the map'

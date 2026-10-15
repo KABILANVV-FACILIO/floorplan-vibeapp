@@ -10,6 +10,7 @@ import { renderPdfToDataUrl } from '../../lib/pdfPreview';
 import { isFacilioApiConfigured } from '../../lib/facilioApi';
 import { uploadFloorplanFile } from '../../lib/facilioApiDataSource';
 import { measureImageDataUrl } from '../../lib/geoReference';
+import { activateOnKey } from '../../lib/keyboard';
 import styles from './FloorUploadModal.module.css';
 
 const ACCEPT = '.png,.jpg,.jpeg,.pdf,.dwg,.dxf,image/png,image/jpeg,application/pdf';
@@ -20,10 +21,53 @@ export function FloorUploadModal() {
   const [status, setStatus] = useState<'idle' | 'working' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
+  /**
+   * The upload in progress, if any. One at a time: a second file dropped mid-upload used to start
+   * a second run, and whichever finished last decided the floor's plan. Held in a ref, not state,
+   * so two drops in the same tick can't both see "nothing running". This component stays mounted
+   * while the dialog is closed (it renders nothing then), so a cancelled run still settling is
+   * remembered across a reopen.
+   */
+  const runRef = useRef<AbortController | null>(null);
 
   if (!state.uploadOpen) return null;
+  const working = status === 'working';
+
+  /**
+   * Cancel, the close button, Escape and the backdrop all land here. A run in progress is told to
+   * stop: whatever step it is on finishes (a request already sent can't be recalled), and it
+   * goes no further — see uploadFloorplanFile for exactly what that leaves in the org.
+   */
+  function close() {
+    const run = runRef.current;
+    if (run && !run.signal.aborted) {
+      run.abort();
+      actions.showToast(`Upload of ${fileName ?? 'the file'} cancelled`);
+    }
+    setStatus('idle');
+    setError(null);
+    actions.setUploadOpen(false);
+  }
 
   async function handleFile(file: File) {
+    if (runRef.current) {
+      actions.showToast(
+        runRef.current.signal.aborted
+          ? 'The cancelled upload is still stopping — try again in a moment'
+          : `Still working on ${fileName ?? 'the last file'} — wait for it, or cancel it first`
+      );
+      return;
+    }
+    const run = new AbortController();
+    runRef.current = run;
+    try {
+      await uploadOne(file, run.signal);
+    } finally {
+      if (runRef.current === run) runRef.current = null;
+    }
+  }
+
+  async function uploadOne(file: File, signal: AbortSignal) {
     setFileName(file.name);
     setStatus('working');
     setError(null);
@@ -55,6 +99,8 @@ export function FloorUploadModal() {
       } else {
         throw new Error('Unsupported file type');
       }
+      // Cancelled while it was still being read here: nothing has left the browser yet.
+      if (signal.aborted) return;
 
       let uploadedFileId: number | null = null;
       let attachedToFloorPlan = false;
@@ -65,7 +111,16 @@ export function FloorUploadModal() {
           // Measured off the rendered preview when we have one (sizes the synthetic
           // geo-reference quad). No local render (CAD failed) → skip; the server sizes it.
           const dimensions = previewUrl ? await measureImageDataUrl(previewUrl).catch(() => undefined) : undefined;
-          const uploaded = await uploadFloorplanFile(state.floorId, state.planId, file, dimensions);
+          const uploaded = await uploadFloorplanFile(state.floorId, state.planId, file, dimensions, signal);
+          if (signal.aborted && uploaded.attachedToFloorPlan) {
+            // The cancel arrived while the floor's plan record was already being written: the org
+            // has the new plan now. Showing the old one here would be the one wrong answer.
+            const shown = isPlainImage ? uploaded.previewUrl : (previewUrl ?? uploaded.serverImageUrl);
+            if (shown) actions.setFloorImage(state.floorId, state.planId, shown);
+            actions.showToast(`Too late to cancel — ${file.name} was already saved as this floor's plan`);
+            return;
+          }
+          if (signal.aborted) return;
           uploadedFileId = uploaded.fileId;
           attachedToFloorPlan = uploaded.attachedToFloorPlan;
           // Plain image: use the round-tripped original (proves the real round-trip).
@@ -80,6 +135,8 @@ export function FloorUploadModal() {
             console.warn('[FloorUploadModal] Uploaded to Facilio but could not attach to this floor\'s indoorfloorplan record:', uploaded.attachError);
           }
         } catch (uploadErr) {
+          // Stopped between steps by Cancel — not a failure, and nothing to show.
+          if (signal.aborted) return;
           // The org write failing used to be a console warning only, after which the success path
           // still toasted "Floorplan updated" — so a plan that never reached Facilio (the SDK
           // rejects anything over 10 MB outright) looked saved until someone else opened the floor.
@@ -131,6 +188,7 @@ export function FloorUploadModal() {
         actions.showToast(`Floorplan updated from ${file.name} — no mappable CAD metadata found`);
       }
     } catch (err) {
+      if (signal.aborted) return;
       setStatus('error');
       const msg = (err as Error).message;
       setError(cad || msg === 'cad-render-failed' ? 'Could not render this CAD file in the browser, and the server has no image for it. You can still store it and view it in AutoCAD.' : msg || 'Could not read this file.');
@@ -140,18 +198,29 @@ export function FloorUploadModal() {
   function onDrop(e: ReactDragEvent) {
     e.preventDefault();
     const file = e.dataTransfer.files?.[0];
-    if (file) handleFile(file);
+    if (file) void handleFile(file);
   }
 
+  const browse = () => {
+    if (!working) inputRef.current?.click();
+  };
+
   return (
-    <Modal onClose={() => actions.setUploadOpen(false)} width={460}>
-      <ModalHeader title="Upload floorplan" subtitle="PNG, JPG, PDF, DWG, or DXF" onClose={() => actions.setUploadOpen(false)} />
+    <Modal onClose={close} width={460}>
+      <ModalHeader title="Upload floorplan" subtitle="PNG, JPG, PDF, DWG, or DXF" onClose={close} />
       <div className={styles.body}>
         <div
           className={styles.dropzone}
+          // The drop zone is also the "browse" button — reachable with Tab, opened with Enter/Space.
+          role="button"
+          tabIndex={0}
+          aria-disabled={working || undefined}
+          aria-label="Choose a floorplan file"
+          style={working ? { opacity: 0.6, cursor: 'progress' } : undefined}
           onDragOver={(e) => e.preventDefault()}
           onDrop={onDrop}
-          onClick={() => inputRef.current?.click()}
+          onClick={browse}
+          onKeyDown={activateOnKey(browse)}
         >
           <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="var(--ink-400)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -164,9 +233,13 @@ export function FloorUploadModal() {
             type="file"
             accept={ACCEPT}
             className={styles.hiddenInput}
+            disabled={working}
+            tabIndex={-1}
             onChange={(e) => {
               const file = e.target.files?.[0];
-              if (file) handleFile(file);
+              // Cleared, so choosing the same file again (after a failure) still fires a change.
+              e.target.value = '';
+              if (file) void handleFile(file);
             }}
           />
         </div>
@@ -178,8 +251,8 @@ export function FloorUploadModal() {
         </p>
       </div>
       <ModalFooter>
-        <Button variant="secondary" onClick={() => actions.setUploadOpen(false)}>
-          Cancel
+        <Button variant="secondary" onClick={close}>
+          {working ? 'Cancel upload' : 'Cancel'}
         </Button>
       </ModalFooter>
     </Modal>

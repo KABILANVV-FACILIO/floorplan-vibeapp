@@ -1,4 +1,5 @@
 import { useFloorplanData } from '../../state/FloorplanContext';
+import { activateOnKey } from '../../lib/keyboard';
 import type { FloorSearchHit } from '../../lib/types';
 import styles from './PortfolioTree.module.css';
 import search from './SpacesList.module.css';
@@ -123,7 +124,11 @@ export function PortfolioTree() {
               key={hit.floorId}
               className={[styles.row, state.floorId === hit.floorId ? styles.rowActive : ''].join(' ')}
               style={{ paddingLeft: 8 }}
+              role="button"
+              tabIndex={0}
+              aria-current={state.floorId === hit.floorId ? 'true' : undefined}
               onClick={() => void openHit(hit)}
+              onKeyDown={activateOnKey(() => void openHit(hit))}
               // The whole path: two floors can share a name, and the site and building line is the
               // first thing cut off in a narrow panel.
               data-tip={[hit.siteName, hit.buildingName, hit.floorName].filter(Boolean).join(' › ')}
@@ -145,7 +150,13 @@ export function PortfolioTree() {
               key={n.id}
               className={[styles.row, n.active ? styles.rowActive : ''].join(' ')}
               style={{ paddingLeft: n.pad }}
+              // Tab to a row, Enter or Space to open it — a site or building expands, a floor loads.
+              role="button"
+              tabIndex={0}
+              aria-expanded={n.hasChildren ? n.expanded : undefined}
+              aria-current={n.active ? 'true' : undefined}
               onClick={n.onClick}
+              onKeyDown={activateOnKey(n.onClick)}
               data-tip={n.name}
               data-tip-overflow=""
             >

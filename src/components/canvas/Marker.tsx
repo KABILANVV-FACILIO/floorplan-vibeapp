@@ -1,10 +1,11 @@
 import { memo } from 'react';
-import type { CSSProperties, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from 'react';
+import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react';
 import type { Unit, PointGeom } from '../../lib/types';
 import type { MarkerModel } from '../../lib/markerModel';
 import type { LabelPlacement, LabelPos, LabelTypography } from '../../lib/labelLayout';
 import { CARD_GAP, CARD_PAD_X, CARD_PAD_Y, DEFAULT_LABEL_TYPOGRAPHY, HALO_TEXT, cardOffset } from '../../lib/labelLayout';
 import { MARKER_ICONS as ICONS } from './markerIcons';
+import { activateOnKey } from '../../lib/keyboard';
 import styles from './Marker.module.css';
 
 /**
@@ -13,7 +14,8 @@ import styles from './Marker.module.css';
  * decides. One stable object for every marker, so a change of mode never re-renders them for it.
  */
 export interface MarkerHandlers {
-  onClick(unit: Unit, e: ReactMouseEvent): void;
+  /** A click, or Enter / Space on a marker that has the keyboard focus. */
+  onClick(unit: Unit, e: ReactMouseEvent | ReactKeyboardEvent): void;
   onMouseDown(unit: Unit, e: ReactMouseEvent): void;
   onDragOver(unit: Unit, e: ReactDragEvent): void;
   onDragLeave(unit: Unit): void;
@@ -88,7 +90,14 @@ export const Marker = memo(function Marker({
       )}
       <div
         data-tip={title}
+        // A keyboard reaches a desk the way a mouse does: Tab to it, Enter or Space to select it.
+        role={handlers ? 'button' : undefined}
+        tabIndex={handlers ? 0 : undefined}
+        aria-label={title}
+        data-unit-id={unit.id}
+        className={styles.chip}
         onClick={handlers ? (e) => handlers.onClick(unit, e) : undefined}
+        onKeyDown={handlers ? activateOnKey((e) => handlers.onClick(unit, e)) : undefined}
         onMouseDown={handlers && draggable ? (e) => handlers.onMouseDown(unit, e) : undefined}
         onDragOver={handlers ? (e) => handlers.onDragOver(unit, e) : undefined}
         onDragLeave={handlers ? () => handlers.onDragLeave(unit) : undefined}
