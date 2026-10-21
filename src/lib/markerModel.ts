@@ -1,5 +1,6 @@
 import type { AppState } from '../state/types';
-import type { PointGeom, Unit } from './types';
+import type { PointGeom, ResponderRoleDef, Unit } from './types';
+import { responderRolesFor, rolesText } from './firstResponders';
 import { markerStyle, unitStatus } from './unitStatus';
 import type { MarkerStyle } from './unitStatus';
 import { contactName, markerSubTexts, myAssignedUnit } from '../state/selectors';
@@ -31,6 +32,8 @@ export interface MarkerModel {
   isBusy: boolean;
   /** Edit mode, Select tool: the chip can be dragged to reposition it. */
   draggable: boolean;
+  /** The occupant is a first aider, a floor warden, or both — the chip carries their badge. */
+  responderRoles: ResponderRoleDef[];
 }
 
 export function markerModel(state: AppState, unit: Unit, opts: { personal?: boolean } = {}): MarkerModel {
@@ -39,7 +42,11 @@ export function markerModel(state: AppState, unit: Unit, opts: { personal?: bool
   const { holder, dept } = markerSubTexts(state, unit);
   // The status already names the holder in Assign view ("Assigned · Amrithya"), so only the
   // department is added — appending the whole holder line repeated the name.
-  const title = `${unit.label}${unit.room ? ' · ' + unit.room : ''} — ${status.text}${holder && dept ? ` · ${dept}` : ''}`;
+  const responderRoles = responderRolesFor(state, unit);
+  // The badge says it in a glyph; the tooltip (and a screen reader, which reads it as the chip's
+  // name) says it in words.
+  const roleText = rolesText(responderRoles);
+  const title = `${unit.label}${unit.room ? ' · ' + unit.room : ''} — ${status.text}${holder && dept ? ` · ${dept}` : ''}${roleText ? ` · ${roleText}` : ''}`;
   return {
     unit,
     geom: unit.geom as PointGeom,
@@ -53,5 +60,6 @@ export function markerModel(state: AppState, unit: Unit, opts: { personal?: bool
     isHighlighted: state.highlightUnitId === unit.id,
     isBusy: state.busyUnitId === unit.id,
     draggable: state.mode === 'edit' && state.tool === 'select',
+    responderRoles,
   };
 }

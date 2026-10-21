@@ -1,0 +1,3 @@
+id,name,plural,color,icon,shape,badge_text,sort_order,updated_at,updated_by
+firstAider,First aider,First aiders,#00843D,cross,square,,1,seed,seed
+floorWarden,Floor warden,Floor wardens,#C8102E,warden,circle,,2,seed,seed

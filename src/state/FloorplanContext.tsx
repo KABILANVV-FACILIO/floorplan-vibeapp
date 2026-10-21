@@ -4,7 +4,7 @@ import { dataSource, clearLocalData } from '../lib/dataSource';
 import type { CreateSpaceLoc } from '../lib/dataSource';
 import { PORTFOLIO as MOCK_PORTFOLIO, EMPLOYEES as MOCK_EMPLOYEES, seedBookings, seedUnits, seedAssignments } from '../lib/mockData';
 import { floorImageKey, isRoomLike, planForPlacement, resolveMarkerDef, TYPE_META, unitOnPlan } from '../lib/types';
-import type { AmenityIcon, Booking, FloorSearchHit, MarkerDef, ModuleKey, OrgRole, PlanId, Site, Surface, SurfaceAccess, Unit, UnitType } from '../lib/types';
+import type { AmenityIcon, Booking, FirstResponder, FloorSearchHit, MarkerDef, ModuleKey, OrgRole, PlanId, ResponderRoleDef, Site, Surface, SurfaceAccess, Unit, UnitType } from '../lib/types';
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
@@ -14,6 +14,8 @@ import { personDisplayName } from '../lib/displayNames';
 import { measureImageDataUrl } from '../lib/geoReference';
 import { listFloorplanFloorIds, loadFloorplanFile, persistFloorplanFile } from '../lib/floorplanFileStore';
 import { loadSettings, saveSettings, settingsFromState } from '../lib/settingsStore';
+import { loadResponders, saveResponderRoles, saveResponders } from '../lib/responderStore';
+import { sanitizeResponders, sanitizeRoles } from '../lib/firstResponders';
 import { loadDepartmentColors, saveDepartmentColor } from '../lib/departmentColorStore';
 import { pathForView, viewFromLocation } from '../lib/routes';
 import { bootFloorCandidates, readUrlFloorId, writeUrlFloorId } from '../lib/urlFloor';
@@ -334,6 +336,24 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     dispatch({ type: 'SHOW_TOAST', message });
     if (toastTimer) clearTimeout(toastTimer);
     toastTimer = setTimeout(() => dispatch({ type: 'SHOW_TOAST', message: null }), ms);
+  };
+  /**
+   * One responder write to the app database (lib/responderStore), signed with who made it. A
+   * refused write is said out loud and the database re-read, so the screen never keeps showing a
+   * change that was not stored.
+   */
+  const persistResponders = async (write: (updatedBy: string) => Promise<void>, what: string) => {
+    const viewer = await fetchCurrentPeopleId().catch(() => null);
+    const updatedBy = viewer ? (state.employees.find((e) => e.id === String(viewer))?.name ?? `people #${viewer}`) : '';
+    try {
+      await write(updatedBy);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`[responders] the ${what} were not saved:`, (err as Error)?.message ?? err);
+      const stored = await loadResponders();
+      if (stored) dispatch({ type: 'RESPONDERS_LOADED', ...stored });
+      showToast(stored ? `Couldn't save the ${what}. Showing what is stored.` : `Couldn't save the ${what}. Try again.`, 4800);
+    }
   };
   /** The toast for a Save that went through — held longer when it names room changes left behind. */
   const showSavedNotice = (outcome: Awaited<ReturnType<typeof persistUnits>>) =>
@@ -1118,6 +1138,23 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     setBookField: (field: 'bookBy' | 'bookPurpose' | 'bookNotes', value: string) => dispatch({ type: 'SET_BOOK_FIELD', field, value }),
     /** The type the desk labels are drawn in — saved with the other settings (see settingsStore). */
     setLabelStyle: (style: LabelStyle) => dispatch({ type: 'SET_LABEL_STYLE', style }),
+    /**
+     * The org's first responders. Written to the app database when it holds them
+     * (state.respondersInDb), else saved with the other settings (see lib/responderStore).
+     */
+    setFirstResponders: (responders: FirstResponder[]) => {
+      dispatch({ type: 'SET_FIRST_RESPONDERS', responders });
+      if (!state.respondersInDb) return;
+      const clean = sanitizeResponders(responders, state.responderRoles.map((r) => r.id));
+      void persistResponders((by) => saveResponders(clean, by), 'first responders');
+    },
+    /** The responder roles and their badges — stored where the responders are. */
+    setResponderRoles: (roles: ResponderRoleDef[]) => {
+      dispatch({ type: 'SET_RESPONDER_ROLES', roles });
+      if (!state.respondersInDb) return;
+      const clean = sanitizeRoles(roles);
+      void persistResponders((by) => saveResponderRoles(clean, by), 'responder roles');
+    },
     cancelBooking: async (id: string) => {
       // Persist BEFORE dispatching: CANCEL_BOOKING bumps bookingsNonce, which refetches the
       // calendar — if the store still held the booking at that moment it would resurrect.
@@ -1537,6 +1574,14 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
       });
   }, []);
 
+  // The first responders, from the app database when there is one (lib/responderStore). Read in
+  // parallel with the settings blob; once it has answered, the blob's copy is ignored.
+  useEffect(() => {
+    void loadResponders().then((data) => {
+      if (data) dispatch({ type: 'RESPONDERS_LOADED', ...data });
+    });
+  }, []);
+
   // Persist settings (as one JSON string) whenever a config slice changes — debounced so a
   // color-picker drag or rapid toggles collapse into a single write. Skipped until the initial
   // load has run, so we never clobber stored config with defaults before it arrives.
@@ -1553,6 +1598,9 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
     state.moduleColors,
     state.colorBy,
     state.labelStyle,
+    // Only while the blob is their home; the database is written by the actions themselves.
+    state.respondersInDb ? null : state.firstResponders,
+    state.respondersInDb ? null : state.responderRoles,
     state.slotGranularity,
     state.bookingModule,
     state.customMarkers,

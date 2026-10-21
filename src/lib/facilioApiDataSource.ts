@@ -1065,6 +1065,9 @@ export function mapEmployee(e: any): Employee {
     hrmsEmployeeId: firstString(e, HRMS_ID_KEYS),
     email: firstString(e, ['email', 'emailId', 'primaryEmail']),
     department: typeof dept === 'string' ? dept : (dept?.displayName ?? dept?.name ?? undefined),
+    // The person record's own number fields (V3PeopleContext: `mobile`, `phone`) — the number a
+    // first responder is listed and printed with.
+    mobile: firstString(e, ['mobile', 'phone']),
   };
 }
 

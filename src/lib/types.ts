@@ -244,6 +244,77 @@ export interface Employee {
   email?: string;
   /** The person's department, distinct from the desk's — a desk can be lent to another team. */
   department?: string;
+  /** The person record's own `mobile` (falling back to `phone`) — the number a first responder is listed with. */
+  mobile?: string;
+}
+
+/**
+ * The people a floor turns to in an emergency — the lists on the notice by the lifts. The roles
+ * are the org's own: first aider and floor warden come built in, and Settings › First responders
+ * adds more (fire marshal, AED trained, radiation protection…), each with its own badge.
+ */
+export type ResponderRole = string;
+
+/** The white symbol on a badge. `text` draws the role's own one or two letters instead. */
+export type ResponderIcon = 'cross' | 'warden' | 'flame' | 'aed' | 'shield' | 'megaphone' | 'radiation' | 'drop' | 'star' | 'phone' | 'bell' | 'text';
+
+export const RESPONDER_ICONS: { id: ResponderIcon; name: string }[] = [
+  { id: 'cross', name: 'First aid cross' },
+  { id: 'warden', name: 'Warden W' },
+  { id: 'flame', name: 'Flame' },
+  { id: 'aed', name: 'Defibrillator' },
+  { id: 'shield', name: 'Shield' },
+  { id: 'megaphone', name: 'Megaphone' },
+  { id: 'radiation', name: 'Radiation' },
+  { id: 'drop', name: 'Spill' },
+  { id: 'star', name: 'Star' },
+  { id: 'phone', name: 'Phone' },
+  { id: 'bell', name: 'Alarm bell' },
+  { id: 'text', name: 'Letters' },
+];
+
+/** The badge's outline. A second cue besides colour, so roles stay apart for colour-blind readers. */
+export type ResponderShape = 'square' | 'circle' | 'diamond';
+
+export interface ResponderRoleDef {
+  id: ResponderRole;
+  /** One person: "First aider". */
+  name: string;
+  /** The list heading: "First aiders". */
+  plural: string;
+  color: string;
+  icon: ResponderIcon;
+  /** One or two letters, when `icon` is `text`. */
+  text?: string;
+  shape: ResponderShape;
+  /** First aider and floor warden: always present, and not deletable. */
+  builtIn?: boolean;
+}
+
+export const BUILTIN_RESPONDER_ROLES: ResponderRoleDef[] = [
+  // ISO 7010 "safe condition" green — the first-aid sign's own.
+  { id: 'firstAider', name: 'First aider', plural: 'First aiders', color: '#00843D', icon: 'cross', shape: 'square', builtIn: true },
+  // Fire-safety red, as on a warden's helmet and vest.
+  { id: 'floorWarden', name: 'Floor warden', plural: 'Floor wardens', color: '#C8102E', icon: 'warden', shape: 'circle', builtIn: true },
+];
+
+/** The colours a role can take: dark enough for a white symbol on top, and apart from each other. */
+export const RESPONDER_COLORS = ['#00843D', '#C8102E', '#D9480F', '#B7791F', '#0059D6', '#1F3A93', '#6D28D9', '#B5179E', '#0E7C86', '#4B5563'] as const;
+
+/**
+ * A responder is a LINK to an employee record and nothing more: who they are — name, department,
+ * mobile — is read off the record (state.employees), so the list never drifts from the directory.
+ */
+export interface FirstResponder {
+  /** The person's employee id — the id a desk's `employee` field holds. */
+  employeeId: string;
+  /**
+   * Their name, from the employee record whenever the directory has it (see withRecordNames); the
+   * stored copy only stands in before the directory has loaded.
+   */
+  name: string;
+  /** One person can be both, as on most notices. Never empty. */
+  roles: ResponderRole[];
 }
 
 export interface Booking {

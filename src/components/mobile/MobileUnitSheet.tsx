@@ -5,6 +5,8 @@ import { personDisplayName } from '../../lib/displayNames';
 import { unitStatus } from '../../lib/unitStatus';
 import { fmtTime } from '../../lib/geometry';
 import { resolveMarkerDef, TYPE_META } from '../../lib/types';
+import { responderRolesFor, rolesText } from '../../lib/firstResponders';
+import { ResponderGlyph } from '../canvas/ResponderBadge';
 import { useSheetDrag } from './useSheetDrag';
 import styles from './MobileUnitSheet.module.css';
 
@@ -67,6 +69,15 @@ export function MobileUnitSheet() {
                 : TYPE_META[unit.type].name}
               {unit.room ? ` · ${unit.room}` : ''}
             </div>
+            {responderRolesFor(state, unit).length > 0 && (
+              // Who sits here, if it matters in an emergency.
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, font: '600 12px/1.3 var(--font-sans)', color: 'var(--ink-700)' }}>
+                {responderRolesFor(state, unit).map((r) => (
+                  <ResponderGlyph key={r.id} role={r} size={14} />
+                ))}
+                {rolesText(responderRolesFor(state, unit))}
+              </div>
+            )}
           </div>
           {!isAmenity && (
             <span className={styles.statusPill} style={{ background: status.bg, color: status.fg }}>

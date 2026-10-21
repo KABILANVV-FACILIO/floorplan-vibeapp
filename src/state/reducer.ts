@@ -7,6 +7,9 @@ import { seedBookings } from '../lib/mockData';
 import { viewFromLocation } from '../lib/routes';
 import type { AppState } from './types';
 import { canEdit, clampView } from './selectors';
+import { sanitizeResponders, sanitizeRoles, withRecordNames } from '../lib/firstResponders';
+import { BUILTIN_RESPONDER_ROLES } from '../lib/types';
+import type { FirstResponder, ResponderRoleDef } from '../lib/types';
 
 function todayIso(): string {
   const d = new Date();
@@ -145,6 +148,9 @@ export function buildInitialState(): AppState {
     autoMapGroups: null,
     cadAnalyses: {},
     labelStyle: DEFAULT_LABEL_STYLE,
+    firstResponders: [],
+    responderRoles: BUILTIN_RESPONDER_ROLES.map((r) => ({ ...r })),
+    respondersInDb: false,
     myDesk: null,
     floorImages: {},
     floorsWithPlans: {},
@@ -261,6 +267,9 @@ export type Action =
   | { type: 'SET_FLOOR_IMAGE_LOADING'; value: boolean }
   | { type: 'SET_MY_DESK'; myDesk: AppState['myDesk'] }
   | { type: 'SET_LABEL_STYLE'; style: LabelStyle }
+  | { type: 'SET_FIRST_RESPONDERS'; responders: FirstResponder[] }
+  | { type: 'SET_RESPONDER_ROLES'; roles: ResponderRoleDef[] }
+  | { type: 'RESPONDERS_LOADED'; roles: ResponderRoleDef[]; responders: FirstResponder[] }
   /**
    * A save finished. `units` is what was SENT (the snapshot taken when Save was pressed) and
    * `baseline` the saved snapshot it was diffed against; `retry` the ids whose write failed, kept
@@ -491,11 +500,12 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'SET_SPACE_SEARCH':
       return { ...state, spaceSearch: action.value };
     case 'PORTFOLIO_LOADED':
-      return { ...state, portfolio: action.portfolio, employees: action.employees };
+      // Responders are links to these records; their names follow the records.
+      return { ...state, portfolio: action.portfolio, employees: action.employees, firstResponders: withRecordNames(state.firstResponders, action.employees) };
     case 'EMPLOYEES_LOADED':
       // The roster on its own — Refresh re-reads it without disturbing the portfolio tree, whose
       // buildings and floors are loaded lazily as they are expanded.
-      return { ...state, employees: action.employees };
+      return { ...state, employees: action.employees, firstResponders: withRecordNames(state.firstResponders, action.employees) };
     case 'TREE_LOADING': {
       const treeLoading = { ...state.treeLoading };
       if (action.loading) treeLoading[action.id] = true;
@@ -677,6 +687,21 @@ export function reducer(state: AppState, action: Action): AppState {
         labelStyle: c.labelStyle
           ? { name: { ...DEFAULT_LABEL_STYLE.name, ...c.labelStyle.name }, detail: { ...DEFAULT_LABEL_STYLE.detail, ...c.labelStyle.detail } }
           : state.labelStyle,
+        // Cleaned on the way in: the blob is a file, and a person with no known role must not be
+        // drawn as a responder (see sanitizeResponders). A config from before the setting keeps
+        // whatever is in state. Once the app database has answered for the responders, the blob
+        // has no say at all: the two load in parallel, and whichever arrived second would win.
+        ...(state.respondersInDb
+          ? {}
+          : (() => {
+              // Roles first: a person's roles are kept only if the role still exists.
+              const roles = c.responderRoles !== undefined ? sanitizeRoles(c.responderRoles) : state.responderRoles;
+              const ids = roles.map((r) => r.id);
+              return {
+                responderRoles: roles,
+                firstResponders: withRecordNames(sanitizeResponders(c.firstResponders !== undefined ? c.firstResponders : state.firstResponders, ids), state.employees),
+              };
+            })()),
       };
     }
     case 'ADD_BOOKING':
@@ -831,6 +856,24 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, myDesk: action.myDesk };
     case 'SET_LABEL_STYLE':
       return { ...state, labelStyle: action.style };
+    case 'SET_FIRST_RESPONDERS':
+      return { ...state, firstResponders: withRecordNames(sanitizeResponders(action.responders, state.responderRoles.map((r) => r.id)), state.employees) };
+    case 'SET_RESPONDER_ROLES': {
+      // A deleted role comes off everyone who held it; a person left with no role is no longer listed.
+      const roles = sanitizeRoles(action.roles);
+      return { ...state, responderRoles: roles, firstResponders: sanitizeResponders(state.firstResponders, roles.map((r) => r.id)) };
+    }
+    case 'RESPONDERS_LOADED': {
+      // The app database's answer, cleaned like the blob's (see responderDataFrom). It is the
+      // source from here on.
+      const roles = sanitizeRoles(action.roles);
+      return {
+        ...state,
+        respondersInDb: true,
+        responderRoles: roles,
+        firstResponders: withRecordNames(sanitizeResponders(action.responders, roles.map((r) => r.id)), state.employees),
+      };
+    }
     case 'SET_SAVING':
       return { ...state, saving: action.value };
     case 'MARK_SAVED': {

@@ -16,11 +16,13 @@ import type { LabelStyle } from '../../lib/labelLayout';
 import { departmentColor, departmentsIn, DEPARTMENT_PALETTE } from '../../lib/departmentColors';
 import { departmentDisplayName } from '../../lib/displayNames';
 import styles from './SettingsScreen.module.css';
+import { FirstRespondersTab } from './FirstRespondersTab';
 
-const MODULE_TABS: { id: 'permissions' | 'modules' | 'bookings' | UnitType; name: string }[] = [
+const MODULE_TABS: { id: 'permissions' | 'modules' | 'bookings' | 'responders' | UnitType; name: string }[] = [
   { id: 'permissions', name: 'Roles & access' },
   { id: 'modules', name: 'Modules' },
   { id: 'bookings', name: 'Bookings' },
+  { id: 'responders', name: 'First responders' },
   { id: 'workstation', name: 'Desks' },
   { id: 'locker', name: 'Lockers' },
   { id: 'parking', name: 'Parking' },
@@ -48,7 +50,7 @@ export function SettingsScreen() {
         </div>
 
         <div className={styles.tabs}>
-          {MODULE_TABS.filter((t) => t.id === 'permissions' || t.id === 'modules' || t.id === 'bookings' || moduleEnabled(state, t.id)).map((t) => (
+          {MODULE_TABS.filter((t) => t.id === 'permissions' || t.id === 'modules' || t.id === 'bookings' || t.id === 'responders' || moduleEnabled(state, t.id)).map((t) => (
             <button
               key={t.id}
               className={[styles.tab, state.settingsTab === t.id ? styles.tabActive : ''].join(' ')}
@@ -65,6 +67,8 @@ export function SettingsScreen() {
           <ModulesTab />
         ) : state.settingsTab === 'bookings' ? (
           <BookingsSettingsTab />
+        ) : state.settingsTab === 'responders' ? (
+          <FirstRespondersTab />
         ) : (
           <ModuleTab type={state.settingsTab} />
         )}
@@ -175,7 +179,7 @@ function BookingModuleModal({ onClose }: { onClose: () => void }) {
  * The chrome lives here so one tab cannot drift from the others.
  */
 
-function CardHead({ title, desc, onConfigure, action = 'Configure' }: { title: string; desc: ReactNode; onConfigure: () => void; action?: string }) {
+export function CardHead({ title, desc, onConfigure, action = 'Configure' }: { title: string; desc: ReactNode; onConfigure: () => void; action?: string }) {
   return (
     <div className={styles.cardHead} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
       <div>
@@ -190,7 +194,7 @@ function CardHead({ title, desc, onConfigure, action = 'Configure' }: { title: s
 }
 
 /** One read-only line of a card: what the thing is, and what it is set to. */
-function SummaryRow({ name, desc, children }: { name: string; desc?: ReactNode; children: ReactNode }) {
+export function SummaryRow({ name, desc, children }: { name: string; desc?: ReactNode; children: ReactNode }) {
   return (
     <div className={styles.sumRow}>
       <div className={styles.sumText}>
@@ -206,7 +210,7 @@ function SummaryRow({ name, desc, children }: { name: string; desc?: ReactNode; 
  * The editing half. `changed` drives both the count and whether Save is live, so a modal that
  * changes nothing cannot be saved — there is no such thing as an empty write to confirm.
  */
-function StagedModal({
+export function StagedModal({
   title,
   subtitle,
   changed,
@@ -215,6 +219,7 @@ function StagedModal({
   onCancel,
   onSave,
   children,
+  width = 580,
 }: {
   title: string;
   subtitle: string;
@@ -224,9 +229,10 @@ function StagedModal({
   onCancel: () => void;
   onSave: () => void;
   children: ReactNode;
+  width?: number;
 }) {
   return (
-    <Modal onClose={onCancel} width={580}>
+    <Modal onClose={onCancel} width={width}>
       <ModalHeader title={title} subtitle={subtitle} onClose={onCancel} />
       <div style={{ padding: '4px 0', maxHeight: '58vh', overflowY: 'auto' }}>{children}</div>
       {refused && (

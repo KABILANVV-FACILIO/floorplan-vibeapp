@@ -51,5 +51,13 @@ export const vibe: Vibe = createVibe(serverURL ? { serverURL } : undefined);
  */
 export const FLOORPLAN_FN = 'floorplanApi';
 
+/**
+ * The Studio Function holding the org's first responders — who holds which responder role, in the
+ * app's own tables (see `functions/floorplanResponders/code.ts` and lib/responderStore). A function
+ * of its own rather than handlers on FLOORPLAN_FN: that one is not deployed, and a call that fails
+ * there trips its circuit breaker for everything it serves.
+ */
+export const RESPONDERS_FN = 'floorplanResponders';
+
 /** The org's CMMS connection — the source for real portfolio/people/asset records. */
 export const CMMS_CONNECTION = 'facilio-cmms';

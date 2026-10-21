@@ -1,4 +1,4 @@
-import type { Access, EnabledModules, MarkerDef } from './types';
+import type { Access, EnabledModules, FirstResponder, MarkerDef, ResponderRoleDef } from './types';
 import type { AppState } from '../state/types';
 import type { LabelStyle } from './labelLayout';
 import { isVibeApp, vibe } from './vibe';
@@ -44,6 +44,10 @@ export interface SettingsConfig {
   enabledModules?: EnabledModules;
   /** The type the desk labels are drawn in (Settings › Desks › Desk labels). */
   labelStyle?: LabelStyle;
+  /** The org's first aiders and floor wardens (Settings › First responders). */
+  firstResponders?: FirstResponder[];
+  /** The responder roles, built-in and the org's own, with their badges (Settings › First responders). */
+  responderRoles?: ResponderRoleDef[];
 }
 
 const LS_KEY = 'facilio_floorplan_settings_v1';
@@ -61,6 +65,8 @@ export function settingsFromState(state: AppState): SettingsConfig {
     customMarkers: state.customMarkers,
     enabledModules: state.enabledModules,
     labelStyle: state.labelStyle,
+    // Not when the app database holds them: one source, never two (see lib/responderStore).
+    ...(state.respondersInDb ? {} : { firstResponders: state.firstResponders, responderRoles: state.responderRoles }),
   };
 }
 

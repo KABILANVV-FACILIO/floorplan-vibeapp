@@ -9,6 +9,9 @@ import type { OrgRole, SurfaceAccess } from '../../lib/types';
  */
 
 vi.mock('../../state/FloorplanContext', () => ({ useFloorplanData: () => ({ state: {}, actions: {} }) }));
+// The First responders tab's people search reaches the org's data source, which loads pdf.js —
+// and pdf.js can't load without a browser's DOMMatrix. Nothing here searches for people.
+vi.mock('../../hooks/useLivePeople', () => ({ useLivePeople: () => ({ people: [], loading: false, failed: false }) }));
 
 const { RoleLookup } = await import('./SettingsScreen');
 

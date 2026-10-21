@@ -19,6 +19,9 @@ import { markerStyle } from '../../lib/unitStatus';
 import { MARKER_ICONS } from '../canvas/markerIcons';
 import { contactName, myAssignedUnit } from '../../state/selectors';
 import { departmentDisplayName } from '../../lib/displayNames';
+import { responderRolesFor, respondersOnFloor, rolesOnFloor } from '../../lib/firstResponders';
+import { ResponderBadges, ResponderGlyph } from '../canvas/ResponderBadge';
+import type { ResponderRoleDef } from '../../lib/types';
 import { floorImageKey } from '../../lib/types';
 import type { Unit } from '../../lib/types';
 import styles from './MobileApp.module.css';
@@ -44,8 +47,9 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
   const rooms = mobileUnits.filter((u) => isRoomLike(u.type) && u.geom.kind === 'poly');
   const markers = mobileUnits.filter((u) => !isRoomLike(u.type) && u.geom.kind === 'point');
 
-  const legend =
-    state.mobileTab === 'assign'
+  const onFloorResponders = respondersOnFloor(state);
+  const legend: { label: string; color: string; glyph?: ResponderRoleDef }[] = [
+    ...(state.mobileTab === 'assign'
       ? [
           { label: 'Free', color: 'var(--success-500)' },
           { label: 'Assigned', color: 'var(--blue-500)' },
@@ -53,7 +57,10 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
       : [
           { label: 'Available', color: 'var(--success-500)' },
           { label: 'Booked', color: 'var(--danger-500)' },
-        ];
+        ]),
+    // The badges the dots carry, keyed only for a role someone on this floor holds.
+    ...rolesOnFloor(onFloorResponders, state.responderRoles).map((r) => ({ label: r.name, color: r.color, glyph: r })),
+  ];
 
   const outerClass = mode === 'page' ? styles.page : mode === 'fullscreen' ? styles.fullscreen : styles.docked;
 
@@ -218,7 +225,7 @@ function MobileMap({
 }: {
   rooms: Unit[];
   markers: Unit[];
-  legend: { label: string; color: string }[];
+  legend: { label: string; color: string; glyph?: ResponderRoleDef }[];
   onOpenSpaces: () => void;
 }) {
   const { state, actions } = useFloorplanData();
@@ -433,10 +440,13 @@ function MobileMap({
                   // still using the web's bg/border colors.
                   borderRadius: '999px',
                   boxShadow: selected ? '0 0 0 3px rgba(0,89,214,0.35)' : 'var(--shadow-xs)',
+                  position: 'relative',
                 }}
               >
                 {/* initials when assigned, otherwise the type/amenity glyph */}
                 {ms.occText ?? (ms.icon ? MARKER_ICONS[ms.icon] : null)}
+                {/* The same badges as the web plan: a first aider's cross, a warden's W. */}
+                <ResponderBadges roles={responderRolesFor(state, m)} chip={22} />
               </span>
               {showLabel && (
                 <span className={styles.markerLabel}>
@@ -458,7 +468,7 @@ function MobileMap({
       <div className={styles.legend}>
         {legend.map((l) => (
           <span key={l.label} className={styles.legendChip}>
-            <span className={styles.legendDot} style={{ background: l.color }} />
+            {l.glyph ? <ResponderGlyph role={l.glyph} size={12} /> : <span className={styles.legendDot} style={{ background: l.color }} />}
             {l.label}
           </span>
         ))}

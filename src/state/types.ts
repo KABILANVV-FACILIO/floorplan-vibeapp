@@ -19,6 +19,7 @@ import type { Asset } from '../lib/assets';
 import type { ViewTransform } from '../lib/geometry';
 import type { CadGroup } from '../lib/cadAnalyze';
 import type { LabelStyle } from '../lib/labelLayout';
+import type { FirstResponder, ResponderRoleDef } from '../lib/types';
 
 export type SpaceFilter = 'all' | UnitType;
 
@@ -167,7 +168,7 @@ export interface AppState {
   orgRolesLoading: boolean;
 
   activeView: 'map' | 'settings' | 'bookings' | 'people';
-  settingsTab: 'permissions' | 'modules' | 'bookings' | UnitType;
+  settingsTab: 'permissions' | 'modules' | 'bookings' | 'responders' | UnitType;
   moduleColors: Record<string, string>;
   /**
    * What the desk markers' colour MEANS. 'status' answers "what can I take"; 'department' answers
@@ -212,6 +213,19 @@ export interface AppState {
   cadAnalyses: Record<string, CadGroup[]>;
   /** The type the desk labels are drawn in — Settings › Desks › Desk labels (see lib/labelLayout). */
   labelStyle: LabelStyle;
+  /**
+   * The org's first aiders and floor wardens — Settings › First responders. Each is shown on the
+   * plan at the desk they hold (see lib/firstResponders).
+   */
+  firstResponders: FirstResponder[];
+  /** The responder roles: the two built-ins first, then the org's own (see sanitizeRoles). */
+  responderRoles: ResponderRoleDef[];
+  /**
+   * True once the app database has answered for the responders (lib/responderStore): from then on
+   * it is their only source — Settings writes there, and the settings blob neither carries nor
+   * overrides them. False in local dev, and whenever the database could not be read.
+   */
+  respondersInDb: boolean;
   /** The logged-in user's real assigned/booked desk (from servicePortalHome) — powers "My desk" against the real backend, where `assignments` (mock-derived) can't. */
   myDesk: { recordId: number; name: string; floorId: string | null; booked: boolean } | null;
   floorImages: Record<string, string>;

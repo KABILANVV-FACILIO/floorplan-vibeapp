@@ -6,6 +6,7 @@ import type { LabelPlacement, LabelPos, LabelTypography } from '../../lib/labelL
 import { CARD_GAP, CARD_PAD_X, CARD_PAD_Y, DEFAULT_LABEL_TYPOGRAPHY, HALO_TEXT, cardOffset } from '../../lib/labelLayout';
 import { MARKER_ICONS as ICONS } from './markerIcons';
 import { activateOnKey } from '../../lib/keyboard';
+import { ResponderBadges } from './ResponderBadge';
 import styles from './Marker.module.css';
 
 /**
@@ -62,7 +63,7 @@ export const Marker = memo(function Marker({
   /** The type the card is drawn in — the one the labels were laid out for (Settings › Desks). */
   typography?: LabelTypography;
 }) {
-  const { unit, style, title, holder, dept, isMine, isHighlighted, isBusy, draggable } = model;
+  const { unit, style, title, holder, dept, isMine, isHighlighted, isBusy, draggable, responderRoles } = model;
   const geom = previewGeom ?? model.geom;
   const t = typography;
 
@@ -130,6 +131,9 @@ export const Marker = memo(function Marker({
         }}
       >
         {isHighlighted && <div className={styles.wave} />}
+        {/* Inside the chip, so the badge scales with it. Shown in every mode: an emergency doesn't
+            wait for someone to switch to Assignment view. */}
+        <ResponderBadges roles={responderRoles} chip={style.size} />
         {isBusy && <span className={styles.busy} aria-label="Working" />}
         {!isBusy &&
           (style.img ? (
