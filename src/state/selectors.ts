@@ -291,8 +291,14 @@ export function markerLabelInputs(state: AppState, markers: Unit[], opts: { pers
  * Open by default, deliberately: an unknown viewer role, an unconfigured surface and an org that
  * never opened the grid all mean "show it". Access is a setting someone turns ON for a reason, and
  * a failed read of the account payload must not empty the app.
+ *
+ * Except Settings, which is closed to a viewer whose role is unknown — the app's own URL opened
+ * outside Facilio, or an account payload that names no role. Settings is where access itself is
+ * changed, so "we could not tell who you are" must not open it. (Its writes are checked again on
+ * the server: see functions/floorplanResponders.)
  */
 export function canSee(state: AppState, surface: Surface): boolean {
+  if (surface === 'settings' && !state.viewerRole) return false;
   const rule = state.access[surface] ?? DEFAULT_ACCESS[surface];
   if (rule.all) return true;
   if (!state.viewerRole) return true;

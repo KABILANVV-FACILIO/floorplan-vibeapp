@@ -16,11 +16,16 @@ const base = (over: { access?: Access; viewerRole?: OrgRole | null; activeView?:
   ({ access: {}, viewerRole: null, activeView: 'map', ...over }) as unknown as AppState;
 
 describe('who can see a tab', () => {
-  it('shows every tab when the session carries no role', () => {
-    // The account payload not naming a role is a read that failed, not an org that locked down.
+  it('shows every tab but Settings when the session carries no role', () => {
+    // The account payload not naming a role is a read that failed, not an org that locked down —
+    // but Settings is where access is changed, so not knowing who this is keeps it closed.
     const state = base({ access: { people: { all: false, roles: ['412'] } }, viewerRole: null });
     expect(canSee(state, 'people')).toBe(true);
-    expect(visibleSurfaces(state)).toEqual(['map', 'bookings', 'people', 'settings']);
+    expect(visibleSurfaces(state)).toEqual(['map', 'bookings', 'people']);
+  });
+
+  it('keeps Settings closed to an unknown viewer even when the grid opens it to everyone', () => {
+    expect(canSee(base({ access: { settings: { all: true, roles: [] } }, viewerRole: null }), 'settings')).toBe(false);
   });
 
   it('shows a tab nobody has configured', () => {

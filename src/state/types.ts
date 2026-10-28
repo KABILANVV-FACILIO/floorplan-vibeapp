@@ -221,11 +221,19 @@ export interface AppState {
   /** The responder roles: the two built-ins first, then the org's own (see sanitizeRoles). */
   responderRoles: ResponderRoleDef[];
   /**
-   * True once the app database has answered for the responders (lib/responderStore): from then on
+   * True once the app database has answered for the responders (lib/sharedSettings): from then on
    * it is their only source — Settings writes there, and the settings blob neither carries nor
    * overrides them. False in local dev, and whenever the database could not be read.
    */
   respondersInDb: boolean;
+  /** True once the app database has answered: access-grid saves go there (lib/sharedSettings). */
+  accessInDb: boolean;
+  /**
+   * True when the database HOLDS a grid — then it is the grid's only source and the settings blob
+   * neither carries nor overrides it. False until an admin saves the grid once: the blob's grid,
+   * from before the move, still shows until then.
+   */
+  accessStoredInDb: boolean;
   /** The logged-in user's real assigned/booked desk (from servicePortalHome) — powers "My desk" against the real backend, where `assignments` (mock-derived) can't. */
   myDesk: { recordId: number; name: string; floorId: string | null; booked: boolean } | null;
   floorImages: Record<string, string>;

@@ -57,7 +57,9 @@ const SETTINGS_FILE = 'floorplan-settings.json';
 /** Extract the persisted slice of app state. */
 export function settingsFromState(state: AppState): SettingsConfig {
   return {
-    access: state.access,
+    // Not once the app database holds the grid: there only its function can write it (see
+    // lib/sharedSettings), and a copy here would be one any browser can overwrite.
+    ...(state.accessStoredInDb ? {} : { access: state.access }),
     moduleColors: state.moduleColors,
     colorBy: state.colorBy,
     slotGranularity: state.slotGranularity,
@@ -65,7 +67,7 @@ export function settingsFromState(state: AppState): SettingsConfig {
     customMarkers: state.customMarkers,
     enabledModules: state.enabledModules,
     labelStyle: state.labelStyle,
-    // Not when the app database holds them: one source, never two (see lib/responderStore).
+    // Not when the app database holds them: one source, never two (see lib/sharedSettings).
     ...(state.respondersInDb ? {} : { firstResponders: state.firstResponders, responderRoles: state.responderRoles }),
   };
 }

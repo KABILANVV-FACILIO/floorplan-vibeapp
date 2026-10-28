@@ -151,6 +151,8 @@ export function buildInitialState(): AppState {
     firstResponders: [],
     responderRoles: BUILTIN_RESPONDER_ROLES.map((r) => ({ ...r })),
     respondersInDb: false,
+    accessInDb: false,
+    accessStoredInDb: false,
     myDesk: null,
     floorImages: {},
     floorsWithPlans: {},
@@ -270,6 +272,10 @@ export type Action =
   | { type: 'SET_FIRST_RESPONDERS'; responders: FirstResponder[] }
   | { type: 'SET_RESPONDER_ROLES'; roles: ResponderRoleDef[] }
   | { type: 'RESPONDERS_LOADED'; roles: ResponderRoleDef[]; responders: FirstResponder[] }
+  /** The app database's grid ({} when it holds none yet). */
+  | { type: 'ACCESS_LOADED'; access: AppState['access'] }
+  /** A grid save the database accepted. */
+  | { type: 'ACCESS_STORED' }
   /**
    * A save finished. `units` is what was SENT (the snapshot taken when Save was pressed) and
    * `baseline` the saved snapshot it was diffed against; `retry` the ids whose write failed, kept
@@ -674,7 +680,8 @@ export function reducer(state: AppState, action: Action): AppState {
       const c = action.config;
       return {
         ...state,
-        access: c.access ?? state.access,
+        // The database's grid, once it holds one, is the grid; the blob's is from before the move.
+        access: state.accessStoredInDb ? state.access : (c.access ?? state.access),
         moduleColors: c.moduleColors ?? state.moduleColors,
         colorBy: c.colorBy ?? state.colorBy,
         slotGranularity: c.slotGranularity ?? state.slotGranularity,
@@ -863,6 +870,16 @@ export function reducer(state: AppState, action: Action): AppState {
       const roles = sanitizeRoles(action.roles);
       return { ...state, responderRoles: roles, firstResponders: sanitizeResponders(state.firstResponders, roles.map((r) => r.id)) };
     }
+    case 'ACCESS_LOADED': {
+      // The function answered, so saves go to it. Its grid replaces the blob's only when it holds
+      // one: until an admin saves once, the org's grid is still the blob's.
+      const stored = Object.keys(action.access).length > 0;
+      return settleAccess({ ...state, accessInDb: true, ...(stored ? { access: action.access, accessStoredInDb: true } : {}) });
+    }
+    case 'ACCESS_STORED':
+      // An emptied grid (reset to defaults) leaves the database holding none — the blob, written
+      // with the same {} by the settings save, is the grid's home again.
+      return { ...state, accessStoredInDb: Object.keys(state.access).length > 0 };
     case 'RESPONDERS_LOADED': {
       // The app database's answer, cleaned like the blob's (see responderDataFrom). It is the
       // source from here on.

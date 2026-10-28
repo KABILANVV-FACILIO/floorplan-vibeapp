@@ -4,7 +4,7 @@ import { isVibeApp } from './vibe';
 /**
  * Whether this page can write to the org at all.
  *
- * Assignments, vacates and desk positions reach Facilio through the host bridge, which exists only
+ * Assignments, vacates, bookings and desk positions reach Facilio through the host bridge, which exists only
  * when the app is opened inside Facilio or the mobile app. The deployed app opened with no host has
  * nowhere to send them — and used to write them to this browser alone and report them done, so an
  * assignment showed as made and was gone on reload.
@@ -16,7 +16,7 @@ export function orgWritesUnavailable(vibe: boolean = isVibeApp, api: boolean = i
   return vibe && !api;
 }
 
-export const NO_HOST_ASSIGN_MESSAGE = 'Not changed — this page is not connected to Facilio. Open Floorplan Manager from inside Facilio to assign or vacate.';
+export const NO_HOST_ASSIGN_MESSAGE = 'Not changed — this page is not connected to Facilio. Open Floorplan Manager from inside Facilio to assign, vacate or book.';
 
 /**
  * Refuse an org write this page cannot make, saying why. Returns true when it refused, so a caller

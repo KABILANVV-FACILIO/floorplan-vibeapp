@@ -8,13 +8,13 @@ import type { AmenityIcon, Booking, FirstResponder, FloorSearchHit, MarkerDef, M
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
-import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchCurrentPeopleId, fetchCurrentRole, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, fetchOrgBookingsForRange, fetchOrgRoles, fetchOrgTimezone, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, takeRoomOutlineReadFailure, vacateUnitReal } from '../lib/facilioApiDataSource';
-import { ROOM_OUTLINE_WRITES } from '../lib/featureFlags';
+import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchCurrentPeopleId, fetchCurrentRole, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, fetchOrgBookingsForRange, fetchOrgRoles, cancelRealBooking, fetchOrgTimezone, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, takeRoomOutlineReadFailure, vacateUnitReal } from '../lib/facilioApiDataSource';
+import { DEMO_DATA, ROOM_OUTLINE_WRITES } from '../lib/featureFlags';
 import { personDisplayName } from '../lib/displayNames';
 import { measureImageDataUrl } from '../lib/geoReference';
 import { listFloorplanFloorIds, loadFloorplanFile, persistFloorplanFile } from '../lib/floorplanFileStore';
 import { loadSettings, saveSettings, settingsFromState } from '../lib/settingsStore';
-import { loadResponders, saveResponderRoles, saveResponders } from '../lib/responderStore';
+import { loadSharedSettings, refusalReason, saveAccess, saveResponderRoles, saveResponders } from '../lib/sharedSettings';
 import { sanitizeResponders, sanitizeRoles } from '../lib/firstResponders';
 import { loadDepartmentColors, saveDepartmentColor } from '../lib/departmentColorStore';
 import { pathForView, viewFromLocation } from '../lib/routes';
@@ -338,26 +338,46 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     toastTimer = setTimeout(() => dispatch({ type: 'SHOW_TOAST', message: null }), ms);
   };
   /**
-   * One responder write to the app database (lib/responderStore), signed with who made it. A
-   * refused write is said out loud and the database re-read, so the screen never keeps showing a
-   * change that was not stored.
+   * One write to the app database (lib/sharedSettings) — the responders or the access grid. The
+   * function decides who may write and records who did, so nothing about the user is sent. A
+   * refused write is said out loud, with the function's reason when it refused on purpose, and the
+   * database re-read, so the screen never keeps showing a change that was not stored.
    */
-  const persistResponders = async (write: (updatedBy: string) => Promise<void>, what: string) => {
-    const viewer = await fetchCurrentPeopleId().catch(() => null);
-    const updatedBy = viewer ? (state.employees.find((e) => e.id === String(viewer))?.name ?? `people #${viewer}`) : '';
+  const persistShared = async (
+    write: () => Promise<void>,
+    what: string,
+    onStored?: () => void,
+    onRefused?: (stored: Awaited<ReturnType<typeof loadSharedSettings>>) => void,
+  ) => {
     try {
-      await write(updatedBy);
+      await write();
+      onStored?.();
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.warn(`[responders] the ${what} were not saved:`, (err as Error)?.message ?? err);
-      const stored = await loadResponders();
-      if (stored) dispatch({ type: 'RESPONDERS_LOADED', ...stored });
-      showToast(stored ? `Couldn't save the ${what}. Showing what is stored.` : `Couldn't save the ${what}. Try again.`, 4800);
+      console.warn(`[shared-settings] the ${what} were not saved:`, (err as Error)?.message ?? err);
+      const stored = await loadSharedSettings();
+      if (stored) {
+        dispatch({ type: 'RESPONDERS_LOADED', roles: stored.roles, responders: stored.responders });
+        dispatch({ type: 'ACCESS_LOADED', access: stored.access });
+      }
+      onRefused?.(stored);
+      const reason = refusalReason(err);
+      showToast(`Couldn't save the ${what}${reason ? ` — ${reason}` : ''}.${stored ? ' Showing what is stored.' : ' Try again.'}`, 6000);
     }
+  };
+  /**
+   * A refused grid save, undone. When the database holds a grid, the re-read has already put it
+   * back. When it holds none yet — every org until an admin saves once — the grid on screen is the
+   * settings blob's, and the refused one was applied to it optimistically (and may already have
+   * been written to the blob by the settings save): put the grid from before the save back, which
+   * that same save then writes over it.
+   */
+  const undoRefusedAccess = (previous: AppState['access']) => (stored: Awaited<ReturnType<typeof loadSharedSettings>>) => {
+    if (!stored || Object.keys(stored.access).length === 0) dispatch({ type: 'SET_ACCESS', access: previous });
   };
   /** The toast for a Save that went through — held longer when it names room changes left behind. */
   const showSavedNotice = (outcome: Awaited<ReturnType<typeof persistUnits>>) =>
-    showToast(savedNotice(outcome), outcome.roomsNotWritten.length ? ROOM_NOTICE_MS : undefined);
+    showToast(savedNotice(outcome), outcome.roomsNotWritten.length || outcome.unitsNotWritten.length ? ROOM_NOTICE_MS : undefined);
   /**
    * With room outline writes off, the FIRST time this session an org room (`orgRoom`) is traced,
    * reshaped, relabelled or deleted: say, before the work piles up, that it will not reach
@@ -465,8 +485,8 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       const { floorId, units, savedUnits } = state;
       try {
         const outcome = await persistUnits(floorId, units, savedUnits);
-        dispatch({ type: 'MARK_SAVED', floorId, units, baseline: savedUnits, retry: outcome.roomsToRetry });
-        if (outcome.roomsNotWritten.length) showSavedNotice(outcome);
+        dispatch({ type: 'MARK_SAVED', floorId, units, baseline: savedUnits, retry: outcome.toRetry });
+        if (outcome.roomsNotWritten.length || outcome.unitsNotWritten.length) showSavedNotice(outcome);
       } catch (err) {
         showToast(err instanceof NotSavedToOrgError ? err.message : 'Could not save changes', err instanceof NotSavedToOrgError ? ROOM_NOTICE_MS : undefined);
       } finally {
@@ -1065,7 +1085,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       // they held — the local mirror of the Moves behaviour that was removed from the org write.
       const next = { ...state.assignments };
       const prevContactId = next[unitId];
-      const nameOf = (id: string) => personDisplayName(contactById(state, id)?.name) || MOCK_EMPLOYEES.find((c) => c.id === id)?.name || id;
+      const nameOf = (id: string) => personDisplayName(contactById(state, id)?.name) || (DEMO_DATA ? MOCK_EMPLOYEES.find((c) => c.id === id)?.name : undefined) || id;
       // Dropped onto the desk they already hold: nothing to write. The org would record it as a
       // move off and back onto the same desk — two records in the history for no change.
       if (prevContactId === contactId) {
@@ -1109,7 +1129,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       const next = { ...state.assignments };
       delete next[unitId];
       dispatch({ type: 'VACATE', unitId, assignments: next });
-      const prevName = prevContactId ? personDisplayName(contactById(state, prevContactId)?.name) || MOCK_EMPLOYEES.find((c) => c.id === prevContactId)?.name || null : null;
+      const prevName = prevContactId ? personDisplayName(contactById(state, prevContactId)?.name) || (DEMO_DATA ? MOCK_EMPLOYEES.find((c) => c.id === prevContactId)?.name : undefined) || null : null;
       // Busy for the whole write, the org's included (see assign).
       dispatch({ type: 'SET_UNIT_BUSY', id: unitId });
       try {
@@ -1140,31 +1160,36 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     setLabelStyle: (style: LabelStyle) => dispatch({ type: 'SET_LABEL_STYLE', style }),
     /**
      * The org's first responders. Written to the app database when it holds them
-     * (state.respondersInDb), else saved with the other settings (see lib/responderStore).
+     * (state.respondersInDb), else saved with the other settings (see lib/sharedSettings).
      */
     setFirstResponders: (responders: FirstResponder[]) => {
       dispatch({ type: 'SET_FIRST_RESPONDERS', responders });
       if (!state.respondersInDb) return;
       const clean = sanitizeResponders(responders, state.responderRoles.map((r) => r.id));
-      void persistResponders((by) => saveResponders(clean, by), 'first responders');
+      void persistShared(() => saveResponders(clean), 'first responders');
     },
     /** The responder roles and their badges — stored where the responders are. */
     setResponderRoles: (roles: ResponderRoleDef[]) => {
       dispatch({ type: 'SET_RESPONDER_ROLES', roles });
       if (!state.respondersInDb) return;
       const clean = sanitizeRoles(roles);
-      void persistResponders((by) => saveResponderRoles(clean, by), 'responder roles');
+      void persistShared(() => saveResponderRoles(clean), 'responder roles');
     },
     cancelBooking: async (id: string) => {
+      // With no Facilio host there is nowhere to cancel it — this browser's copy is not the booking.
+      if (refuseOrgWrite(showToast)) return;
       // Persist BEFORE dispatching: CANCEL_BOOKING bumps bookingsNonce, which refetches the
       // calendar — if the store still held the booking at that moment it would resurrect.
-      // (That resurrection was a live bug: cancel had no persistence at all and only looked
-      // like it worked until the next refetch.)
       try {
-        await dataSource.cancelBooking(id);
+        // Against an org, the org's own Cancel and nothing else: a refusal used to fall through to
+        // this browser's store, which always "succeeded", and the booking came back on refresh.
+        if (isFacilioApiConfigured) await cancelRealBooking(id);
+        else await dataSource.cancelBooking(id);
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.warn('[bookings] cancel persistence failed', err);
+        console.warn('[bookings] cancel failed', err);
+        showToast(`Not cancelled — ${(err as Error)?.message || 'Facilio refused it'}`, 6000);
+        return;
       }
       dispatch({ type: 'CANCEL_BOOKING', id });
       showToast('Booking cancelled');
@@ -1279,6 +1304,10 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
         return true;
       }
 
+      // With no Facilio host (the app's own URL), the booking would live in this browser alone while
+      // the toast said it was made — refused, as assign and vacate are.
+      if (refuseOrgWrite(showToast)) return false;
+
       // No org: the local store keeps the whole form so the booking survives a reload. It holds
       // one row per booking, so a window that runs into later days is kept as its first day's
       // segment, marked as such — the demo store has no other days to put the rest on.
@@ -1309,11 +1338,36 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     setSchedView: (view: AppState['schedView']) => dispatch({ type: 'SET_SCHED_VIEW', view }),
 
     /** One tab's audience, from the Settings grid. */
-    setSurfaceAccess: (surface: Surface, value: SurfaceAccess) => dispatch({ type: 'SET_SURFACE_ACCESS', surface, value }),
-    /** The whole grid, as Save sends it. */
-    setAccess: (access: AppState['access']) => dispatch({ type: 'SET_ACCESS', access }),
+    setSurfaceAccess: (surface: Surface, value: SurfaceAccess) => {
+      const previous = state.access;
+      dispatch({ type: 'SET_SURFACE_ACCESS', surface, value });
+      if (state.accessInDb) void persistShared(() => saveAccess({ ...previous, [surface]: value }), 'access settings', () => dispatch({ type: 'ACCESS_STORED' }), undoRefusedAccess(previous));
+    },
+    /**
+     * The whole grid, as Save sends it. With the app database answering, it is written there —
+     * where only its function can write, after checking with Facilio who is asking (see
+     * lib/sharedSettings); otherwise it rides in the settings blob as before.
+     */
+    setAccess: (access: AppState['access']) => {
+      const previous = state.access;
+      dispatch({ type: 'SET_ACCESS', access });
+      if (state.accessInDb) void persistShared(() => saveAccess(access), 'access settings', () => dispatch({ type: 'ACCESS_STORED' }), undoRefusedAccess(previous));
+    },
     resetAccess: () => {
+      const previous = state.access;
       dispatch({ type: 'RESET_ACCESS' });
+      if (state.accessInDb) {
+        void persistShared(
+          () => saveAccess({}),
+          'access settings',
+          () => {
+            dispatch({ type: 'ACCESS_STORED' });
+            showToast('Access reset to defaults');
+          },
+          undoRefusedAccess(previous),
+        );
+        return;
+      }
       showToast('Access reset to defaults');
     },
     /**
@@ -1386,7 +1440,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     loadAssets: async () => {
       if (assetsRequested) return;
       assetsRequested = true;
-      const assets = await dataSource.getAssets().catch(() => DEMO_ASSETS);
+      const assets = await dataSource.getAssets().catch(() => (DEMO_DATA ? DEMO_ASSETS : []));
       dispatch({ type: 'ASSETS_LOADED', assets });
     },
     setSlotGranularity: (minutes: number) => dispatch({ type: 'SET_SLOT_GRANULARITY', minutes }),
@@ -1464,7 +1518,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       const { floorId, units, savedUnits } = state;
       try {
         const outcome = await persistUnits(floorId, units, savedUnits);
-        dispatch({ type: 'MARK_SAVED', floorId, units, baseline: savedUnits, retry: outcome.roomsToRetry });
+        dispatch({ type: 'MARK_SAVED', floorId, units, baseline: savedUnits, retry: outcome.toRetry });
         showSavedNotice(outcome);
       } catch (err) {
         // The browser-only case says where the changes went and how to save them properly; a
@@ -1558,9 +1612,13 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
    * meant to hide is a far smaller problem than an app with nothing in it.
    */
   useEffect(() => {
+    // `npm run dev` with no org has no account to read a role from, and Settings is closed to an
+    // unknown role. The developer stands in as an admin there — and only there: DEMO_DATA is off
+    // in every build, so no deployed page can take this branch.
+    const fallback: OrgRole | null = DEMO_DATA && !isFacilioApiConfigured ? { id: 'local-dev', name: 'Local developer', isAdmin: true } : null;
     fetchCurrentRole()
-      .then((role) => dispatch({ type: 'SET_VIEWER_ROLE', role }))
-      .catch(() => dispatch({ type: 'SET_VIEWER_ROLE', role: null }));
+      .then((role) => dispatch({ type: 'SET_VIEWER_ROLE', role: role ?? fallback }))
+      .catch(() => dispatch({ type: 'SET_VIEWER_ROLE', role: fallback }));
   }, []);
 
   // Load persisted settings (vibe-db when deployed, else localStorage) once on mount.
@@ -1574,11 +1632,14 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
       });
   }, []);
 
-  // The first responders, from the app database when there is one (lib/responderStore). Read in
-  // parallel with the settings blob; once it has answered, the blob's copy is ignored.
+  // The first responders and the access grid, from the app database when there is one
+  // (lib/sharedSettings) — one call for both. Read in parallel with the settings blob; once the
+  // database has answered for something, the blob's copy of it is ignored.
   useEffect(() => {
-    void loadResponders().then((data) => {
-      if (data) dispatch({ type: 'RESPONDERS_LOADED', ...data });
+    void loadSharedSettings().then((data) => {
+      if (!data) return;
+      dispatch({ type: 'RESPONDERS_LOADED', roles: data.roles, responders: data.responders });
+      dispatch({ type: 'ACCESS_LOADED', access: data.access });
     });
   }, []);
 
@@ -1594,7 +1655,7 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(saveTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    state.access,
+    state.accessStoredInDb ? null : state.access,
     state.moduleColors,
     state.colorBy,
     state.labelStyle,
@@ -1632,8 +1693,10 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
       // The org's clock, for every booking read and write, resolved before the first of them.
       if (isFacilioApiConfigured) void fetchOrgTimezone().catch(() => null);
       const [portfolio, employees, myDesk, urlFloorId, peopleId] = await Promise.all([
-        dataSource.getPortfolio().catch(() => MOCK_PORTFOLIO),
-        dataSource.getEmployees().catch(() => MOCK_EMPLOYEES),
+        // The demo seed stands in only under the dev server (featureFlags.DEMO_DATA). Deployed, an
+        // org list that fails or comes back empty stays empty — never made-up sites or people.
+        dataSource.getPortfolio().catch(() => (DEMO_DATA ? MOCK_PORTFOLIO : [])),
+        dataSource.getEmployees().catch(() => (DEMO_DATA ? MOCK_EMPLOYEES : [])),
         isFacilioApiConfigured ? fetchMyDesk().catch(() => null) : Promise.resolve(null),
         readUrlFloorId().catch(() => null),
         isFacilioApiConfigured ? fetchCurrentPeopleId().catch(() => null) : Promise.resolve(null),
@@ -1666,6 +1729,14 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
             // one of its own floors — enough to exercise the link without an org.
             candidates.find((c) => c.source === 'url' && mockFloorExists(c.floorId))?.floorId
           : await resolveDefaultFloor(dispatch, portfolio, candidates);
+      if (!firstRealFloor && !DEMO_DATA) {
+        // No floor this user can open (an empty or unreadable portfolio). The default floor id is
+        // the demo's, which is no org record — asking the org for it only fails. Show the empty plan.
+        // eslint-disable-next-line no-console
+        console.warn('[boot] no floor to open — the portfolio came back empty');
+        dispatch({ type: 'SELECT_FLOOR_DONE', floorId: state.floorId, units: [], assignments: {}, bookings: [] });
+        return;
+      }
       const floorId = firstRealFloor ?? state.floorId;
       if (floorId !== state.floorId) dispatch({ type: 'SELECT_FLOOR_START', floorId });
 

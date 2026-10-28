@@ -1,7 +1,9 @@
 import StudioFunctions, { StudioDatabase } from '@facilio/studio-functions';
 
 /**
- * floorplanResponders — who the org's first responders are, held in the app's own database.
+ * floorplanResponders — the app's org-wide settings that must not be writable from a browser: who
+ * the first responders are, and who may reach each tab (the Roles & access grid). The name is
+ * from when it held the responders alone.
  *
  * Facilio's employee record has no field for it, and the org's configuration is not ours to
  * change, so the app keeps the link itself. The shape is a multi-lookup's, kept by hand:
@@ -18,6 +20,16 @@ import StudioFunctions, { StudioDatabase } from '@facilio/studio-functions';
  *                                (The table's group_name / ext / mobile columns are from a first
  *                                draft that typed those in; they are left empty. A table cannot
  *                                be dropped from here, and nothing reads them.)
+ *   fp_access                    one row per surface (tab or mode): `all_roles` 1 for every role,
+ *                                else the role ids in `roles` (a JSON list). No row = the app's
+ *                                default for that surface.
+ *
+ * WHO MAY WRITE is decided here, never by the browser. Every write asks Facilio who the caller is
+ * (the run carries the caller's own identity, and the facilio-cmms connection answers as them),
+ * then allows an admin role (privileged in the org's role list), or a role the stored grid gives
+ * Settings. With no Settings row stored, that is admins only. If Facilio cannot say who is
+ * calling, the write is refused. `updated_by` is the name Facilio gives, whatever the browser
+ * sends.
  *
  * NO DDL HERE, by necessity: the app's database login holds DML only (USAGE + SELECT / INSERT /
  * UPDATE / DELETE — vibe-server provisions it with WRITE, and WRITE grants no CREATE), so even
@@ -39,6 +51,70 @@ const SEED = '__seed__';
 const ICONS = ['cross', 'warden', 'flame', 'aed', 'shield', 'megaphone', 'radiation', 'drop', 'star', 'phone', 'bell', 'text'];
 const SHAPES = ['square', 'circle', 'diamond'];
 const HEX = /^#[0-9a-fA-F]{6}$/;
+
+const SURFACE_IDS = ['map', 'map.edit', 'bookings', 'people', 'settings'];
+
+/** One connection action, run as the caller. Throws on anything but a clean answer. */
+async function action(connection: string, slug: string, input: Record<string, unknown>): Promise<any> {
+  const res = await fetch(`${process.system.CONNECTIONS_URL}/api/v1/connections/${connection}/actions/${slug}/execute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ input }),
+  });
+  if (!res.ok) throw new Error(`${connection}.${slug} answered ${res.status}`);
+  return res.json();
+}
+
+interface Caller {
+  roleId: string;
+  isAdmin: boolean;
+  name: string;
+}
+
+/** Who is calling, as Facilio says — never as the browser says. */
+async function whoIsCalling(): Promise<Caller> {
+  let profile: any;
+  try {
+    profile = await action('facilio-cmms', 'get-current-user-profile', {});
+  } catch (err) {
+    throw new Error(`Not saved: could not confirm who is signed in (${(err as Error)?.message ?? err})`);
+  }
+  const user = profile?.data?.user;
+  const roleId = user?.role?.id;
+  if (!user || roleId == null) throw new Error('Not saved: Facilio did not say who is signed in');
+  const app = profile?.data?.app?.linkName || 'maintenance';
+  const roles = await action('facilio-user-management', 'list-roles', { app }).catch(() => null);
+  const role = (Array.isArray(roles?.data) ? roles.data : []).find((r: any) => String(r?.id) === String(roleId));
+  // The org flags its admin roles on the record — spelled both ways across Facilio's payloads.
+  const isAdmin = !!(role && (role.isPrivileged || role.isPrevileged || role.isSuperAdmin));
+  return { roleId: String(roleId), isAdmin, name: String(user.name || user.email || `user #${user.id}`) };
+}
+
+function readAccess(db: any): Record<string, { all: boolean; roles: string[] }> {
+  const { rows } = db.query(`select surface, all_roles, roles from fp_access where surface is not null and surface <> $1`, [SEED]);
+  const out: Record<string, { all: boolean; roles: string[] }> = {};
+  for (const r of rows) {
+    if (SURFACE_IDS.indexOf(String(r.surface)) === -1) continue;
+    let roles: string[] = [];
+    try {
+      const v = JSON.parse(String(r.roles ?? '[]'));
+      if (Array.isArray(v)) roles = v.map(String);
+    } catch {
+      roles = [];
+    }
+    out[String(r.surface)] = { all: Number(r.all_roles) === 1, roles };
+  }
+  return out;
+}
+
+/** The caller, when they may change the app's settings; otherwise the write is refused. */
+async function settingsWriter(db: any): Promise<Caller> {
+  const caller = await whoIsCalling();
+  if (caller.isAdmin) return caller;
+  const rule = readAccess(db).settings;
+  if (rule && (rule.all || rule.roles.indexOf(caller.roleId) !== -1)) return caller;
+  throw new Error('Not saved: only admins and roles given Settings can change this');
+}
 
 function connect() {
   // vibe-server puts the app's database login into every run's env (FunctionRunUtil.buildEnv).
@@ -88,36 +164,48 @@ function readRoles(db: any): RoleOut[] {
   });
 }
 
+function readResponders(db: any): { roles: RoleOut[]; responders: { employeeId: string; name: string; roles: string[] }[] } {
+  const roles = readRoles(db);
+  const order = roles.map((r) => r.id);
+
+  const members = db.query(`select employee_id, role_id from fp_employee_responder_role where employee_id <> $1`, [SEED]).rows;
+  const details = db.query(`select employee_id, employee_name from fp_responder_detail where employee_id <> $1`, [SEED]).rows;
+
+  const rolesOf = new Map<string, string[]>();
+  for (const m of members) {
+    const id = String(m.employee_id ?? '');
+    const role = String(m.role_id ?? '');
+    if (!id || order.indexOf(role) === -1) continue; // a role since removed
+    const list = rolesOf.get(id) ?? [];
+    if (list.indexOf(role) === -1) list.push(role);
+    rolesOf.set(id, list);
+  }
+  const nameOf = new Map<string, string>(details.map((d: any) => [String(d.employee_id), String(d.employee_name ?? '')]));
+
+  const responders = [...rolesOf.entries()].map(([employeeId, held]) => ({
+    employeeId,
+    name: nameOf.get(employeeId) ?? '',
+    roles: order.filter((id) => held.indexOf(id) !== -1),
+  }));
+  return { roles, responders };
+}
+
 server.addHandler({
-  name: 'get-responders',
-  description: 'The org\'s responder roles in order, and every responder with their roles: { roles: [{id,name,plural,color,icon,shape,text?}], responders: [{employeeId,name,roles}] }.',
+  name: 'get-settings',
+  description: 'Everything the app reads from here, in one call: { roles, responders, access } — access is { surface: { all, roles } } for the surfaces stored, {} when none are.',
   parameters: {},
   execute: async () => {
     const db = connect();
-    const roles = readRoles(db);
-    const order = roles.map((r) => r.id);
-
-    const members = db.query(`select employee_id, role_id from fp_employee_responder_role where employee_id <> $1`, [SEED]).rows;
-    const details = db.query(`select employee_id, employee_name from fp_responder_detail where employee_id <> $1`, [SEED]).rows;
-
-    const rolesOf = new Map<string, string[]>();
-    for (const m of members) {
-      const id = String(m.employee_id ?? '');
-      const role = String(m.role_id ?? '');
-      if (!id || order.indexOf(role) === -1) continue; // a role since removed
-      const list = rolesOf.get(id) ?? [];
-      if (list.indexOf(role) === -1) list.push(role);
-      rolesOf.set(id, list);
-    }
-    const nameOf = new Map<string, string>(details.map((d: any) => [String(d.employee_id), String(d.employee_name ?? '')]));
-
-    const responders = [...rolesOf.entries()].map(([employeeId, held]) => ({
-      employeeId,
-      name: nameOf.get(employeeId) ?? '',
-      roles: order.filter((id) => held.indexOf(id) !== -1),
-    }));
-    return { roles, responders };
+    return { ...readResponders(db), access: readAccess(db) };
   },
+});
+
+// Kept for a deployed build that still asks for it.
+server.addHandler({
+  name: 'get-responders',
+  description: 'The org\'s responder roles in order, and every responder with their roles: { roles, responders }.',
+  parameters: {},
+  execute: async () => readResponders(connect()),
 });
 
 server.addHandler({
@@ -125,7 +213,7 @@ server.addHandler({
   description: 'Replace every responder role with the supplied list, in order. A role left out also drops off everyone who held it.',
   parameters: {
     rolesJson: { description: 'JSON array of {id,name,plural,color,icon,shape,text?}, in display order', type: 'string' },
-    updatedBy: { description: 'Who made the change — the signed-in user, as the app knows them', type: 'string' },
+    updatedBy: { description: 'Ignored — the function records the caller as Facilio names them', type: 'string' },
   },
   execute: async (args) => {
     const seen: string[] = [];
@@ -145,8 +233,8 @@ server.addHandler({
     });
 
     const db = connect();
+    const by = (await settingsWriter(db)).name;
     const at = new Date().toISOString();
-    const by = String(args.updatedBy ?? '');
     db.query(
       `with gone as (delete from fp_responder_role)
        insert into fp_responder_role (id, name, plural, color, icon, shape, badge_text, sort_order, updated_at, updated_by)
@@ -167,7 +255,7 @@ server.addHandler({
   description: 'Replace every responder — who holds which roles — with the supplied list, in one atomic write. Roles not in fp_responder_role are dropped.',
   parameters: {
     respondersJson: { description: 'JSON array of {employeeId,name,roles:[roleId]}', type: 'string' },
-    updatedBy: { description: 'Who made the change — the signed-in user, as the app knows them', type: 'string' },
+    updatedBy: { description: 'Ignored — the function records the caller as Facilio names them', type: 'string' },
   },
   execute: async (args) => {
     const byId = new Map<string, { employee_id: string; employee_name: string; roles: string[] }>();
@@ -185,8 +273,8 @@ server.addHandler({
     const people = [...byId.values()];
 
     const db = connect();
+    const by = (await settingsWriter(db)).name;
     const at = new Date().toISOString();
-    const by = String(args.updatedBy ?? '');
     // Both tables in ONE statement, so the links and the names can never disagree after a
     // failure. Each CTE sees the same snapshot: the inserts don't see the deletes, and with no
     // unique keys they don't need to.
@@ -209,6 +297,41 @@ server.addHandler({
       [JSON.stringify(people), at, by]
     );
     return { ok: true, responders: people.length };
+  },
+});
+
+server.addHandler({
+  name: 'save-access',
+  description: 'Replace the Roles & access grid: { surface: { all, roles } }. A surface left out falls back to the app default. Admins keep Settings whatever this says.',
+  parameters: {
+    accessJson: { description: 'JSON object of surface -> { all: boolean, roles: string[] }', type: 'string' },
+  },
+  execute: async (args) => {
+    let grid: unknown;
+    try {
+      grid = JSON.parse(String(args.accessJson ?? ''));
+    } catch {
+      throw new Error('accessJson is not valid JSON');
+    }
+    if (!grid || typeof grid !== 'object' || Array.isArray(grid)) throw new Error('accessJson must be a JSON object');
+    const rows = Object.entries(grid as Record<string, any>).map(([surface, rule]) => {
+      if (SURFACE_IDS.indexOf(surface) === -1) throw new Error(`unknown surface: ${surface}`);
+      if (!rule || typeof rule !== 'object') throw new Error(`${surface}: expected { all, roles }`);
+      const roles = Array.isArray(rule.roles) ? rule.roles.map((r: unknown) => str(r, 40)).filter(Boolean) : [];
+      return { surface, all_roles: rule.all ? 1 : 0, roles: JSON.stringify(rule.all ? [] : roles) };
+    });
+
+    const db = connect();
+    const by = (await settingsWriter(db)).name;
+    const at = new Date().toISOString();
+    db.query(
+      `with gone as (delete from fp_access)
+       insert into fp_access (surface, all_roles, roles, updated_at, updated_by)
+       select surface, all_roles, roles, $2, $3
+         from json_to_recordset($1::json) as x(surface text, all_roles numeric, roles text)`,
+      [JSON.stringify(rows), at, by]
+    );
+    return { ok: true, surfaces: rows.length };
   },
 });
 

@@ -25,3 +25,21 @@
  * and the toast names the room changes that did not reach Facilio.
  */
 export const ROOM_OUTLINE_WRITES: boolean = true;
+
+/**
+ * Whether the `floorplanApi` function is deployed. It is not, and as written it cannot be: its
+ * `connect()` runs DDL, and the app's database login may never CREATE (tables come only from
+ * `facilio vibe db import`). Until its DDL is removed and its tables imported, every call to it
+ * fails — and three of them used to fire on every page open (the stored-floorplan list, the settings
+ * read and the department colours), each a round trip for nothing. Off, nothing is sent: every
+ * caller already reads "unavailable" as "use the next tier" (the file store, the browser).
+ */
+export const FLOORPLAN_API_DEPLOYED: boolean = false;
+
+/**
+ * Whether the demo seed (src/data/*.json — sample sites, people, desks and bookings) may be shown.
+ * Only under the dev server (`npm run dev`, and vitest): every `vite build` — whatever is deployed
+ * to preview or production — has it off, so a live user never sees a made-up person or floor,
+ * even when the org's own list comes back empty or fails.
+ */
+export const DEMO_DATA: boolean = import.meta.env.DEV;

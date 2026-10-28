@@ -199,3 +199,54 @@ describe('reducer: responders from the app database', () => {
     expect(settingsFromState(buildInitialState())).toHaveProperty('firstResponders', []);
   });
 });
+
+/**
+ * The access grid moved from the settings blob (which any browser can overwrite) to the app
+ * database (which only the function writes, after checking the caller). Orgs configured it in the
+ * blob first, so until an admin saves once the blob's grid still shows; from then on the database's.
+ */
+describe('reducer: the access grid in the app database', () => {
+  const grid = { settings: { all: false, roles: ['3874'] } };
+
+  it('sends saves to the database once it answers, but keeps the blob grid while the database holds none', () => {
+    let s = reducer(buildInitialState(), { type: 'APPLY_SETTINGS', config: { access: grid } });
+    s = reducer(s, { type: 'ACCESS_LOADED', access: {} });
+    expect(s.accessInDb).toBe(true);
+    expect(s.accessStoredInDb).toBe(false);
+    expect(s.access).toEqual(grid);
+    expect(settingsFromState(s)).toHaveProperty('access', grid);
+  });
+
+  it("makes the database's grid the only one once it holds one, whichever loads last", () => {
+    let s = reducer(buildInitialState(), { type: 'ACCESS_LOADED', access: grid });
+    s = reducer(s, { type: 'APPLY_SETTINGS', config: { access: { settings: { all: true, roles: [] } } } });
+    expect(s.access).toEqual(grid);
+    expect(settingsFromState(s)).not.toHaveProperty('access');
+  });
+
+  it('puts the grid back when a save is refused while the database holds none yet', () => {
+    // The blob's grid governs until an admin saves once. A refused save was applied optimistically,
+    // and the re-read brings back no grid to replace it — so the grid from before is restored, and
+    // it is that one the settings blob is written with.
+    const before = { people: { all: false, roles: ['412'] } };
+    let s = reducer(buildInitialState(), { type: 'APPLY_SETTINGS', config: { access: before } });
+    s = reducer(s, { type: 'ACCESS_LOADED', access: {} });
+    s = reducer(s, { type: 'SET_ACCESS', access: grid }); // optimistic
+    s = reducer(s, { type: 'ACCESS_LOADED', access: {} }); // the re-read after the refusal
+    expect(s.access).toEqual(grid); // the re-read alone cannot undo it…
+    s = reducer(s, { type: 'SET_ACCESS', access: before }); // …so the action restores what was there
+    expect(s.access).toEqual(before);
+    expect(settingsFromState(s)).toHaveProperty('access', before);
+  });
+
+  it('takes over from the blob when the first save is stored, and hands back on a reset', () => {
+    let s = reducer(buildInitialState(), { type: 'ACCESS_LOADED', access: {} });
+    s = reducer(s, { type: 'SET_ACCESS', access: grid });
+    s = reducer(s, { type: 'ACCESS_STORED' });
+    expect(s.accessStoredInDb).toBe(true);
+    s = reducer(s, { type: 'RESET_ACCESS' });
+    s = reducer(s, { type: 'ACCESS_STORED' });
+    expect(s.accessStoredInDb).toBe(false);
+    expect(settingsFromState(s)).toHaveProperty('access', {});
+  });
+});

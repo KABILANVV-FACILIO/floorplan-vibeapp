@@ -18,7 +18,7 @@ const desk: Unit = { id: '1001', type: 'workstation', label: 'WS-1', room: null,
 async function load(isVibeApp: boolean) {
   vi.resetModules();
   const saveUnits = vi.fn(async () => {});
-  const saveFloorplanMarkers = vi.fn(async () => ({ plansSynced: 1, skipped: [] }));
+  const saveFloorplanMarkers = vi.fn(async () => ({ plansSynced: 1, skipped: [], unitsNotWritten: [], retryIds: [] }));
   vi.doMock('../lib/facilioApi', () => ({ isFacilioApiConfigured: false }));
   vi.doMock('../lib/vibe', () => ({ isVibeApp }));
   vi.doMock('../lib/dataSource', () => ({ dataSource: { saveUnits } }));
@@ -60,7 +60,7 @@ describe('Save with no Facilio host', () => {
   it('in plain local dev, where the browser copy is the save, completes without an error', async () => {
     const { persistUnits, saveUnits } = await load(false);
 
-    await expect(persistUnits('5150', [desk])).resolves.toEqual({ roomsNotWritten: [], roomsToRetry: [] });
+    await expect(persistUnits('5150', [desk])).resolves.toEqual({ roomsNotWritten: [], unitsNotWritten: [], toRetry: [] });
     expect(saveUnits).toHaveBeenCalledWith('5150', [desk]);
   });
 });

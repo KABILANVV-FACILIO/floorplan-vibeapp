@@ -469,9 +469,16 @@ export class FacilioApiDataSource implements FloorplanDataSource {
    * The org's spacebooking records for one day, scoped to this floor's desks, spaces and stalls.
    * Throws on error so the composite falls through to the local tier, as before this was wired.
    */
+  /**
+   * The plan's day list: only this floor's bookings, asked for in the query itself. `spacebooking`
+   * has no floor field, so the floor is its desks', spaces' and stalls' ids — the cached per-floor
+   * read the plan has already made. Unscoped, every floor load and date change read the whole
+   * org's last month of bookings to keep this floor's handful. The calendar reads org-wide on its
+   * own (fetchOrgBookingsForRange).
+   */
   async getBookings(floorId: string, date: string): Promise<Booking[]> {
     this.assertConfigured();
-    return fetchSpaceBookingsForRange(date, date, floorId);
+    return fetchSpaceBookingsForRange(date, date, floorId, { floorIds: [floorId] });
   }
   // Creation goes through createRealBooking (the org-form-aware create) from the context; this
   // tier's createBooking throws so a local-mode caller falls through to the local store.
@@ -485,12 +492,21 @@ export class FacilioApiDataSource implements FloorplanDataSource {
    */
   async cancelBooking(id: string): Promise<void> {
     this.assertConfigured();
-    if (!/^\d+$/.test(id)) throw new Error('facilio-api: not a backend booking id');
-    const { transitions } = await fetchAvailableStates('spacebooking', Number(id));
-    const cancel = findCancelTransition(transitions);
-    if (!cancel) throw new Error('facilio-api: this booking has no Cancel transition in its current state');
-    await executeStateTransition('spacebooking', Number(id), cancel.id);
+    await cancelRealBooking(id);
   }
+}
+
+/**
+ * Cancel a real booking through its own stateflow Cancel transition. Throws with the reason when
+ * the org refuses — the caller says so, rather than letting the cancel "succeed" in this browser
+ * and the booking come back on the next read.
+ */
+export async function cancelRealBooking(id: string): Promise<void> {
+  if (!/^\d+$/.test(id)) throw new Error('not a booking Facilio holds');
+  const { transitions } = await fetchAvailableStates('spacebooking', Number(id));
+  const cancel = findCancelTransition(transitions);
+  if (!cancel) throw new Error('this booking cannot be cancelled in its current state');
+  await executeStateTransition('spacebooking', Number(id), cancel.id);
 }
 
 /** Real Facilio desk typing (`V3DeskContext.DeskType`): 1=ASSIGNED, 2=HOTEL, 3=HOT; -1/0 = unset. */
@@ -1630,10 +1646,21 @@ export interface MarkerSaveResult {
   plansSynced: number;
   /** Plan types skipped, with the reason — surfaced so a silent no-op is never mistaken for a save. */
   skipped: string[];
+  /**
+   * Labels of desks, lockers and stalls whose marker did not reach the org on a save that otherwise
+   * went through — a create, update or delete the org refused, or a plan that was skipped or whose
+   * marker list could not be read. What the save toast names, so a refused write is never "saved".
+   */
+  unitsNotWritten: string[];
+  /**
+   * Unit ids whose marker write was tried and FAILED (not those skipped for want of a georeference,
+   * which no retry would fix). The caller keeps them unsaved, so the next Save sends them again.
+   */
+  retryIds: string[];
 }
 
 export async function saveFloorplanMarkers(floorId: string, units: Unit[]): Promise<MarkerSaveResult> {
-  const result: MarkerSaveResult = { plansSynced: 0, skipped: [] };
+  const result: MarkerSaveResult = { plansSynced: 0, skipped: [], unitsNotWritten: [], retryIds: [] };
   if (!isFacilioApiConfigured) return result;
   if (!isRealFloorId(floorId)) {
     result.skipped.push(`${floorId} is not an org floor — markers stay in this browser`);
@@ -1657,16 +1684,26 @@ export async function saveFloorplanMarkers(floorId: string, units: Unit[]): Prom
 
   for (const planId of allPlanIds) {
     const summary = byType[String(FLOOR_PLAN_TYPE[planId])];
+    const wanted = byPlan.get(planId) ?? [];
     if (!summary?.id) {
       result.skipped.push(`${planId}: no plan configured`);
+      result.unitsNotWritten.push(...wanted.map((u) => u.label));
       continue;
     }
     try {
-      const synced = await syncMarkersForIndoorFloorPlan(summary.id, byPlan.get(planId) ?? []);
-      if (synced) result.plansSynced++;
-      else result.skipped.push(`${planId}: plan #${summary.id} has no georeference`);
+      const synced = await syncMarkersForIndoorFloorPlan(summary.id, wanted);
+      if (synced) {
+        result.plansSynced++;
+        result.unitsNotWritten.push(...synced.notWritten);
+        result.retryIds.push(...synced.retryIds);
+      } else {
+        result.skipped.push(`${planId}: plan #${summary.id} has no georeference`);
+        result.unitsNotWritten.push(...wanted.map((u) => u.label));
+      }
     } catch (err) {
       result.skipped.push(`${planId}: ${(err as Error)?.message ?? err}`);
+      result.unitsNotWritten.push(...wanted.map((u) => u.label));
+      result.retryIds.push(...wanted.map((u) => u.id));
       // eslint-disable-next-line no-console
       console.warn(`[facilio-api] marker sync failed for plan ${planId}`, err);
     }
@@ -1747,13 +1784,24 @@ async function markerRecordLink(unit: Unit): Promise<{ recordId?: number; marker
   return markerModuleId ? { recordId, markerModuleId } : { recordId };
 }
 
-/** Returns false when the plan has no georeference and nothing could be written. */
-async function syncMarkersForIndoorFloorPlan(indoorFloorPlanId: number, units: (Unit & { geom: PointGeom })[]): Promise<boolean> {
+/**
+ * Returns null when the plan has no georeference and nothing could be written; otherwise which
+ * writes the org refused — by label, and by unit id to retry — so a refused write is reported.
+ */
+async function syncMarkersForIndoorFloorPlan(
+  indoorFloorPlanId: number,
+  units: (Unit & { geom: PointGeom })[],
+): Promise<{ notWritten: string[]; retryIds: string[] } | null> {
   const recordRes = await facilioApi.fetchRecord<any>('indoorfloorplan', { id: indoorFloorPlanId });
   const record = recordOf<any>(recordRes, 'indoorfloorplan');
-  if (recordRes.error || !record) return false;
+  if (recordRes.error || !record) return null;
   const quad = geometryStringToQuad(record.geometry);
-  if (!quad) return false;
+  if (!quad) return null;
+  const out = { notWritten: [] as string[], retryIds: [] as string[] };
+  const failed = (label: string, id: string) => {
+    out.notWritten.push(label);
+    out.retryIds.push(id);
+  };
 
   const existingRes = await fetchAllRelatedPaged<any>({
     moduleName: 'indoorfloorplan',
@@ -1788,6 +1836,7 @@ async function syncMarkersForIndoorFloorPlan(indoorFloorPlanId: number, units: (
           data: { geometry, properties, label: unit.label, type: MARKER_GEOJSON_TYPE, ...link },
         });
         if (res.error) {
+          failed(unit.label, unit.id);
           // eslint-disable-next-line no-console
           console.warn(`[facilio-api] marker update failed for unit ${unit.id}`, res.error);
         }
@@ -1797,6 +1846,7 @@ async function syncMarkersForIndoorFloorPlan(indoorFloorPlanId: number, units: (
         data: { geoId: unit.id, geometry, properties, type: MARKER_GEOJSON_TYPE, label: unit.label, indoorfloorplan: { id: indoorFloorPlanId }, ...link },
       });
       if (res.error) {
+        failed(unit.label, unit.id);
         // eslint-disable-next-line no-console
         console.warn(`[facilio-api] marker create failed for unit ${unit.id}`, res.error);
       }
@@ -1806,12 +1856,13 @@ async function syncMarkersForIndoorFloorPlan(indoorFloorPlanId: number, units: (
     if (m.geoId && !seenGeoIds.has(m.geoId)) {
       const res = await facilioApi.deleteRecord('floorplanmarker', m.id);
       if (res.error) {
+        failed(m.label || `Marker #${m.id}`, String(m.geoId));
         // eslint-disable-next-line no-console
         console.warn(`[facilio-api] marker delete failed for id ${m.id}`, res.error);
       }
     }
   }
-  return true;
+  return out;
 }
 
 /**
@@ -3436,6 +3487,12 @@ export interface BookingRangeOptions {
 
 const BOOKING_PAGE = 500;
 const BOOKING_MAX_PAGES = 6;
+/**
+ * Record ids per "is one of" filter. The filter travels in the request URL and a floor can hold
+ * hundreds of desks: one query naming them all could pass a server's request-line limit (8 KB on a
+ * default nginx), so a long list is split across queries.
+ */
+const BOOKING_IDS_PER_QUERY = 150;
 /** How far before a range the read looks for bookings that started earlier and run into it. */
 const BOOKING_LOOKBACK_DAYS = 31;
 
@@ -3449,19 +3506,26 @@ const BOOKING_FIELD_BY_MODULE: Record<string, 'desk' | 'space' | 'parkingStall'>
  */
 const FLOOR_IDS_TTL_MS = 60_000;
 const floorIdsCache = new Map<string, { at: number; ids: Promise<string[]> }>();
-function floorRecordIds(moduleName: string, floorId: string): Promise<string[]> {
+function floorRecordIds(moduleName: string, floorId: string, opts: { strict?: boolean } = {}): Promise<string[]> {
   const key = `${floorId}:${moduleName}`;
   const hit = floorIdsCache.get(key);
-  if (hit && Date.now() - hit.at < FLOOR_IDS_TTL_MS) return hit.ids;
-  const ids = (async () => {
-    const load = await loadFloorList(floorId, moduleName);
-    if (load.error) throw new Error(load.error.message ?? `floor ${moduleName} read failed`);
-    return [...load.first, ...(await load.rest)].map((r: any) => String(r.id));
-  })();
-  floorIdsCache.set(key, { at: Date.now(), ids });
-  // A failed read is not kept — the next caller tries again — and answers [] to this one.
-  return ids.catch(() => {
+  let ids: Promise<string[]>;
+  if (hit && Date.now() - hit.at < FLOOR_IDS_TTL_MS) {
+    ids = hit.ids;
+  } else {
+    ids = (async () => {
+      const load = await loadFloorList(floorId, moduleName);
+      if (load.error) throw new Error(load.error.message ?? `floor ${moduleName} read failed`);
+      return [...load.first, ...(await load.rest)].map((r: any) => String(r.id));
+    })();
+    floorIdsCache.set(key, { at: Date.now(), ids });
+  }
+  // A failed read is not kept — the next caller tries again. It answers [] to this one, unless the
+  // caller would build a query from it (`strict`): there an empty list would read as "this floor
+  // has nothing booked".
+  return ids.catch((err) => {
     if (floorIdsCache.get(key)?.ids === ids) floorIdsCache.delete(key);
+    if (opts.strict) throw err;
     return [] as string[];
   });
 }
@@ -3531,27 +3595,33 @@ export async function fetchSpaceBookingsForRange(startISO: string, endISO: strin
   if (opts.floorIds?.length) {
     // Filter fields AND together, so one query cannot OR across the resource lookups: the chosen
     // floors' record ids are gathered (cached per-floor reads) and each lookup gets a query of
-    // its own; the results merge and dedupe.
+    // its own; the results merge and dedupe. A floor list or a query that fails fails the read,
+    // as the org-wide read does — never a partial list that reads as "nothing else is booked".
     const idsByField: Record<string, string[]> = { desk: [], space: [], parkingStall: [] };
     await Promise.all(
       opts.floorIds.flatMap((f) =>
         Object.entries(BOOKING_FIELD_BY_MODULE).map(async ([m, field]) => {
-          for (const id of await floorRecordIds(m, f)) idsByField[field].push(id);
+          for (const id of await floorRecordIds(m, f, { strict: true })) idsByField[field].push(id);
         })
       )
     );
     const queries = Object.entries(idsByField)
       .filter(([field, ids]) => ids.length > 0 && (!opts.resourceField || field === opts.resourceField))
-      .map(([field, ids]) => fetchPages({ ...baseFilters, [field]: { operatorId: 36, value: ids } }).catch(() => [] as SpaceBookingRow[]));
+      .flatMap(([field, ids]) => {
+        const unique = [...new Set(ids)];
+        const parts: string[][] = [];
+        for (let i = 0; i < unique.length; i += BOOKING_IDS_PER_QUERY) parts.push(unique.slice(i, i + BOOKING_IDS_PER_QUERY));
+        return parts.map((part) => fetchPages({ ...baseFilters, [field]: { operatorId: 36, value: part } }));
+      });
     const seen = new Set<string>();
     rows = (await Promise.all(queries)).flat().filter((b) => (seen.has(String(b.id)) ? false : (seen.add(String(b.id)), true)));
   } else {
     rows = await fetchPages(baseFilters);
   }
 
-  // The read is org-wide; a floor-scoped caller wants only its own records' bookings. An empty
-  // set can also mean the floor's lists failed — showing the unscoped rows beats blanking real
-  // bookings then.
+  // Unless `floorIds` scoped the query above, the read is org-wide; a floor-scoped caller wants
+  // only its own records' bookings. An empty set can also mean the floor's lists failed — showing
+  // the unscoped rows beats blanking real bookings then.
   const onFloor = floorId
     ? new Set((await Promise.all(Object.keys(BOOKING_FIELD_BY_MODULE).map((m) => floorRecordIds(m, floorId)))).flat())
     : null;

@@ -1,4 +1,5 @@
 import { FLOORPLAN_FN, isVibeApp, vibe } from './vibe';
+import { FLOORPLAN_API_DEPLOYED } from './featureFlags';
 import type { FloorBundle, FloorplanDataSource } from './dataSource';
 import type { Asset } from './assets';
 import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, Site, Unit } from './types';
@@ -25,9 +26,12 @@ import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, S
  * through, adding a round trip per call for a tier that can never answer.
  *
  * One failure marks it unavailable for the rest of the session and every later call short-circuits.
- * It resets on reload, so deploying the function makes the tier come back with no code change.
+ * It resets on reload. Deploying the function is not enough to bring the tier back: flip
+ * FLOORPLAN_API_DEPLOYED too.
  */
-let floorplanFnUnavailable = false;
+// Starts tripped while the function is not deployed (featureFlags.FLOORPLAN_API_DEPLOYED), so
+// nothing is sent to it at all.
+let floorplanFnUnavailable = !FLOORPLAN_API_DEPLOYED;
 
 function callFloorplanFn<T>(handler: string, args: Record<string, unknown> = {}): Promise<T> {
   if (!isVibeApp) return Promise.reject(new Error('vibe-db: not running as a vibe app'));
