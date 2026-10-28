@@ -2865,6 +2865,9 @@ export async function vacateUnitReal(unit: Unit, contactId: string): Promise<Rea
   return { ok: true };
 }
 
+/** The waits before each re-read of a vacated desk: 2 s, doubling — three reads over 14 s. */
+const VACATE_RECHECK_MS = [2000, 4000, 8000];
+
 /**
  * Wait until the org has actually taken a desk's holder off it.
  *
@@ -2873,29 +2876,52 @@ export async function vacateUnitReal(unit: Unit, contactId: string): Promise<Rea
  * desk straight away therefore still names the old holder, and the plan showed the desk as
  * "Temporarily Vacant" and "Assigned to <them>" at once, until some later refresh caught up.
  *
- * So the desk is re-read until its holder is gone. `fetchRecord` goes over the raw request path,
- * which the host does not cache, so each read is the org's current answer. Bounded well inside the
- * 20 s the plan keeps a record marked busy, so the spinner never stops before this does.
+ * So the desk is re-read until its holder is gone — at most three times, waiting 2 s, then 4 s, then
+ * 8 s before each, so a slow org gets more room rather than more requests. It used to read every
+ * 0.8 s, up to 15 times, whoever was still looking. 14 s in all, inside the 20 s the plan keeps a
+ * record marked busy, so the spinner never stops before this does. `fetchRecord` goes over the raw
+ * request path, which the host does not cache, so each read is the org's current answer.
+ *
+ * `signal` stops it: the caller aborts when the record is no longer on screen. A read that falls
+ * while the tab is hidden is skipped — the caller re-reads the plan's holders once this returns,
+ * whatever it returns. Unless a read has shown the holder gone, the answer is `cleared: false`: not
+ * seen, so not claimed.
  */
 export async function waitForDeskVacated(
   unit: Unit,
   holderId: string,
-  { timeoutMs = 12000, intervalMs = 800 }: { timeoutMs?: number; intervalMs?: number } = {}
+  { signal, delaysMs = VACATE_RECHECK_MS }: { signal?: AbortSignal; delaysMs?: number[] } = {}
 ): Promise<{ cleared: boolean }> {
   if (!isFacilioApiConfigured || unit.type !== 'workstation') return { cleared: true };
   const deskId = await deskRecordId(unit);
   if (!deskId) return { cleared: false };
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
+  for (const ms of delaysMs) {
+    if (!(await pause(ms, signal))) return { cleared: false };
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') continue;
+    // Stopped while this read was out, its answer still counts; the next pause ends the wait.
     const res = await facilioApi.fetchRecord<any>('desks', { id: deskId }).catch(() => null);
     const desk = res ? recordOf<any>(res, 'desks') : null;
     if (desk) {
       const holder = lookupId(desk, 'employee');
       if (holder == null || String(holder) !== String(holderId)) return { cleared: true };
     }
-    if (Date.now() + intervalMs > deadline) return { cleared: false };
-    await new Promise((r) => setTimeout(r, intervalMs));
   }
+  return { cleared: false };
+}
+
+/** Resolves true after `ms`, or false the moment `signal` aborts. */
+function pause(ms: number, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const done = (waited: boolean) => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', stop);
+      resolve(waited);
+    };
+    const stop = () => done(false);
+    const timer = setTimeout(() => done(true), ms);
+    signal?.addEventListener('abort', stop, { once: true });
+  });
 }
 
 /** moduleName -> its numeric moduleId (spacebooking's `parentModuleId`). Session cache. */

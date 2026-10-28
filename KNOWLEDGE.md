@@ -71,6 +71,7 @@ The org's first responders (first aiders, floor wardens and the org's own roles)
 - **Webhooks:** None.
 - **AI agents:** None.
 - **Realtime:** None.
+- **Polling:** nothing on a timer. One bounded re-check: after Vacate on a held desk the org clears the holder while processing the move, so `waitForDeskVacated` re-reads the desk at most three times (2 s, 4 s, 8 s apart; 14 s, inside the 20 s busy limit), makes no read while the tab is hidden, and stops when the record leaves the card (`StateflowActions` aborts it on close or on a switch to another record). Not seen cleared → the plan re-reads its holders once and the toast says Facilio is still updating.
 - **Files** (vibe file store, org-wide): `floorplan-settings.json` — the settings blob (the access grid only until the app database holds one; module colours, colour-by, label style, slot granularity, booking module, custom markers, enabled modules; responders only when the database is unreachable); `floorplan-department-colors.json` — department → colour. Each save uploads a new file and prunes older copies. localStorage is the last tier.
 - **Access & config:** `vibe.json` app `floorplan-manager`. Connected app in the ENEC org (web + mobile). Tab/mode access from Settings › Roles & access.
 - **Data flow (responders):** Settings › First responders › Save → `actions.setFirstResponders` → reducer (sanitise, names from `state.employees`) → when `state.respondersInDb`, `responderStore.saveResponders` → `floorplanResponders.save-responders` → tables. A refused write shows a toast and re-reads the database. On boot `loadResponders` runs beside the settings load; once it answers, the database is the only source (`APPLY_SETTINGS` ignores the blob's responders and `settingsFromState` omits them). Badges/list/notice then derive from `respondersOnFloor` (desk holder ∈ responders).
@@ -84,7 +85,7 @@ The org's first responders (first aiders, floor wardens and the org's own roles)
 | R2, R8 | `departmentColors.test.ts`, `labelLayout.test.ts`, `fitUnitsView.test.ts`, `tooltipLayer.test.ts` | unit | Colours and labels resolve as configured |
 | R3 | `persistUnits*.test.ts`, `markedZones.test.ts`, `roomMarking.test.ts`, `roomGestures.test.tsx`, `RoomPolygon.test.tsx`, `orgWrites.test.ts`, `EmptyPlanState.test.tsx` | unit | Save reports only what the org stored; zones drawn and written as the org's |
 | R4 | `deskMoves.test.ts`, `myDesk.test.ts`, `searchEmployees.test.ts`, `employeeFilters.test.ts` | unit | A desk assignment is a Move; people search and filters match the org's |
-| R5 | `BookingModal.test.tsx`, `bookingRows.test.ts`, `StateflowActions.test.tsx`, `stateflowApi.test.ts`, `orgWrites.test.ts` | unit | Booking form and calendar rows; the org's own record actions; no-host writes refused |
+| R5 | `BookingModal.test.tsx`, `bookingRows.test.ts`, `StateflowActions.test.tsx`, `deskVacated.test.ts`, `stateflowApi.test.ts`, `orgWrites.test.ts` | unit | Booking form and calendar rows; the org's own record actions; the bounded desk-vacated re-check; no-host writes refused |
 | R5 | `floorBookings.test.ts` | unit | The plan's bookings query names only the floor's desks/spaces/stalls, ≤150 ids per query; a failed floor list fails the read |
 | R6 | `access.test.ts`, `editAccess.test.ts`, `orgRoles.test.ts`, `RoleLookup.test.tsx` | unit | Roles load however the app is opened; Settings stays with admins; Settings closed to an unknown role |
 | R6 | `reducer.test.ts` "the access grid in the app database", `sharedSettings.test.ts` | unit | The blob's grid shows until the DB holds one, then the DB's only; refusal reasons passed on |
@@ -98,5 +99,5 @@ The org's first responders (first aiders, floor wardens and the org's own roles)
 | R15 | `Modal.test.tsx` (focus trap, Esc order, focus return), `keyboard.test.ts`, `useDelayedFlag.test.tsx` | unit | As stated |
 | R1–R2, R11, R13 | Local preview: open a floor, the responder chip and list, the Settings dialog, the print sheet | manual | Badges on holders' desks; notice is the last page |
 
-- Run `npm test` (vitest, 469 tests) and `npx tsc --noEmit` before every deploy.
+- Run `npm test` (vitest, 479 tests) and `npx tsc --noEmit` before every deploy.
 - **Known gaps:** a non-admin caller being refused by the function is not tested live (only an admin identity was available); the browser → `floorplanResponders` path inside a real vibe host, the refusal toasts and the hidden Settings tab are verified only after deploy to preview; DWG parsing not tested against a real DWG; R4/R5 org writes are exercised manually in the ENEC org, not automated.

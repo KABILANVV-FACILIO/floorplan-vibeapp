@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { invalidateUnitRecordInfo, resolveUnitRecord, vacateUnitReal, waitForDeskVacated } from '../../lib/facilioApiDataSource';
@@ -55,6 +55,8 @@ export function StateflowActions({
   const [failed, setFailed] = useState(false);
   const [picking, setPicking] = useState(false);
   const [showMore, setShowMore] = useState(false);
+  // The wait for the org to let go of a vacated desk, while one is running (see run()).
+  const vacateWait = useRef<AbortController | null>(null);
 
   const ref = resolveUnitRecord(unit);
   const moduleName = ref?.moduleName;
@@ -80,6 +82,11 @@ export function StateflowActions({
     setFailed(false);
     setShowMore(false);
   }, [moduleName, recordId]);
+
+  // Off this record — the card closed, or it now shows another — the wait for the org to let go
+  // of a vacated desk stops: no one is looking at that desk here any more. The action itself is
+  // done, and the plan still re-reads its holders once, as it does when the org is slow.
+  useEffect(() => () => vacateWait.current?.abort(), [moduleName, recordId]);
 
   // `recordNonce` is in the deps because a write anywhere — this panel, the plan's popover, the
   // people picker — changes which transitions this record offers next. A re-read leaves the
@@ -110,6 +117,8 @@ export function StateflowActions({
       data = { transitionCommentData: { body, bodyHTML: body } };
     }
     setBusyId(t.id);
+    const waiting = new AbortController();
+    vacateWait.current = waiting;
     // The record itself is busy, not just this button — the marker on the plan spins too, because
     // the transition is happening to the thing you are looking at, not to the control you pressed.
     actions.setUnitBusy(unit.id);
@@ -128,7 +137,7 @@ export function StateflowActions({
       // the request returns. Re-reading now would still name the old holder beside the new
       // "Temporarily Vacant" state. So the desk stays busy until the org has actually let go of
       // them, and only then is anything re-read.
-      const settled = vacatingDesk ? await waitForDeskVacated(unit, holder) : { cleared: true };
+      const settled = vacatingDesk ? await waitForDeskVacated(unit, holder, { signal: waiting.signal }) : { cleared: true };
       invalidateUnitRecordInfo(unit);
       // Re-read the record: a transition is exactly what changes its state and its holder, and
       // Vacate clears `employee`, which drives the marker's initials and the sidebar's pill.
@@ -147,6 +156,7 @@ export function StateflowActions({
     } catch (err) {
       actions.showToast(`Could not ${t.name} — ${(err as Error)?.message ?? 'the org refused it'}`);
     } finally {
+      if (vacateWait.current === waiting) vacateWait.current = null;
       setBusyId(null);
       setShowMore(false);
       actions.setUnitBusy(null);

@@ -19,7 +19,7 @@ const invalidateUnitRecordInfo = vi.fn();
 const assignEmployeeToRecord = vi.fn(async (_unit: unknown, _employeeId: string) => {});
 const vacateUnitReal = vi.fn(async (_unit: unknown, _contactId: string) => ({ ok: true as const }));
 // Resolves when the org has taken the holder off the desk. Default: it already has.
-const waitForDeskVacated = vi.fn(async (_unit: unknown, _holder: string) => ({ cleared: true }));
+const waitForDeskVacated = vi.fn(async (_unit: unknown, _holder: string, _opts?: { signal?: AbortSignal }) => ({ cleared: true }));
 const clearHolder = vi.fn();
 
 /**
@@ -53,7 +53,7 @@ vi.mock('../../lib/facilioApiDataSource', () => ({
   invalidateUnitRecordInfo,
   assignEmployeeToRecord: (unit: unknown, employeeId: string) => assignEmployeeToRecord(unit, employeeId),
   vacateUnitReal: (unit: unknown, contactId: string) => vacateUnitReal(unit, contactId),
-  waitForDeskVacated: (unit: unknown, holder: string) => waitForDeskVacated(unit, holder),
+  waitForDeskVacated: (unit: unknown, holder: string, opts?: { signal?: AbortSignal }) => waitForDeskVacated(unit, holder, opts),
 }));
 vi.mock('../../lib/stateflowApi', async () => {
   const real = await vi.importActual<typeof import('../../lib/stateflowApi')>('../../lib/stateflowApi');
@@ -161,7 +161,7 @@ describe('what a button does depends on the transition', () => {
       render(<StateflowActions unit={unit} />);
       (await screen.findByRole('button', { name: 'Vacate' })).click();
 
-      await waitFor(() => expect(waitForDeskVacated).toHaveBeenCalledWith(unit, '7'));
+      await waitFor(() => expect(waitForDeskVacated).toHaveBeenCalledWith(unit, '7', { signal: expect.any(AbortSignal) }));
       // The move and the transition are done, but the org has not let go yet.
       expect(executeStateTransition).toHaveBeenCalled();
       expect(refreshAssignments).not.toHaveBeenCalled();
@@ -204,6 +204,60 @@ describe('what a button does depends on the transition', () => {
       expect(clearHolder).not.toHaveBeenCalled();
       // Still re-read, so whatever the org has by now does show.
       expect(refreshAssignments).toHaveBeenCalled();
+    } finally {
+      store.assignments = {};
+    }
+  });
+
+  it('stops waiting for the org once the card closes, and says nothing it has not seen', async () => {
+    store.assignments = { '1676024': '7' };
+    let signal!: AbortSignal;
+    // Like the real wait: it ends, uncleared, the moment it is stopped.
+    waitForDeskVacated.mockImplementationOnce(
+      (_unit, _holder, opts) =>
+        new Promise((resolve) => {
+          signal = opts!.signal!;
+          signal.addEventListener('abort', () => resolve({ cleared: false }));
+        })
+    );
+    try {
+      fetchAvailableStates.mockResolvedValue(flow(['Vacate']));
+      const { unmount } = render(<StateflowActions unit={unit} />);
+      (await screen.findByRole('button', { name: 'Vacate' })).click();
+      await waitFor(() => expect(waitForDeskVacated).toHaveBeenCalled());
+      expect(signal.aborted).toBe(false);
+
+      unmount();
+      expect(signal.aborted).toBe(true);
+      await waitFor(() => expect(setUnitBusy).toHaveBeenLastCalledWith(null));
+      expect(clearHolder).not.toHaveBeenCalled();
+      // The vacate itself happened; the plan re-reads its holders once, as when the org is slow.
+      expect(refreshAssignments).toHaveBeenCalledTimes(1);
+      expect(showToast).toHaveBeenCalledWith(expect.stringContaining('still updating'), 6000);
+    } finally {
+      store.assignments = {};
+    }
+  });
+
+  it('stops waiting when the card moves to another record', async () => {
+    store.assignments = { '1676024': '7' };
+    let signal!: AbortSignal;
+    waitForDeskVacated.mockImplementationOnce(
+      (_unit, _holder, opts) =>
+        new Promise((resolve) => {
+          signal = opts!.signal!;
+          signal.addEventListener('abort', () => resolve({ cleared: false }));
+        })
+    );
+    try {
+      fetchAvailableStates.mockResolvedValue(flow(['Vacate']));
+      const { rerender } = render(<StateflowActions unit={unit} />);
+      (await screen.findByRole('button', { name: 'Vacate' })).click();
+      await waitFor(() => expect(waitForDeskVacated).toHaveBeenCalled());
+
+      rerender(<StateflowActions unit={{ ...unit, id: '1676025', label: 'WS-IN-06' } as Unit} />);
+      expect(signal.aborted).toBe(true);
+      await waitFor(() => expect(setUnitBusy).toHaveBeenLastCalledWith(null));
     } finally {
       store.assignments = {};
     }
