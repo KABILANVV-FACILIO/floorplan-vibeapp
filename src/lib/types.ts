@@ -150,7 +150,7 @@ export const ALL_PLAN_TYPES: { id: PlanId; name: string }[] = [
 ];
 export type AppMode = 'assign' | 'book' | 'edit';
 export type EditTool = 'select' | 'room' | 'delivery' | 'workstation' | 'locker' | 'parking' | 'amenity' | 'asset' | 'calibrate';
-export type Role = 'admin' | 'manager' | 'employee';
+
 
 /** Each plan type on a floor can have its own background image — key floorImages by both. */
 export function floorImageKey(floorId: string, planId: PlanId): string {
@@ -244,6 +244,77 @@ export interface Employee {
   email?: string;
   /** The person's department, distinct from the desk's — a desk can be lent to another team. */
   department?: string;
+  /** The person record's own `mobile` (falling back to `phone`) — the number a first responder is listed with. */
+  mobile?: string;
+}
+
+/**
+ * The people a floor turns to in an emergency — the lists on the notice by the lifts. The roles
+ * are the org's own: first aider and floor warden come built in, and Settings › First responders
+ * adds more (fire marshal, AED trained, radiation protection…), each with its own badge.
+ */
+export type ResponderRole = string;
+
+/** The white symbol on a badge. `text` draws the role's own one or two letters instead. */
+export type ResponderIcon = 'cross' | 'warden' | 'flame' | 'aed' | 'shield' | 'megaphone' | 'radiation' | 'drop' | 'star' | 'phone' | 'bell' | 'text';
+
+export const RESPONDER_ICONS: { id: ResponderIcon; name: string }[] = [
+  { id: 'cross', name: 'First aid cross' },
+  { id: 'warden', name: 'Warden W' },
+  { id: 'flame', name: 'Flame' },
+  { id: 'aed', name: 'Defibrillator' },
+  { id: 'shield', name: 'Shield' },
+  { id: 'megaphone', name: 'Megaphone' },
+  { id: 'radiation', name: 'Radiation' },
+  { id: 'drop', name: 'Spill' },
+  { id: 'star', name: 'Star' },
+  { id: 'phone', name: 'Phone' },
+  { id: 'bell', name: 'Alarm bell' },
+  { id: 'text', name: 'Letters' },
+];
+
+/** The badge's outline. A second cue besides colour, so roles stay apart for colour-blind readers. */
+export type ResponderShape = 'square' | 'circle' | 'diamond';
+
+export interface ResponderRoleDef {
+  id: ResponderRole;
+  /** One person: "First aider". */
+  name: string;
+  /** The list heading: "First aiders". */
+  plural: string;
+  color: string;
+  icon: ResponderIcon;
+  /** One or two letters, when `icon` is `text`. */
+  text?: string;
+  shape: ResponderShape;
+  /** First aider and floor warden: always present, and not deletable. */
+  builtIn?: boolean;
+}
+
+export const BUILTIN_RESPONDER_ROLES: ResponderRoleDef[] = [
+  // ISO 7010 "safe condition" green — the first-aid sign's own.
+  { id: 'firstAider', name: 'First aider', plural: 'First aiders', color: '#00843D', icon: 'cross', shape: 'square', builtIn: true },
+  // Fire-safety red, as on a warden's helmet and vest.
+  { id: 'floorWarden', name: 'Floor warden', plural: 'Floor wardens', color: '#C8102E', icon: 'warden', shape: 'circle', builtIn: true },
+];
+
+/** The colours a role can take: dark enough for a white symbol on top, and apart from each other. */
+export const RESPONDER_COLORS = ['#00843D', '#C8102E', '#D9480F', '#B7791F', '#0059D6', '#1F3A93', '#6D28D9', '#B5179E', '#0E7C86', '#4B5563'] as const;
+
+/**
+ * A responder is a LINK to an employee record and nothing more: who they are — name, department,
+ * mobile — is read off the record (state.employees), so the list never drifts from the directory.
+ */
+export interface FirstResponder {
+  /** The person's employee id — the id a desk's `employee` field holds. */
+  employeeId: string;
+  /**
+   * Their name, from the employee record whenever the directory has it (see withRecordNames); the
+   * stored copy only stands in before the directory has loaded.
+   */
+  name: string;
+  /** One person can be both, as on most notices. Never empty. */
+  roles: ResponderRole[];
 }
 
 export interface Booking {
@@ -360,26 +431,75 @@ export const TYPE_META: Record<UnitType, { name: string; prefix: string }> = {
   amenity: { name: 'Amenity', prefix: 'AM' },
 };
 
-export const ROLES: { id: Role; name: string }[] = [
-  { id: 'admin', name: 'Admin' },
-  { id: 'manager', name: 'Manager' },
-  { id: 'employee', name: 'Employee' },
+/**
+ * ACCESS — which of the org's roles reach which TAB.
+ *
+ * A surface is a tab, and only a tab. What someone may DO once they are on the plan — assign,
+ * book, edit — is answered by the org's own stateflow and by the module settings; asking it twice
+ * would mean two configurations that can disagree, and the one in this app would quietly win.
+ */
+/** A tab someone can navigate to. The bottom nav, the view clamp and the last-tab rule use only these. */
+export type Tab = 'map' | 'bookings' | 'people' | 'settings';
+
+/**
+ * Everything the grid governs: the four tabs, plus editing the plan. Editing is a capability, not a
+ * place — it is never somewhere the app sends someone, so it is kept out of `Tab`. Keyed `map.edit`
+ * because the floorplanApi function already stores it under that key; the UI shows only its name.
+ */
+export type Surface = Tab | 'map.edit';
+
+export const SURFACES: { id: Surface; name: string; desc: string }[] = [
+  { id: 'map', name: 'Floorplans', desc: 'The plan itself, and everything on it' },
+  { id: 'map.edit', name: 'Edit floorplans', desc: 'Upload plans, auto-map and place units. Web only — the mobile app has no edit mode' },
+  { id: 'bookings', name: 'Bookings', desc: 'The org-wide booking calendar' },
+  { id: 'people', name: 'People', desc: 'The employee directory' },
+  { id: 'settings', name: 'Settings', desc: 'This screen and every other configuration' },
 ];
 
-export type PermsAction = 'edit' | 'assign' | 'book';
-export type Perms = Record<PermsAction, Role[]>;
+/**
+ * Who reaches one surface. `all` is a state rather than a list of every role id: an org has dozens
+ * of roles and adds more, and a tab open to everyone must stay open to a role created next month.
+ * Held as a list, every new role would silently arrive denied.
+ */
+export interface SurfaceAccess {
+  all: boolean;
+  /** Role record ids, as strings. Ids, never names — a role can be renamed. */
+  roles: string[];
+}
 
-export const DEFAULT_PERMS: Perms = {
-  edit: ['admin'],
-  assign: ['admin', 'manager'],
-  book: ['admin', 'manager', 'employee'],
+/** One of the org's roles, as the picker lists them. */
+export interface OrgRole {
+  id: string;
+  name: string;
+  /**
+   * An admin role in the org's own terms — Facilio flags these on the role record (`isSuperAdmin`,
+   * `isPrevileged`) rather than by name. Such a role always keeps Settings.
+   */
+  isAdmin?: boolean;
+}
+
+export type Access = Partial<Record<Surface, SurfaceAccess>>;
+
+/**
+ * Everything open. A surface absent from the stored blob falls back to its entry here, so an org
+ * that never opens the grid behaves exactly as it did before this existed.
+ *
+ * Settings included: the roles that may configure the app are the org's own admin roles, whose
+ * record ids this app does not know until someone picks them. Defaulting it closed would lock
+ * every org out of its own settings on upgrade.
+ */
+export const DEFAULT_ACCESS: Record<Surface, SurfaceAccess> = {
+  map: { all: true, roles: [] },
+  // Open, as editing was before this grid existed: restricting it is a decision an admin makes,
+  // not one an upgrade should make for them by quietly taking the Edit button away.
+  'map.edit': { all: true, roles: [] },
+  bookings: { all: true, roles: [] },
+  people: { all: true, roles: [] },
+  settings: { all: true, roles: [] },
 };
 
-export const ACTIONS: { id: PermsAction; name: string; desc: string }[] = [
-  { id: 'edit', name: 'Edit floorplan', desc: 'Draw rooms, place units, calibrate scale' },
-  { id: 'assign', name: 'Assign desks & lockers', desc: 'Give a permanent desk or locker to a person' },
-  { id: 'book', name: 'Book spaces', desc: 'Reserve hot desks, rooms, parking' },
-];
+/** The order a hidden tab falls back through — the plan first, settings last. Tabs only. */
+export const SURFACE_ORDER: Tab[] = ['map', 'bookings', 'people', 'settings'];
 
 export interface StateDef {
   key: string;

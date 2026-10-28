@@ -281,3 +281,304 @@
   padding: 14px 20px;
   border-bottom: 1px solid var(--ink-100);
 }
+
+/* ───────────────────── Summary cards + staged editing ─────────────────────
+ * Dedicated classes rather than borrowed ones: `.labelRow` stacks in a column and
+ * `.stateText` is a fixed 150px, both right for the desk-label editor and wrong
+ * for a one-line "what is this / what is it set to" row.
+ */
+
+/* One read-only line: what the thing is, and what it is set to — on one row. */
+.sumRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 13px 20px;
+  border-top: 1px solid var(--ink-100);
+}
+.sumText {
+  min-width: 0;
+}
+.sumName {
+  font: 600 13px/1.3 var(--font-sans);
+  color: var(--ink-900);
+}
+.sumDesc {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-500);
+}
+.sumValue {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 360px;
+}
+
+/* A real chip — the old `.labelChip` is only a size modifier with no fill. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--ink-200);
+  background: var(--ink-050);
+  color: var(--ink-700);
+  font: 500 12px/1 var(--font-sans);
+  white-space: nowrap;
+}
+.pillOn {
+  border-color: var(--blue-200);
+  background: var(--blue-050);
+  color: var(--blue-700);
+}
+.pillMuted {
+  border-style: dashed;
+  background: transparent;
+  color: var(--ink-500);
+}
+
+.swatchLg {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+
+/* Editing rows inside a modal: label on the left, control on the right. */
+.editRow {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--ink-100);
+}
+.editRow:first-child {
+  border-top: none;
+}
+.editLabel {
+  padding-top: 9px;
+  min-width: 0;
+}
+
+/* The role lookup. The menu opens IN the row rather than floating: inside a
+   scrolling modal body a floating menu is clipped by the body's overflow, which
+   is exactly what happened to the last row. */
+.lookup {
+  min-width: 0;
+}
+.lookupField {
+  width: 100%;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-md);
+  background: #fff;
+  color: var(--ink-900);
+  font: 400 13px/1.3 var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+.lookupField:hover {
+  border-color: var(--ink-300);
+}
+.lookupField[aria-expanded='true'] {
+  border-color: var(--blue-500);
+  box-shadow: 0 0 0 3px var(--blue-050);
+}
+.lookupField:focus-visible {
+  outline: 2px solid var(--blue-500);
+  outline-offset: 2px;
+}
+.lookupValues {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.lookupPlaceholder {
+  color: var(--ink-400);
+}
+.caret {
+  flex-shrink: 0;
+  color: var(--ink-400);
+  transition: transform 140ms ease;
+}
+.lookupField[aria-expanded='true'] .caret {
+  transform: rotate(180deg);
+}
+
+.menu {
+  margin-top: 6px;
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-md);
+  background: #fff;
+  box-shadow: 0 8px 22px rgba(15, 26, 40, 0.1);
+  overflow: hidden;
+}
+.menuSearch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--ink-100);
+  color: var(--ink-400);
+}
+.menuSearch input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font: 400 13px/1.4 var(--font-sans);
+  color: var(--ink-900);
+}
+.menuList {
+  max-height: 232px;
+  overflow-y: auto;
+  padding: 4px;
+}
+.menuFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 12px;
+  border-top: 1px solid var(--ink-100);
+  font-size: 11.5px;
+  color: var(--ink-500);
+}
+.menuEmpty {
+  padding: 14px 10px;
+  font-size: 12.5px;
+  color: var(--ink-500);
+  text-align: center;
+}
+
+/* An option is a checkbox row, the same weight whether it is on or off — not
+   the filled 38px `.slotChip` button, which read as a primary action. */
+.opt {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-900);
+  font: 500 13px/1.3 var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+.opt:hover {
+  background: var(--ink-050);
+}
+.opt:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.opt:focus-visible {
+  outline: 2px solid var(--blue-500);
+  outline-offset: -2px;
+}
+.optBox {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border: 1.5px solid var(--ink-300);
+  border-radius: 4px;
+  color: #fff;
+}
+.optOn .optBox {
+  background: var(--blue-500);
+  border-color: var(--blue-500);
+}
+.optTag {
+  margin-left: auto;
+  padding-left: 10px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--ink-500);
+  white-space: nowrap;
+}
+.optAll {
+  border-bottom: 1px solid var(--ink-100);
+  border-radius: 0;
+  margin-bottom: 4px;
+  padding-bottom: 9px;
+}
+
+.refused {
+  margin: 0 20px 4px;
+  padding: 9px 12px;
+  border-radius: var(--radius-md);
+  background: var(--danger-050);
+  color: var(--danger-700);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+@media (max-width: 600px) {
+  .sumRow {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .sumValue {
+    justify-content: flex-start;
+    max-width: none;
+  }
+  .editRow {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .editLabel {
+    padding-top: 0;
+  }
+}
+
+/* The role list floats over the modal, positioned against its field (see RoleLookup). Above the
+   modal (z 200), level with the Select primitive's listbox (z 300). The panel takes the height
+   computePlacement allows and the role list scrolls inside it, so a long list never runs off
+   the screen — the search box and the count stay put. */
+.menuFloating {
+  position: fixed;
+  z-index: 300;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+.menuFloating .menuList {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+.menuClear {
+  border: none;
+  background: transparent;
+  color: var(--blue-600);
+  font: 600 12px/1 var(--font-sans);
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.menuClear:hover {
+  background: var(--blue-050);
+}
+.menuClear:focus-visible {
+  outline: 2px solid var(--blue-500);
+  outline-offset: 1px;
+}

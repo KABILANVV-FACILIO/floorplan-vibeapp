@@ -10,7 +10,7 @@ import type { Unit } from '../lib/types';
  */
 
 const sync = vi.hoisted(() => ({
-  markers: { plansSynced: 1, skipped: [] as string[] },
+  markers: { plansSynced: 1, skipped: [] as string[], unitsNotWritten: [] as string[], retryIds: [] as string[] },
   zones: { plansSynced: 1, created: 0, updated: 0, deleted: 0, skipped: [] as string[], plansSkipped: 0, roomsNotWritten: [] as string[], retryIds: [] as string[] },
 }));
 
@@ -45,7 +45,7 @@ const orgRoom: Unit = { id: '819849', type: 'room', label: 'Meeting Room 2', roo
 const desk: Unit = { id: '1001', type: 'workstation', label: 'WS-1', room: null, geom: { kind: 'point', x: 0.5, y: 0.5 }, floor: '5150', plan: 'workstation' };
 
 beforeEach(() => {
-  sync.markers = { plansSynced: 1, skipped: [] };
+  sync.markers = { plansSynced: 1, skipped: [], unitsNotWritten: [], retryIds: [] };
   sync.zones = { plansSynced: 1, created: 0, updated: 0, deleted: 0, skipped: [], plansSkipped: 0, roomsNotWritten: [], retryIds: [] };
   vi.mocked(saveFloorplanZones).mockClear();
 });
@@ -67,21 +67,21 @@ describe('persistUnits and room outlines', () => {
   it('writes no room outline on a save that is about to be reported as failed', async () => {
     // Otherwise the org would hold outlines for a save the user was told did not happen — and a
     // Discard after it would show those rooms as Unplaced while the org has them drawn.
-    sync.markers = { plansSynced: 0, skipped: ['workstation: no georeference'] };
+    sync.markers = { plansSynced: 0, skipped: ['workstation: no georeference'], unitsNotWritten: [], retryIds: [] };
     await expect(persistUnits('5150', [desk, orgRoom], [desk])).rejects.toThrow(/markers not written/);
     expect(saveFloorplanZones).not.toHaveBeenCalled();
   });
 
   it('runs the zone sync, with the saved snapshot, when there were no markers to write', async () => {
-    sync.markers = { plansSynced: 0, skipped: ['locker: no georeference'] };
+    sync.markers = { plansSynced: 0, skipped: ['locker: no georeference'], unitsNotWritten: [], retryIds: [] };
     const baseline = [orgRoom, desk];
-    await expect(persistUnits('5150', [orgRoom], baseline)).resolves.toEqual({ roomsNotWritten: [], roomsToRetry: [] });
+    await expect(persistUnits('5150', [orgRoom], baseline)).resolves.toEqual({ roomsNotWritten: [], unitsNotWritten: [], toRetry: [] });
     expect(saveFloorplanZones).toHaveBeenCalledWith('5150', [orgRoom], baseline);
   });
 
   it('hands back the rooms whose outline write failed, to keep them unsaved', async () => {
     sync.zones = { ...sync.zones, roomsNotWritten: ['Meeting Room 2'], retryIds: ['819849'] };
-    await expect(persistUnits('5150', [], [orgRoom])).resolves.toEqual({ roomsNotWritten: ['Meeting Room 2'], roomsToRetry: ['819849'] });
+    await expect(persistUnits('5150', [], [orgRoom])).resolves.toEqual({ roomsNotWritten: ['Meeting Room 2'], unitsNotWritten: [], toRetry: ['819849'] });
   });
 
   it('throws when the last org room was removed and its plan could not be written', async () => {
@@ -91,11 +91,27 @@ describe('persistUnits and room outlines', () => {
 
   it('reports, not throws, when every room was skipped per room and no plan failed', async () => {
     sync.zones = { ...sync.zones, plansSynced: 0, skipped: ['"New room": #4242424 is not a room this floor loaded from the org'], roomsNotWritten: ['New room'] };
-    await expect(persistUnits('5150', [{ ...orgRoom, id: '4242424', label: 'New room' }], [])).resolves.toEqual({ roomsNotWritten: ['New room'], roomsToRetry: [] });
+    await expect(persistUnits('5150', [{ ...orgRoom, id: '4242424', label: 'New room' }], [])).resolves.toEqual({ roomsNotWritten: ['New room'], unitsNotWritten: [], toRetry: [] });
   });
 
   it('does not treat a room id of 0 as an org room', async () => {
     sync.zones = { ...sync.zones, plansSynced: 0, plansSkipped: 1, skipped: ['x'] };
-    await expect(persistUnits('5150', [{ ...orgRoom, id: '0' }], [])).resolves.toEqual({ roomsNotWritten: [], roomsToRetry: [] });
+    await expect(persistUnits('5150', [{ ...orgRoom, id: '0' }], [])).resolves.toEqual({ roomsNotWritten: [], unitsNotWritten: [], toRetry: [] });
+  });
+});
+
+describe('persistUnits and refused desk markers', () => {
+  it('hands them back by label to name and by id to retry, merged with the rooms to retry', async () => {
+    sync.markers = { plansSynced: 1, skipped: [], unitsNotWritten: ['WS-1'], retryIds: ['1001'] };
+    sync.zones = { ...sync.zones, roomsNotWritten: ['Meeting Room 2'], retryIds: ['819849'] };
+    await expect(persistUnits('5150', [desk], [orgRoom])).resolves.toEqual({ roomsNotWritten: ['Meeting Room 2'], unitsNotWritten: ['WS-1'], toRetry: ['1001', '819849'] });
+  });
+
+  it('are never called saved', () => {
+    expect(savedNotice({ roomsNotWritten: [], unitsNotWritten: ['WS-1'] })).toBe('Not saved to Facilio: WS-1 — save again to retry.');
+    expect(savedNotice({ roomsNotWritten: [], unitsNotWritten: ['WS-1', 'WS-2', 'L-3', 'P-4', 'P-5'] })).toBe('Not saved to Facilio: WS-1, WS-2, L-3 +2 more — save again to retry.');
+    const both = savedNotice({ roomsNotWritten: ['Pantry'], unitsNotWritten: ['WS-1'] });
+    expect(both).toBe('Not saved to Facilio: WS-1 — save again to retry. 1 room outline not written to the org: Pantry');
+    expect(both).not.toMatch(/Saved —/);
   });
 });

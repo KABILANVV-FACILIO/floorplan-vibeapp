@@ -1,4 +1,4 @@
-import type { EnabledModules, MarkerDef, Perms } from './types';
+import type { Access, EnabledModules, FirstResponder, MarkerDef, ResponderRoleDef } from './types';
 import type { AppState } from '../state/types';
 import type { LabelStyle } from './labelLayout';
 import { isVibeApp, vibe } from './vibe';
@@ -22,7 +22,12 @@ import { fetchVibeSettings, storeVibeSettings } from './vibeDbDataSource';
  * used to stop the chain dead and leave the settings saved nowhere at all.
  */
 export interface SettingsConfig {
-  perms?: Perms;
+  /**
+   * Which roles reach which tab. Replaces the old `perms` key, which described three ACTIONS for a
+   * fixed three roles; a blob still carrying that key is ignored rather than translated — the
+   * surfaces changed meaning, so there is nothing faithful to carry across.
+   */
+  access?: Access;
   moduleColors?: Record<string, string>;
   /** Whether desk markers are coloured by availability or by department (Settings › Desks). */
   colorBy?: 'status' | 'department';
@@ -39,6 +44,10 @@ export interface SettingsConfig {
   enabledModules?: EnabledModules;
   /** The type the desk labels are drawn in (Settings › Desks › Desk labels). */
   labelStyle?: LabelStyle;
+  /** The org's first aiders and floor wardens (Settings › First responders). */
+  firstResponders?: FirstResponder[];
+  /** The responder roles, built-in and the org's own, with their badges (Settings › First responders). */
+  responderRoles?: ResponderRoleDef[];
 }
 
 const LS_KEY = 'facilio_floorplan_settings_v1';
@@ -48,7 +57,9 @@ const SETTINGS_FILE = 'floorplan-settings.json';
 /** Extract the persisted slice of app state. */
 export function settingsFromState(state: AppState): SettingsConfig {
   return {
-    perms: state.perms,
+    // Not once the app database holds the grid: there only its function can write it (see
+    // lib/sharedSettings), and a copy here would be one any browser can overwrite.
+    ...(state.accessStoredInDb ? {} : { access: state.access }),
     moduleColors: state.moduleColors,
     colorBy: state.colorBy,
     slotGranularity: state.slotGranularity,
@@ -56,6 +67,8 @@ export function settingsFromState(state: AppState): SettingsConfig {
     customMarkers: state.customMarkers,
     enabledModules: state.enabledModules,
     labelStyle: state.labelStyle,
+    // Not when the app database holds them: one source, never two (see lib/sharedSettings).
+    ...(state.respondersInDb ? {} : { firstResponders: state.firstResponders, responderRoles: state.responderRoles }),
   };
 }
 

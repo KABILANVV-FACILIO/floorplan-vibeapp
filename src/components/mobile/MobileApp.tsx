@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
-import { floorMeta, isBookable, visibleUnits } from '../../state/selectors';
+import { canSee, floorMeta, isBookable, visibleUnits } from '../../state/selectors';
 import { isRoomLike } from '../../lib/types';
 import { fitView, fmtTime, polygonCentroid, zoomAt } from '../../lib/geometry';
 import type { ViewTransform } from '../../lib/geometry';
@@ -14,10 +14,14 @@ import { MobileSpacesSheet } from './MobileSpacesSheet';
 import { MobileMyBookings } from './MobileMyBookings';
 import { MobileDatePicker } from './MobileDatePicker';
 import { FloorplanSkeleton } from '../canvas/FloorplanSkeleton';
+import { EmptyFloorArt } from '../primitives/EmptyFloorArt';
 import { markerStyle } from '../../lib/unitStatus';
 import { MARKER_ICONS } from '../canvas/markerIcons';
 import { contactName, myAssignedUnit } from '../../state/selectors';
 import { departmentDisplayName } from '../../lib/displayNames';
+import { responderRolesFor, respondersOnFloor, rolesOnFloor } from '../../lib/firstResponders';
+import { ResponderBadges, ResponderGlyph } from '../canvas/ResponderBadge';
+import type { ResponderRoleDef } from '../../lib/types';
 import { floorImageKey } from '../../lib/types';
 import type { Unit } from '../../lib/types';
 import styles from './MobileApp.module.css';
@@ -43,8 +47,9 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
   const rooms = mobileUnits.filter((u) => isRoomLike(u.type) && u.geom.kind === 'poly');
   const markers = mobileUnits.filter((u) => !isRoomLike(u.type) && u.geom.kind === 'point');
 
-  const legend =
-    state.mobileTab === 'assign'
+  const onFloorResponders = respondersOnFloor(state);
+  const legend: { label: string; color: string; glyph?: ResponderRoleDef }[] = [
+    ...(state.mobileTab === 'assign'
       ? [
           { label: 'Free', color: 'var(--success-500)' },
           { label: 'Assigned', color: 'var(--blue-500)' },
@@ -52,7 +57,10 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
       : [
           { label: 'Available', color: 'var(--success-500)' },
           { label: 'Booked', color: 'var(--danger-500)' },
-        ];
+        ]),
+    // The badges the dots carry, keyed only for a role someone on this floor holds.
+    ...rolesOnFloor(onFloorResponders, state.responderRoles).map((r) => ({ label: r.name, color: r.color, glyph: r })),
+  ];
 
   const outerClass = mode === 'page' ? styles.page : mode === 'fullscreen' ? styles.fullscreen : styles.docked;
 
@@ -107,6 +115,8 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
               ) : (
                 <span className={styles.dateStatic}>{new Date(state.date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span>
               )}
+              {/* Your own bookings, from the calendar — so the Bookings right, as the web tab is. */}
+              {canSee(state, 'bookings') && (
               <button className={styles.qrBtn} onClick={() => setMyBookingsOpen(true)} data-tip="My bookings" aria-label="My bookings">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="3" y="4" width="18" height="17" rx="2" />
@@ -115,6 +125,7 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
                 </svg>
                 {myBookingsCount > 0 && <span className={styles.iconBadge}>{myBookingsCount}</span>}
               </button>
+              )}
               <button className={styles.qrBtn} onClick={() => setQrOpen(true)} data-tip="Scan a space QR" aria-label="Scan a space QR">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="3" y="3" width="7" height="7" rx="1" />
@@ -168,13 +179,19 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
               <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
                 <FloorplanSkeleton />
               </div>
+            ) : !canSee(state, 'map') ? (
+              // The mobile app IS the floorplan — there is no other tab to send someone to.
+              <div className={styles.noPlan}>
+                <EmptyFloorArt size={140} />
+                <div className={styles.noPlanTitle}>Floorplans aren't available to your role</div>
+                <div className={styles.noPlanSub}>Ask your workplace admin if you need access.</div>
+              </div>
             ) : hasPlan ? (
               <MobileMap rooms={rooms} markers={markers} legend={legend} onOpenSpaces={() => setSpacesOpen(true)} />
             ) : (
+              // No edit hint: the mobile app has no edit mode, so there is nothing to point an editor at.
               <div className={styles.noPlan}>
-                <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="var(--ink-300)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M9 3L4 5v16l5-2 6 2 5-2V3l-5 2-6-2z M9 3v16M15 5v16" />
-                </svg>
+                <EmptyFloorArt size={140} />
                 <div className={styles.noPlanTitle}>No floorplan for this floor</div>
                 <div className={styles.noPlanSub}>Choose another floor from the switcher above.</div>
               </div>
@@ -208,7 +225,7 @@ function MobileMap({
 }: {
   rooms: Unit[];
   markers: Unit[];
-  legend: { label: string; color: string }[];
+  legend: { label: string; color: string; glyph?: ResponderRoleDef }[];
   onOpenSpaces: () => void;
 }) {
   const { state, actions } = useFloorplanData();
@@ -423,10 +440,13 @@ function MobileMap({
                   // still using the web's bg/border colors.
                   borderRadius: '999px',
                   boxShadow: selected ? '0 0 0 3px rgba(0,89,214,0.35)' : 'var(--shadow-xs)',
+                  position: 'relative',
                 }}
               >
                 {/* initials when assigned, otherwise the type/amenity glyph */}
                 {ms.occText ?? (ms.icon ? MARKER_ICONS[ms.icon] : null)}
+                {/* The same badges as the web plan: a first aider's cross, a warden's W. */}
+                <ResponderBadges roles={responderRolesFor(state, m)} chip={22} />
               </span>
               {showLabel && (
                 <span className={styles.markerLabel}>
@@ -448,7 +468,7 @@ function MobileMap({
       <div className={styles.legend}>
         {legend.map((l) => (
           <span key={l.label} className={styles.legendChip}>
-            <span className={styles.legendDot} style={{ background: l.color }} />
+            {l.glyph ? <ResponderGlyph role={l.glyph} size={12} /> : <span className={styles.legendDot} style={{ background: l.color }} />}
             {l.label}
           </span>
         ))}

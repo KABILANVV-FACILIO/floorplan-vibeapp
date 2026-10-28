@@ -6,6 +6,7 @@ import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, S
 // Local dev data lives as editable JSON in src/data/*.json — change a file and the app uses it
 // (Vite picks the JSON up on save). This is the seed the LocalJsonDataSource serves; session edits
 // are layered on top in localStorage so a dev session survives reloads.
+import { DEMO_DATA } from './featureFlags';
 import portfolioJson from '../data/portfolio.json';
 import employeesJson from '../data/employees.json';
 import assetsJson from '../data/assets.json';
@@ -86,13 +87,16 @@ export interface CreateSpaceLoc {
 }
 
 // ---- seed data (editable JSON in src/data) ----
-const SEED_PORTFOLIO = portfolioJson as unknown as Site[];
-const SEED_EMPLOYEES = employeesJson as unknown as Employee[];
-const SEED_ASSETS = assetsJson as unknown as Asset[];
-const SEED_UNITS = unitsJson as unknown as Unit[];
-const SEED_ASSIGNMENTS = assignmentsJson as unknown as Assignments;
+// Demo only (featureFlags.DEMO_DATA — the dev server, never a deployed build). Deployed, the local
+// tier still keeps this browser's own edits, but it has no sample sites, people, desks or bookings
+// to fall back to: an org list that comes back empty stays empty.
+const SEED_PORTFOLIO = (DEMO_DATA ? portfolioJson : []) as unknown as Site[];
+const SEED_EMPLOYEES = (DEMO_DATA ? employeesJson : []) as unknown as Employee[];
+const SEED_ASSETS = (DEMO_DATA ? assetsJson : []) as unknown as Asset[];
+const SEED_UNITS = (DEMO_DATA ? unitsJson : []) as unknown as Unit[];
+const SEED_ASSIGNMENTS = (DEMO_DATA ? assignmentsJson : {}) as unknown as Assignments;
 // Bookings are stored date-agnostic; getBookings stamps the requested day (demo behaviour).
-const SEED_BOOKINGS = bookingsJson as unknown as Omit<Booking, 'date'>[];
+const SEED_BOOKINGS = (DEMO_DATA ? bookingsJson : []) as unknown as Omit<Booking, 'date'>[];
 
 // ---- local session persistence (localStorage) ----
 const LS_KEY = 'facilio_floorplan_proto_v2';

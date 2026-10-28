@@ -1,4 +1,5 @@
 import type {
+  Access,
   AppMode,
   Assignments,
   Booking,
@@ -7,10 +8,9 @@ import type {
   EnabledModules,
   FloorSearchHit,
   MarkerDef,
+  OrgRole,
   PanelsState,
-  Perms,
   PlanId,
-  Role,
   Site,
   Unit,
   UnitType,
@@ -19,6 +19,7 @@ import type { Asset } from '../lib/assets';
 import type { ViewTransform } from '../lib/geometry';
 import type { CadGroup } from '../lib/cadAnalyze';
 import type { LabelStyle } from '../lib/labelLayout';
+import type { FirstResponder, ResponderRoleDef } from '../lib/types';
 
 export type SpaceFilter = 'all' | UnitType;
 
@@ -68,6 +69,12 @@ export interface AppState {
   viewAnim: boolean;
   userZoomed: boolean;
   spaceFilter: SpaceFilter;
+  /**
+   * Spaces list only, like `spaceFilter`: the department whose desks the list is narrowed to,
+   * `null` for all of them. Read off the desk record's own `department` — the same field the
+   * plan colours by — so the list can answer "where does Finance sit" with the colours on.
+   */
+  spaceDepartment: string | null;
   spaceSearch: string;
 
   units: Unit[];
@@ -148,11 +155,20 @@ export interface AppState {
   bookingsNonce: number;
   schedView: 'list' | 'calendar';
 
-  role: Role;
-  perms: Perms;
+  /**
+   * The signed-in user's role in the org, resolved from the account payload. NULL when the payload
+   * carried none — a dev session, the mock tier, an older session. A missing fact must never lock
+   * anyone out, so null means every tab shows.
+   */
+  viewerRole: OrgRole | null;
+  /** Which roles reach which tab. A surface absent here falls back to DEFAULT_ACCESS. */
+  access: Access;
+  /** The org's roles, for the Settings picker. Read lazily — gating never needs the list. */
+  orgRoles: OrgRole[];
+  orgRolesLoading: boolean;
 
   activeView: 'map' | 'settings' | 'bookings' | 'people';
-  settingsTab: 'permissions' | 'modules' | 'bookings' | UnitType;
+  settingsTab: 'permissions' | 'modules' | 'bookings' | 'responders' | UnitType;
   moduleColors: Record<string, string>;
   /**
    * What the desk markers' colour MEANS. 'status' answers "what can I take"; 'department' answers
@@ -197,6 +213,27 @@ export interface AppState {
   cadAnalyses: Record<string, CadGroup[]>;
   /** The type the desk labels are drawn in — Settings › Desks › Desk labels (see lib/labelLayout). */
   labelStyle: LabelStyle;
+  /**
+   * The org's first aiders and floor wardens — Settings › First responders. Each is shown on the
+   * plan at the desk they hold (see lib/firstResponders).
+   */
+  firstResponders: FirstResponder[];
+  /** The responder roles: the two built-ins first, then the org's own (see sanitizeRoles). */
+  responderRoles: ResponderRoleDef[];
+  /**
+   * True once the app database has answered for the responders (lib/sharedSettings): from then on
+   * it is their only source — Settings writes there, and the settings blob neither carries nor
+   * overrides them. False in local dev, and whenever the database could not be read.
+   */
+  respondersInDb: boolean;
+  /** True once the app database has answered: access-grid saves go there (lib/sharedSettings). */
+  accessInDb: boolean;
+  /**
+   * True when the database HOLDS a grid — then it is the grid's only source and the settings blob
+   * neither carries nor overrides it. False until an admin saves the grid once: the blob's grid,
+   * from before the move, still shows until then.
+   */
+  accessStoredInDb: boolean;
   /** The logged-in user's real assigned/booked desk (from servicePortalHome) — powers "My desk" against the real backend, where `assignments` (mock-derived) can't. */
   myDesk: { recordId: number; name: string; floorId: string | null; booked: boolean } | null;
   floorImages: Record<string, string>;

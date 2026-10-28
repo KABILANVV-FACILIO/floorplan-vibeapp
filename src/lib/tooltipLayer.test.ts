@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { installTooltipLayer } from './tooltipLayer';
+import { installTooltipLayer, tipTextFor } from './tooltipLayer';
 
 /**
  * The hover tooltips were missing from this app entirely — no layer, no `data-tip` anywhere — so
@@ -134,5 +134,41 @@ describe('hover tooltip layer', () => {
     hover(host.querySelector('button')!);
     vi.advanceTimersByTime(DELAY);
     expect(document.querySelectorAll('.fp-tip')).toHaveLength(1);
+  });
+});
+
+/**
+ * `data-tip-overflow`: a tooltip only when the text is actually cut off. A long building name in the
+ * location tree ends in "…" and needs its tip; one that fits does not, and a tip on every row of a
+ * long tree is noise. jsdom does no layout, so the widths are set by hand.
+ */
+
+function row(name: string, widths: { scroll: number; client: number }, overflowOnly = true) {
+  const el = document.createElement('div');
+  el.setAttribute('data-tip', name);
+  if (overflowOnly) el.setAttribute('data-tip-overflow', '');
+  const span = document.createElement('span');
+  span.setAttribute('data-tip-measure', '');
+  span.textContent = name;
+  Object.defineProperty(span, 'scrollWidth', { value: widths.scroll });
+  Object.defineProperty(span, 'clientWidth', { value: widths.client });
+  el.appendChild(span);
+  return { el, span };
+}
+
+describe('tooltips that only appear when text is cut off', () => {
+  it('shows the full name when it is truncated', () => {
+    const { span } = row('Ballistic Resistance Enclosure Type 4', { scroll: 320, client: 210 });
+    expect(tipTextFor(span)?.text).toBe('Ballistic Resistance Enclosure Type 4');
+  });
+
+  it('stays quiet when the name fits', () => {
+    const { span } = row('Beach House', { scroll: 90, client: 210 });
+    expect(tipTextFor(span)).toBeNull();
+  });
+
+  it('leaves an ordinary tooltip alone', () => {
+    const { span } = row('Beach House', { scroll: 90, client: 210 }, false);
+    expect(tipTextFor(span)?.text).toBe('Beach House');
   });
 });

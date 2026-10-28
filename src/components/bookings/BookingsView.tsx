@@ -190,10 +190,8 @@ export function BookingsView() {
   // A drag opens the shared booking form on that window; the create happens on submit, and the
   // nonce-driven effect above re-reads.
   function openForm(date: string, start: number, end: number, endDate?: string) {
-    if (!resourceId) {
-      actions.showToast('Nothing bookable yet — in Facilio, mark desks as hot desks or spaces as reservable, then book them here', 6000);
-      return;
-    }
+    // Nothing to book onto: the drag simply does nothing.
+    if (!resourceId) return;
     const today = orgTodayISO();
     if (date < today) {
       actions.showToast('That day has already passed — pick an upcoming one');

@@ -51,5 +51,14 @@ export const vibe: Vibe = createVibe(serverURL ? { serverURL } : undefined);
  */
 export const FLOORPLAN_FN = 'floorplanApi';
 
+/**
+ * The Studio Function holding the settings a browser must not write — the first responders and
+ * the Roles & access grid — in the app's own tables, each write checked against the caller (see
+ * `functions/floorplanResponders/code.ts` and lib/sharedSettings). A function
+ * of its own rather than handlers on FLOORPLAN_FN: that one is not deployed, and a call that fails
+ * there trips its circuit breaker for everything it serves.
+ */
+export const RESPONDERS_FN = 'floorplanResponders';
+
 /** The org's CMMS connection — the source for real portfolio/people/asset records. */
 export const CMMS_CONNECTION = 'facilio-cmms';

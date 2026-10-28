@@ -1,10 +1,10 @@
-import { isModuleEnabled, isRoomLike, unitOnPlan } from '../lib/types';
+import { DEFAULT_ACCESS, SURFACE_ORDER, isModuleEnabled, isRoomLike, unitOnPlan } from '../lib/types';
 import { ROOM_FONT, subMaxChars, typographyOf } from '../lib/labelLayout';
 import type { LabelTypography } from '../lib/labelLayout';
 import type { LabelTextMeasure } from '../lib/textMeasure';
 import type { MarkerLabelInput, RoomLabelInput } from '../lib/labelLayout';
 import { polygonCentroid } from '../lib/geometry';
-import type { Booking, Employee, Unit, UnitType } from '../lib/types';
+import type { Booking, Employee, Surface, Tab, Unit, UnitType } from '../lib/types';
 import type { AppState } from './types';
 import { departmentDisplayName, personDisplayName, personInitials, shortPersonName } from '../lib/displayNames';
 
@@ -283,4 +283,49 @@ export function markerLabelInputs(state: AppState, markers: Unit[], opts: { pers
           : {}),
       };
     });
+}
+
+/**
+ * Whether the signed-in user reaches a tab.
+ *
+ * Open by default, deliberately: an unknown viewer role, an unconfigured surface and an org that
+ * never opened the grid all mean "show it". Access is a setting someone turns ON for a reason, and
+ * a failed read of the account payload must not empty the app.
+ *
+ * Except Settings, which is closed to a viewer whose role is unknown — the app's own URL opened
+ * outside Facilio, or an account payload that names no role. Settings is where access itself is
+ * changed, so "we could not tell who you are" must not open it. (Its writes are checked again on
+ * the server: see functions/floorplanResponders.)
+ */
+export function canSee(state: AppState, surface: Surface): boolean {
+  if (surface === 'settings' && !state.viewerRole) return false;
+  const rule = state.access[surface] ?? DEFAULT_ACCESS[surface];
+  if (rule.all) return true;
+  if (!state.viewerRole) return true;
+  // The org's admin roles never lose Settings, whatever the grid says — otherwise one bad save
+  // locks out the only people who could undo it.
+  if (surface === 'settings' && state.viewerRole.isAdmin) return true;
+  return rule.roles.includes(state.viewerRole.id);
+}
+
+/** The tabs this viewer reaches, in nav order. Tabs only — editing is never somewhere to land. */
+export function visibleSurfaces(state: AppState): Tab[] {
+  return SURFACE_ORDER.filter((s) => canSee(state, s));
+}
+
+/**
+ * The view to show. The one asked for when it is allowed, else the first tab that is — so a tab
+ * hidden while someone is standing on it moves them somewhere real instead of rendering nothing.
+ */
+export function clampView(state: AppState, wanted: AppState['activeView']): AppState['activeView'] {
+  if (canSee(state, wanted)) return wanted;
+  return visibleSurfaces(state)[0] ?? 'map';
+}
+
+/**
+ * Whether this viewer may edit the plan. Needs the plan as well as the edit right: editing a tab
+ * you cannot open means nothing, and a role granted only the edit row has nowhere to use it.
+ */
+export function canEdit(state: AppState): boolean {
+  return canSee(state, 'map') && canSee(state, 'map.edit');
 }

@@ -4,16 +4,32 @@ import { AMENITY_META, isRoomLike, TYPE_META } from '../../lib/types';
 import { enabledTypes } from '../../state/selectors';
 import { departmentColor, departmentsIn } from '../../lib/departmentColors';
 import { departmentDisplayName } from '../../lib/displayNames';
-import type { AmenityIcon } from '../../lib/types';
+import type { AmenityIcon, ResponderRoleDef } from '../../lib/types';
 import type { AppState } from '../../state/types';
+import { respondersOnFloor, rolesOnFloor } from '../../lib/firstResponders';
+import { ResponderGlyph } from './ResponderBadge';
+import { FloorResponders } from './FloorResponders';
+
+/** One key entry: a colour swatch, or — for a first responder — the badge the plan draws. */
+export interface LegendItem {
+  label: string;
+  color: string;
+  glyph?: ResponderRoleDef;
+}
+
+/** The swatch beside a legend entry: the badge itself for a responder, a colour square otherwise. */
+export function LegendSwatch({ item, size = 8 }: { item: LegendItem; size?: number }) {
+  if (item.glyph) return <ResponderGlyph role={item.glyph} size={size + 4} />;
+  return <span style={{ width: size, height: size, borderRadius: 2, background: item.color, flexShrink: 0 }} />;
+}
 
 /**
  * What the marker colours on the plan MEAN right now — shared with the print sheet, so the key on
  * paper describes the markers on paper. A printed "Occupied / Available" beside markers drawn in
  * Free/Assigned, department or booking colours would be a key to a different drawing.
  */
-export function legendItems(state: AppState): { label: string; color: string }[] {
-  let items: { label: string; color: string }[];
+export function legendItems(state: AppState): LegendItem[] {
+  let items: LegendItem[];
   if (state.mode === 'edit') {
     // Derived from the enabled modules rather than a fixed list, so the legend never advertises
     // a module the plan can't show.
@@ -53,6 +69,12 @@ export function legendItems(state: AppState): { label: string; color: string }[]
     items.push({ label: AMENITY_META[icon].name, color: AMENITY_META[icon].color });
   }
 
+  // The responder badges, in every mode, but only for a role someone on this floor holds — a key
+  // to a badge the plan doesn't draw would send people looking for it.
+  for (const role of rolesOnFloor(respondersOnFloor(state), state.responderRoles)) {
+    items.push({ label: role.name, color: role.color, glyph: role });
+  }
+
   return items;
 }
 
@@ -61,7 +83,8 @@ export function Legend() {
   const items = legendItems(state);
 
   return (
-    <div style={{ position: 'absolute', left: 12, bottom: 12, display: 'flex', gap: 6, flexWrap: 'wrap', maxWidth: '70%' }}>
+    <div style={{ position: 'absolute', left: 12, bottom: 12, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', maxWidth: '70%' }}>
+      <FloorResponders />
       {items.map((it) => (
         <span
           key={it.label}
@@ -79,7 +102,7 @@ export function Legend() {
             boxShadow: 'var(--shadow-xs)',
           }}
         >
-          <span style={{ width: 8, height: 8, borderRadius: 2, background: it.color }} />
+          <LegendSwatch item={it} />
           {it.label}
         </span>
       ))}

@@ -14,7 +14,9 @@ import { RoomLabel } from '../canvas/Canvas';
 import { Marker } from '../canvas/Marker';
 import { markerModel } from '../../lib/markerModel';
 import { sharedLabelTextMeasurer } from '../../lib/textMeasure';
-import { legendItems } from '../canvas/Legend';
+import { legendItems, LegendSwatch } from '../canvas/Legend';
+import { ResponderNoticePage } from './ResponderNoticePage';
+import { respondersOnFloor } from '../../lib/firstResponders';
 import { planLabelledDetailAreas } from '../../lib/printAreas';
 import type { DetailArea } from '../../lib/printAreas';
 import styles from './PrintSheet.module.css';
@@ -164,7 +166,9 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
     return areas.length > DETAIL_PAGES_COMFORTABLE ? planAt(DETAIL_LABEL_SCALE_SMALL) : areas;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showPlan, scope, state]);
-  const pageCount = 1 + detailAreas.length;
+  // The floor's emergency-contacts notice, last — only when someone on this floor is named.
+  const hasNotice = respondersOnFloor(state).length > 0;
+  const pageCount = 1 + detailAreas.length + (hasNotice ? 1 : 0);
 
   const planPage = (
     <div className={styles.page} data-print-page="">
@@ -188,7 +192,7 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
         {/* The viewer's own key — the colours on this plan mean what they meant on screen. */}
         {legendItems(state).map((it) => (
           <span key={it.label} className={styles.legendItem}>
-            <span className={styles.legendDot} style={{ background: it.color }} />
+            {it.glyph ? <LegendSwatch item={it} size={7} /> : <span className={styles.legendDot} style={{ background: it.color }} />}
             {it.label}
           </span>
         ))}
@@ -204,7 +208,9 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
         <span className={styles.footNote}>Occupancy reflects assignments and confirmed bookings at the time of printing.</span>
         {pageCount > 1 && (
           <span className={styles.pageNo}>
-            Page 1 of {pageCount} · zoomed-in pages of every area follow
+            Page 1 of {pageCount}
+            {detailAreas.length ? ' · zoomed-in pages of every area follow' : ''}
+            {hasNotice ? ' · first responders on the last page' : ''}
           </span>
         )}
       </div>
@@ -225,6 +231,7 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
           pageCount={pageCount}
         />
       ))}
+      {hasNotice && <ResponderNoticePage where={where} pageNo={pageCount} pageCount={pageCount} header={<LocationBox where={where} />} />}
     </>
   );
 
@@ -383,7 +390,7 @@ function DetailPage({
       <div className={styles.legend}>
         {legendItems(state).map((it) => (
           <span key={it.label} className={styles.legendItem}>
-            <span className={styles.legendDot} style={{ background: it.color }} />
+            {it.glyph ? <LegendSwatch item={it} size={7} /> : <span className={styles.legendDot} style={{ background: it.color }} />}
             {it.label}
           </span>
         ))}

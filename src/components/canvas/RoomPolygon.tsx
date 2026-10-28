@@ -49,8 +49,16 @@ export function RoomPolygon({
     fill = `rgba(${base},${selected ? 0.26 : 0.14})`;
     stroke = `rgba(${base},${selected ? 0.9 : 0.65})`;
   } else {
-    fill = selected ? 'rgba(96,119,150,0.22)' : 'rgba(96,119,150,0.12)';
-    stroke = selected ? 'rgba(96,119,150,0.9)' : 'rgba(96,119,150,0.6)';
+    // Grey-blue read as part of the CAD drawing rather than as a marked room — the plan already
+    // fills its own rooms light grey, so a desaturated tint on top of it said nothing. This blue
+    // is the one the floor is read with: light enough to keep the linework under it legible,
+    // far enough off the drawing's greys to show at a glance which rooms are marked.
+    // #eaf2ff at 80%, not flat: opaque, the tint covered the CAD linework inside the room —
+    // furniture and labels vanished under every marked room. At 80% the room still reads as
+    // marked at a glance and the drawing under it stays legible. Selected is the same blue
+    // deepened toward the border colour (#6ca8fc mixed 22% into #eaf2ff), not a different hue.
+    fill = selected ? 'rgba(206,226,254,0.88)' : 'rgba(234,242,255,0.8)';
+    stroke = '#6ca8fc';
   }
 
   function onClick(e: ReactMouseEvent) {

@@ -1,9 +1,11 @@
 import type { DragEvent as ReactDragEvent } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
+import { activateOnKey } from '../../lib/keyboard';
 import { contactName, moduleEnabled } from '../../state/selectors';
 import { unitSortCompare } from '../../lib/geometry';
 import { unitStatus } from '../../lib/unitStatus';
 import { Chip } from '../primitives/Chip';
+import { Select } from '../primitives/Select';
 import { SkeletonRows } from '../primitives/Skeleton';
 import { StatusPill } from '../primitives/StatusPill';
 import type { SpaceFilter } from '../../state/types';
@@ -65,11 +67,27 @@ export function SpacesList() {
   const allUnits = isEdit ? [...state.units, ...state.unplacedUnits] : state.units;
   const units = allUnits.filter((u) => moduleEnabled(state, u.type));
 
-  const counts: Record<string, number> = { all: units.length };
-  for (const u of units) counts[u.type] = (counts[u.type] || 0) + 1;
+  /**
+   * Departments present on THIS floor, from the desk records' own `department` field — the same
+   * one the plan colours by. Only desks carry it, so the control is offered only where the org
+   * actually fills it in; a floor with none shows the type chips alone, as before.
+   */
+  const departments = [...new Set(units.map((u) => u.department).filter((d): d is string => !!d))].sort((a, b) =>
+    a.localeCompare(b)
+  );
+  // A department that vanished (floor switch, module toggle) must not silently narrow the list to
+  // nothing — the list reads as empty with no visible cause.
+  const dept = state.spaceDepartment && departments.includes(state.spaceDepartment) ? state.spaceDepartment : null;
+  const inDept = (u: Unit) => !dept || u.department === dept;
+
+  // Counts follow the department, so a chip never promises rows the list won't show.
+  const scoped = units.filter(inDept);
+  const counts: Record<string, number> = { all: scoped.length };
+  for (const u of scoped) counts[u.type] = (counts[u.type] || 0) + 1;
 
   const q = state.spaceSearch.trim().toLowerCase();
   const filtered = units
+    .filter(inDept)
     .filter((u) => state.spaceFilter === 'all' || u.type === state.spaceFilter)
     .filter((u) => !q || u.label.toLowerCase().includes(q) || (u.room ?? '').toLowerCase().includes(q) || (u.secondary ?? '').toLowerCase().includes(q))
     .sort(unitSortCompare);
@@ -107,6 +125,19 @@ export function SpacesList() {
             </Chip>
           ))}
         </div>
+        {departments.length > 0 && (
+          <Select
+            value={dept ?? ''}
+            options={[
+              { value: '', label: 'All departments' },
+              ...departments.map((d) => ({ value: d, label: d, sublabel: `${scopedCount(units, d)}` })),
+            ]}
+            onChange={(v) => actions.setSpaceDepartment(v || null)}
+            size="sm"
+            fullWidth
+            aria-label="Department"
+          />
+        )}
       </div>
       <div className={styles.list}>
         {state.loading ? (
@@ -154,9 +185,22 @@ function SpaceRow({ unit }: { unit: Unit }) {
   const traceable = unplaced && isEdit && isRoomLike(unit.type);
   // Click-to-arm alternative to dragging: arm the record, then click the plan to place it.
   const placing = state.placingUnitId === unit.id;
+  const onActivate = unplaced
+    ? draggable || traceable
+      ? () => actions.setPlacingUnit(placing ? null : unit.id)
+      : undefined
+    : // A placed record is on the plan: centre on it and select it, so clicking the row and
+      // clicking the marker land in the same place.
+      () => actions.focusUnit(unit.id, state.stage.w, state.stage.h);
   return (
     <div
       className={[styles.row, selected ? styles.rowSelected : ''].join(' ')}
+      // A row that does something is reachable with Tab and works with Enter or Space, as a click.
+      role={onActivate ? 'button' : undefined}
+      tabIndex={onActivate ? 0 : undefined}
+      aria-pressed={onActivate && unplaced ? placing : undefined}
+      aria-current={selected ? 'true' : undefined}
+      onKeyDown={onActivate ? activateOnKey(onActivate) : undefined}
       style={
         unplaced || traceable
           ? placing
@@ -177,15 +221,7 @@ function SpaceRow({ unit }: { unit: Unit }) {
             }
           : undefined
       }
-      onClick={
-        unplaced
-          ? draggable || traceable
-            ? () => actions.setPlacingUnit(placing ? null : unit.id)
-            : undefined
-          // A placed record is on the plan: centre on it and select it, so clicking the row and
-          // clicking the marker land in the same place.
-          : () => actions.focusUnit(unit.id, state.stage.w, state.stage.h)
-      }
+      onClick={onActivate}
       data-tip={
         draggable
           ? 'Drag onto the floorplan, or click and then click the map'
@@ -220,4 +256,9 @@ function SpaceRow({ unit }: { unit: Unit }) {
       )}
     </div>
   );
+}
+
+/** How many of this floor's spaces belong to a department — shown beside its name in the picker. */
+function scopedCount(units: Unit[], department: string): number {
+  return units.reduce((n, u) => (u.department === department ? n + 1 : n), 0);
 }

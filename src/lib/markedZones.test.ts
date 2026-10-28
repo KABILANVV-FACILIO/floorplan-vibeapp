@@ -719,3 +719,49 @@ describe('a room write the org refused comes back to be retried', () => {
     expect(r).toMatchObject({ plansSynced: 0, plansSkipped: 1, retryIds: ['819848'] });
   });
 });
+
+describe('a marker write the org refused is named, and comes back to be retried', () => {
+  const [lng, lat] = [-122.419, 37.7747];
+  const [x, y] = lngLatToQuadFraction(quad, lng, lat);
+  const point = (id: string, label: string, over: Partial<Unit> = {}): Unit => ({ id, type: 'workstation', label, room: null, geom: { kind: 'point', x, y }, floor: FLOOR, plan: 'workstation', ...over });
+  const marker = (id: number, geoId: string, label: string) => ({ id, geoId, label, geometry: JSON.stringify({ type: 'Point', coordinates: [lng, lat] }), indoorfloorplan: { id: PLAN } });
+
+  it('reports nothing when every write went through', async () => {
+    const { saveFloorplanMarkers } = await fresh();
+    org.tables.floorplanmarker = [marker(777, '1001', 'WS-1')];
+    const result = await saveFloorplanMarkers(FLOOR, [point('1001', 'WS-1', { geom: { kind: 'point', x: 0.6, y: 0.6 } }), point('1002', 'WS-2')]);
+    expect(result).toMatchObject({ plansSynced: 1, unitsNotWritten: [], retryIds: [] });
+  });
+
+  it('a refused create', async () => {
+    org.failWrites.create = true;
+    const { saveFloorplanMarkers } = await fresh();
+    const result = await saveFloorplanMarkers(FLOOR, [point('1002', 'WS-2')]);
+    expect(result).toMatchObject({ plansSynced: 1, unitsNotWritten: ['WS-2'], retryIds: ['1002'] });
+  });
+
+  it('a refused update', async () => {
+    org.failWrites.update = true;
+    org.tables.floorplanmarker = [marker(777, '1001', 'WS-1')];
+    const { saveFloorplanMarkers } = await fresh();
+    const result = await saveFloorplanMarkers(FLOOR, [point('1001', 'WS-1', { geom: { kind: 'point', x: 0.6, y: 0.6 } })]);
+    expect(result).toMatchObject({ plansSynced: 1, unitsNotWritten: ['WS-1'], retryIds: ['1001'] });
+  });
+
+  it('a refused delete, by the marker it left behind', async () => {
+    org.failWrites.delete = true;
+    org.tables.floorplanmarker = [marker(777, '1001', 'WS-1'), marker(778, '1003', '')];
+    const { saveFloorplanMarkers } = await fresh();
+    const result = await saveFloorplanMarkers(FLOOR, []);
+    expect(org.remove).toHaveLength(0);
+    expect(result).toMatchObject({ plansSynced: 1, unitsNotWritten: ['WS-1', 'Marker #778'], retryIds: ['1001', '1003'] });
+  });
+
+  it('every unit on a plan whose marker list could not be read', async () => {
+    org.failPages.floorplanmarker = [1];
+    const { saveFloorplanMarkers } = await fresh();
+    const result = await saveFloorplanMarkers(FLOOR, [point('1001', 'WS-1'), point('1002', 'WS-2')]);
+    expect(result).toMatchObject({ plansSynced: 0, unitsNotWritten: ['WS-1', 'WS-2'], retryIds: ['1001', '1002'] });
+    expect(org.create).toHaveLength(0);
+  });
+});

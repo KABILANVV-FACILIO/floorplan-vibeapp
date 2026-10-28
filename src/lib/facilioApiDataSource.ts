@@ -9,6 +9,8 @@ import { renderPdfToDataUrl } from './pdfPreview';
 import { computeSyntheticGeometry, geometryStringToQuad, lngLatToQuadFraction, quadFittingPoints, quadToGeometryString, quadToLngLat } from './geoReference';
 import type { CreateSpaceLoc, FloorplanDataSource } from './dataSource';
 import type { Asset } from './assets';
+import type { OrgRole } from './types';
+import { isVibeApp, vibe } from './vibe';
 import { isRoomLike, TYPE_META } from './types';
 import { ROOM_OUTLINE_WRITES } from './featureFlags';
 import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, PlanId, PointGeom, PolyGeom, Site, Unit, UnitType } from './types';
@@ -467,9 +469,16 @@ export class FacilioApiDataSource implements FloorplanDataSource {
    * The org's spacebooking records for one day, scoped to this floor's desks, spaces and stalls.
    * Throws on error so the composite falls through to the local tier, as before this was wired.
    */
+  /**
+   * The plan's day list: only this floor's bookings, asked for in the query itself. `spacebooking`
+   * has no floor field, so the floor is its desks', spaces' and stalls' ids — the cached per-floor
+   * read the plan has already made. Unscoped, every floor load and date change read the whole
+   * org's last month of bookings to keep this floor's handful. The calendar reads org-wide on its
+   * own (fetchOrgBookingsForRange).
+   */
   async getBookings(floorId: string, date: string): Promise<Booking[]> {
     this.assertConfigured();
-    return fetchSpaceBookingsForRange(date, date, floorId);
+    return fetchSpaceBookingsForRange(date, date, floorId, { floorIds: [floorId] });
   }
   // Creation goes through createRealBooking (the org-form-aware create) from the context; this
   // tier's createBooking throws so a local-mode caller falls through to the local store.
@@ -483,12 +492,21 @@ export class FacilioApiDataSource implements FloorplanDataSource {
    */
   async cancelBooking(id: string): Promise<void> {
     this.assertConfigured();
-    if (!/^\d+$/.test(id)) throw new Error('facilio-api: not a backend booking id');
-    const { transitions } = await fetchAvailableStates('spacebooking', Number(id));
-    const cancel = findCancelTransition(transitions);
-    if (!cancel) throw new Error('facilio-api: this booking has no Cancel transition in its current state');
-    await executeStateTransition('spacebooking', Number(id), cancel.id);
+    await cancelRealBooking(id);
   }
+}
+
+/**
+ * Cancel a real booking through its own stateflow Cancel transition. Throws with the reason when
+ * the org refuses — the caller says so, rather than letting the cancel "succeed" in this browser
+ * and the booking come back on the next read.
+ */
+export async function cancelRealBooking(id: string): Promise<void> {
+  if (!/^\d+$/.test(id)) throw new Error('not a booking Facilio holds');
+  const { transitions } = await fetchAvailableStates('spacebooking', Number(id));
+  const cancel = findCancelTransition(transitions);
+  if (!cancel) throw new Error('this booking cannot be cancelled in its current state');
+  await executeStateTransition('spacebooking', Number(id), cancel.id);
 }
 
 /** Real Facilio desk typing (`V3DeskContext.DeskType`): 1=ASSIGNED, 2=HOTEL, 3=HOT; -1/0 = unset. */
@@ -1063,6 +1081,9 @@ export function mapEmployee(e: any): Employee {
     hrmsEmployeeId: firstString(e, HRMS_ID_KEYS),
     email: firstString(e, ['email', 'emailId', 'primaryEmail']),
     department: typeof dept === 'string' ? dept : (dept?.displayName ?? dept?.name ?? undefined),
+    // The person record's own number fields (V3PeopleContext: `mobile`, `phone`) — the number a
+    // first responder is listed and printed with.
+    mobile: firstString(e, ['mobile', 'phone']),
   };
 }
 
@@ -1534,10 +1555,18 @@ export async function uploadFloorplanFile(
   floorId: string,
   planId: PlanId,
   file: File,
-  imageDimensions?: { width: number; height: number }
+  imageDimensions?: { width: number; height: number },
+  /**
+   * Cancel. A request already sent can't be called back, so this is checked BETWEEN the steps:
+   * before the file goes up, and — the step that matters — before the file becomes this floor's
+   * plan. Cancelled after the upload but before the attach, the file sits unused in the org's
+   * file store and the floor keeps the plan it had.
+   */
+  signal?: AbortSignal
 ): Promise<FloorplanFileUploadResult> {
   if (!isFacilioApiConfigured) throw new Error('facilio-api: not configured');
   if (!isRealFloorId(floorId)) throw new Error(`facilio-api: ${floorId} is not an org floor — nothing to attach a plan to`);
+  throwIfAborted(signal);
 
   const uploadRes = await facilioApi.uploadFiles([file]);
   if (uploadRes.error || !uploadRes.ids?.length) {
@@ -1550,6 +1579,7 @@ export async function uploadFloorplanFile(
   // Also grab the server-RENDERED image (no fetchOriginal) — the display source for files the
   // browser can't draw (PDF, DWG/DXF). Null when the server didn't rasterize it.
   const serverImageUrl = await fetchRenderedFileImage(fileId);
+  throwIfAborted(signal);
 
   let attachedToFloorPlan = false;
   let attachError: string | undefined;
@@ -1593,6 +1623,11 @@ export async function uploadFloorplanFile(
   return { fileId, previewUrl, serverImageUrl, attachedToFloorPlan, attachError };
 }
 
+/** Thrown by a step that finds its work cancelled — told apart from a failure by its name. */
+export function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException('cancelled', 'AbortError');
+}
+
 /**
  * Syncs this app's placed desks/lockers/parking-stalls (point units only — room/zone polygons
  * need a real `space` module record via `floorplanmarkedzone.space`, which this app doesn't
@@ -1611,10 +1646,21 @@ export interface MarkerSaveResult {
   plansSynced: number;
   /** Plan types skipped, with the reason — surfaced so a silent no-op is never mistaken for a save. */
   skipped: string[];
+  /**
+   * Labels of desks, lockers and stalls whose marker did not reach the org on a save that otherwise
+   * went through — a create, update or delete the org refused, or a plan that was skipped or whose
+   * marker list could not be read. What the save toast names, so a refused write is never "saved".
+   */
+  unitsNotWritten: string[];
+  /**
+   * Unit ids whose marker write was tried and FAILED (not those skipped for want of a georeference,
+   * which no retry would fix). The caller keeps them unsaved, so the next Save sends them again.
+   */
+  retryIds: string[];
 }
 
 export async function saveFloorplanMarkers(floorId: string, units: Unit[]): Promise<MarkerSaveResult> {
-  const result: MarkerSaveResult = { plansSynced: 0, skipped: [] };
+  const result: MarkerSaveResult = { plansSynced: 0, skipped: [], unitsNotWritten: [], retryIds: [] };
   if (!isFacilioApiConfigured) return result;
   if (!isRealFloorId(floorId)) {
     result.skipped.push(`${floorId} is not an org floor — markers stay in this browser`);
@@ -1638,16 +1684,26 @@ export async function saveFloorplanMarkers(floorId: string, units: Unit[]): Prom
 
   for (const planId of allPlanIds) {
     const summary = byType[String(FLOOR_PLAN_TYPE[planId])];
+    const wanted = byPlan.get(planId) ?? [];
     if (!summary?.id) {
       result.skipped.push(`${planId}: no plan configured`);
+      result.unitsNotWritten.push(...wanted.map((u) => u.label));
       continue;
     }
     try {
-      const synced = await syncMarkersForIndoorFloorPlan(summary.id, byPlan.get(planId) ?? []);
-      if (synced) result.plansSynced++;
-      else result.skipped.push(`${planId}: plan #${summary.id} has no georeference`);
+      const synced = await syncMarkersForIndoorFloorPlan(summary.id, wanted);
+      if (synced) {
+        result.plansSynced++;
+        result.unitsNotWritten.push(...synced.notWritten);
+        result.retryIds.push(...synced.retryIds);
+      } else {
+        result.skipped.push(`${planId}: plan #${summary.id} has no georeference`);
+        result.unitsNotWritten.push(...wanted.map((u) => u.label));
+      }
     } catch (err) {
       result.skipped.push(`${planId}: ${(err as Error)?.message ?? err}`);
+      result.unitsNotWritten.push(...wanted.map((u) => u.label));
+      result.retryIds.push(...wanted.map((u) => u.id));
       // eslint-disable-next-line no-console
       console.warn(`[facilio-api] marker sync failed for plan ${planId}`, err);
     }
@@ -1728,13 +1784,24 @@ async function markerRecordLink(unit: Unit): Promise<{ recordId?: number; marker
   return markerModuleId ? { recordId, markerModuleId } : { recordId };
 }
 
-/** Returns false when the plan has no georeference and nothing could be written. */
-async function syncMarkersForIndoorFloorPlan(indoorFloorPlanId: number, units: (Unit & { geom: PointGeom })[]): Promise<boolean> {
+/**
+ * Returns null when the plan has no georeference and nothing could be written; otherwise which
+ * writes the org refused — by label, and by unit id to retry — so a refused write is reported.
+ */
+async function syncMarkersForIndoorFloorPlan(
+  indoorFloorPlanId: number,
+  units: (Unit & { geom: PointGeom })[],
+): Promise<{ notWritten: string[]; retryIds: string[] } | null> {
   const recordRes = await facilioApi.fetchRecord<any>('indoorfloorplan', { id: indoorFloorPlanId });
   const record = recordOf<any>(recordRes, 'indoorfloorplan');
-  if (recordRes.error || !record) return false;
+  if (recordRes.error || !record) return null;
   const quad = geometryStringToQuad(record.geometry);
-  if (!quad) return false;
+  if (!quad) return null;
+  const out = { notWritten: [] as string[], retryIds: [] as string[] };
+  const failed = (label: string, id: string) => {
+    out.notWritten.push(label);
+    out.retryIds.push(id);
+  };
 
   const existingRes = await fetchAllRelatedPaged<any>({
     moduleName: 'indoorfloorplan',
@@ -1769,6 +1836,7 @@ async function syncMarkersForIndoorFloorPlan(indoorFloorPlanId: number, units: (
           data: { geometry, properties, label: unit.label, type: MARKER_GEOJSON_TYPE, ...link },
         });
         if (res.error) {
+          failed(unit.label, unit.id);
           // eslint-disable-next-line no-console
           console.warn(`[facilio-api] marker update failed for unit ${unit.id}`, res.error);
         }
@@ -1778,6 +1846,7 @@ async function syncMarkersForIndoorFloorPlan(indoorFloorPlanId: number, units: (
         data: { geoId: unit.id, geometry, properties, type: MARKER_GEOJSON_TYPE, label: unit.label, indoorfloorplan: { id: indoorFloorPlanId }, ...link },
       });
       if (res.error) {
+        failed(unit.label, unit.id);
         // eslint-disable-next-line no-console
         console.warn(`[facilio-api] marker create failed for unit ${unit.id}`, res.error);
       }
@@ -1787,12 +1856,13 @@ async function syncMarkersForIndoorFloorPlan(indoorFloorPlanId: number, units: (
     if (m.geoId && !seenGeoIds.has(m.geoId)) {
       const res = await facilioApi.deleteRecord('floorplanmarker', m.id);
       if (res.error) {
+        failed(m.label || `Marker #${m.id}`, String(m.geoId));
         // eslint-disable-next-line no-console
         console.warn(`[facilio-api] marker delete failed for id ${m.id}`, res.error);
       }
     }
   }
-  return true;
+  return out;
 }
 
 /**
@@ -2795,6 +2865,65 @@ export async function vacateUnitReal(unit: Unit, contactId: string): Promise<Rea
   return { ok: true };
 }
 
+/** The waits before each re-read of a vacated desk: 2 s, doubling — three reads over 14 s. */
+const VACATE_RECHECK_MS = [2000, 4000, 8000];
+
+/**
+ * Wait until the org has actually taken a desk's holder off it.
+ *
+ * Vacating a desk is a MOVE: `createDeskMove` records it, and the org then clears the desk's
+ * `employee` while processing that move — after the request returns, not during it. Reading the
+ * desk straight away therefore still names the old holder, and the plan showed the desk as
+ * "Temporarily Vacant" and "Assigned to <them>" at once, until some later refresh caught up.
+ *
+ * So the desk is re-read until its holder is gone — at most three times, waiting 2 s, then 4 s, then
+ * 8 s before each, so a slow org gets more room rather than more requests. It used to read every
+ * 0.8 s, up to 15 times, whoever was still looking. 14 s in all, inside the 20 s the plan keeps a
+ * record marked busy, so the spinner never stops before this does. `fetchRecord` goes over the raw
+ * request path, which the host does not cache, so each read is the org's current answer.
+ *
+ * `signal` stops it: the caller aborts when the record is no longer on screen. A read that falls
+ * while the tab is hidden is skipped — the caller re-reads the plan's holders once this returns,
+ * whatever it returns. Unless a read has shown the holder gone, the answer is `cleared: false`: not
+ * seen, so not claimed.
+ */
+export async function waitForDeskVacated(
+  unit: Unit,
+  holderId: string,
+  { signal, delaysMs = VACATE_RECHECK_MS }: { signal?: AbortSignal; delaysMs?: number[] } = {}
+): Promise<{ cleared: boolean }> {
+  if (!isFacilioApiConfigured || unit.type !== 'workstation') return { cleared: true };
+  const deskId = await deskRecordId(unit);
+  if (!deskId) return { cleared: false };
+  for (const ms of delaysMs) {
+    if (!(await pause(ms, signal))) return { cleared: false };
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') continue;
+    // Stopped while this read was out, its answer still counts; the next pause ends the wait.
+    const res = await facilioApi.fetchRecord<any>('desks', { id: deskId }).catch(() => null);
+    const desk = res ? recordOf<any>(res, 'desks') : null;
+    if (desk) {
+      const holder = lookupId(desk, 'employee');
+      if (holder == null || String(holder) !== String(holderId)) return { cleared: true };
+    }
+  }
+  return { cleared: false };
+}
+
+/** Resolves true after `ms`, or false the moment `signal` aborts. */
+function pause(ms: number, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const done = (waited: boolean) => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', stop);
+      resolve(waited);
+    };
+    const stop = () => done(false);
+    const timer = setTimeout(() => done(true), ms);
+    signal?.addEventListener('abort', stop, { once: true });
+  });
+}
+
 /** moduleName -> its numeric moduleId (spacebooking's `parentModuleId`). Session cache. */
 const moduleIdCache = new Map<string, number>();
 async function moduleIdFor(moduleName: string, sampleRecordId: number): Promise<number | null> {
@@ -3196,6 +3325,108 @@ export function fetchOrgTimezone(): Promise<string | null> {
  * (it is not the login user id). From the account payload; null when the session names none.
  */
 let peopleIdCache: Promise<number | null> | null = null;
+let viewerRoleCache: Promise<OrgRole | null> | null = null;
+
+/**
+ * The signed-in user's ROLE, off the same account payload `fetchCurrentPeopleId` reads.
+ *
+ * Shapes differ by region and by how the app is embedded, so every known spelling is tried and a
+ * miss is not an error: null means "the payload did not say", and the caller treats that as no
+ * gating at all. Locking someone out because a field moved is far worse than showing them a tab.
+ */
+export function fetchCurrentRole(): Promise<OrgRole | null> {
+  if (!isFacilioApiConfigured) return Promise.resolve(null);
+  if (!viewerRoleCache) {
+    viewerRoleCache = (async () => {
+      for (const [path, params] of [
+        ['v2/fetchAccount', { optimized: true }],
+        ['v2/account', undefined],
+      ] as const) {
+        const body = await customGet(path, params as Record<string, unknown> | undefined).catch(() => null);
+        if (!body) continue;
+        const account = body?.result?.account ?? body?.account ?? body?.data?.account ?? body?.result ?? body?.data ?? body;
+        const user = account?.user ?? body?.result?.user ?? body?.user ?? null;
+        const role = user?.role ?? null;
+        // `User.roleId` is a Java long, so a user with no role arrives as 0, not null. Read as a
+        // role, 0 would be "Role 0" — a real-looking id that is on no tab's list, hiding every
+        // configured tab from them. Only a positive id names a role.
+        const id = Number(role?.roleId ?? role?.id ?? user?.roleId);
+        if (!Number.isFinite(id) || id <= 0) continue;
+        const name = String(role?.name ?? role?.label ?? `Role ${id}`);
+        // eslint-disable-next-line no-console
+        console.info(`[facilio-api] viewer role: ${name} (#${id})`);
+        return { id: String(id), name, isAdmin: isAdminRole(role) };
+      }
+      // eslint-disable-next-line no-console
+      console.info('[facilio-api] the account payload carried no role — every tab stays visible');
+      return null;
+    })();
+    viewerRoleCache.catch(() => {
+      viewerRoleCache = null;
+    });
+  }
+  return viewerRoleCache;
+}
+
+/**
+ * Whether a role record is one of the org's admin roles. Facilio flags these on the record itself,
+ * and spells the flag two ways depending on who answers: the connector says `isPrivileged`, the
+ * backend `Role` class says `isPrevileged`. Missing either one misses ENEC's "CAFM Administrator",
+ * which carries only the privileged flag. `isSuperAdmin` may also arrive as `superAdmin`.
+ */
+function isAdminRole(role: any): boolean {
+  if (!role || typeof role !== 'object') return false;
+  return role.isSuperAdmin === true || role.superAdmin === true || role.isPrivileged === true || role.isPrevileged === true;
+}
+
+/** The first array in `body` that looks like roles, whatever envelope carried it, as OrgRoles. */
+function rolesFrom(body: unknown): OrgRole[] {
+  const looksLikeRoles = (v: unknown): v is any[] =>
+    Array.isArray(v) && v.some((x) => x && (x.roleId != null || x.id != null) && (x.name || x.label));
+  let raw: any[] | null = null;
+  const stack: unknown[] = [body];
+  while (stack.length && !raw) {
+    const cur = stack.pop();
+    if (looksLikeRoles(cur)) raw = cur;
+    else if (cur && typeof cur === 'object' && !Array.isArray(cur)) stack.push(...Object.values(cur as object));
+  }
+  return (raw ?? [])
+    .map((r: any) => ({ id: Number(r?.roleId ?? r?.id), name: String(r?.label ?? r?.name ?? ''), isAdmin: isAdminRole(r) }))
+    .filter((r) => Number.isFinite(r.id) && r.id > 0 && r.name !== '')
+    .map((r) => ({ id: String(r.id), name: r.name, isAdmin: r.isAdmin }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * The org's roles, for the Settings access grid. Read only when that screen opens — gating works
+ * off the viewer's own role and never needs the list.
+ *
+ * The connector first: `facilio-user-management.list-roles` goes through the platform, not the
+ * Facilio page, so it answers however the app was opened — and the V3 route below needs the host
+ * bridge, which is exactly what was missing when the grid came up with no roles. V3 stays as the
+ * fallback: `v2/setup/getRoles` is what Facilio's own Setup calls.
+ */
+export async function fetchOrgRoles(): Promise<OrgRole[]> {
+  if (isVibeApp) {
+    try {
+      const roles = rolesFrom(await vibe.executeAction<unknown>('facilio-user-management', 'list-roles', {}));
+      if (roles.length) return roles;
+      // eslint-disable-next-line no-console
+      console.warn('[roles] the connector answered with no roles — trying the Facilio API');
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[roles] the connector could not list roles — trying the Facilio API', err);
+    }
+  }
+  if (!isFacilioApiConfigured) return [];
+  const roles = rolesFrom(await customGet('v2/setup/getRoles', undefined).catch(() => null));
+  if (!roles.length) {
+    // eslint-disable-next-line no-console
+    console.warn('[roles] v2/setup/getRoles returned no role list — the access grid will offer Everyone only');
+  }
+  return roles;
+}
+
 export function fetchCurrentPeopleId(): Promise<number | null> {
   if (!isFacilioApiConfigured) return Promise.resolve(null);
   if (!peopleIdCache) {
@@ -3282,6 +3513,12 @@ export interface BookingRangeOptions {
 
 const BOOKING_PAGE = 500;
 const BOOKING_MAX_PAGES = 6;
+/**
+ * Record ids per "is one of" filter. The filter travels in the request URL and a floor can hold
+ * hundreds of desks: one query naming them all could pass a server's request-line limit (8 KB on a
+ * default nginx), so a long list is split across queries.
+ */
+const BOOKING_IDS_PER_QUERY = 150;
 /** How far before a range the read looks for bookings that started earlier and run into it. */
 const BOOKING_LOOKBACK_DAYS = 31;
 
@@ -3295,19 +3532,26 @@ const BOOKING_FIELD_BY_MODULE: Record<string, 'desk' | 'space' | 'parkingStall'>
  */
 const FLOOR_IDS_TTL_MS = 60_000;
 const floorIdsCache = new Map<string, { at: number; ids: Promise<string[]> }>();
-function floorRecordIds(moduleName: string, floorId: string): Promise<string[]> {
+function floorRecordIds(moduleName: string, floorId: string, opts: { strict?: boolean } = {}): Promise<string[]> {
   const key = `${floorId}:${moduleName}`;
   const hit = floorIdsCache.get(key);
-  if (hit && Date.now() - hit.at < FLOOR_IDS_TTL_MS) return hit.ids;
-  const ids = (async () => {
-    const load = await loadFloorList(floorId, moduleName);
-    if (load.error) throw new Error(load.error.message ?? `floor ${moduleName} read failed`);
-    return [...load.first, ...(await load.rest)].map((r: any) => String(r.id));
-  })();
-  floorIdsCache.set(key, { at: Date.now(), ids });
-  // A failed read is not kept — the next caller tries again — and answers [] to this one.
-  return ids.catch(() => {
+  let ids: Promise<string[]>;
+  if (hit && Date.now() - hit.at < FLOOR_IDS_TTL_MS) {
+    ids = hit.ids;
+  } else {
+    ids = (async () => {
+      const load = await loadFloorList(floorId, moduleName);
+      if (load.error) throw new Error(load.error.message ?? `floor ${moduleName} read failed`);
+      return [...load.first, ...(await load.rest)].map((r: any) => String(r.id));
+    })();
+    floorIdsCache.set(key, { at: Date.now(), ids });
+  }
+  // A failed read is not kept — the next caller tries again. It answers [] to this one, unless the
+  // caller would build a query from it (`strict`): there an empty list would read as "this floor
+  // has nothing booked".
+  return ids.catch((err) => {
     if (floorIdsCache.get(key)?.ids === ids) floorIdsCache.delete(key);
+    if (opts.strict) throw err;
     return [] as string[];
   });
 }
@@ -3377,27 +3621,33 @@ export async function fetchSpaceBookingsForRange(startISO: string, endISO: strin
   if (opts.floorIds?.length) {
     // Filter fields AND together, so one query cannot OR across the resource lookups: the chosen
     // floors' record ids are gathered (cached per-floor reads) and each lookup gets a query of
-    // its own; the results merge and dedupe.
+    // its own; the results merge and dedupe. A floor list or a query that fails fails the read,
+    // as the org-wide read does — never a partial list that reads as "nothing else is booked".
     const idsByField: Record<string, string[]> = { desk: [], space: [], parkingStall: [] };
     await Promise.all(
       opts.floorIds.flatMap((f) =>
         Object.entries(BOOKING_FIELD_BY_MODULE).map(async ([m, field]) => {
-          for (const id of await floorRecordIds(m, f)) idsByField[field].push(id);
+          for (const id of await floorRecordIds(m, f, { strict: true })) idsByField[field].push(id);
         })
       )
     );
     const queries = Object.entries(idsByField)
       .filter(([field, ids]) => ids.length > 0 && (!opts.resourceField || field === opts.resourceField))
-      .map(([field, ids]) => fetchPages({ ...baseFilters, [field]: { operatorId: 36, value: ids } }).catch(() => [] as SpaceBookingRow[]));
+      .flatMap(([field, ids]) => {
+        const unique = [...new Set(ids)];
+        const parts: string[][] = [];
+        for (let i = 0; i < unique.length; i += BOOKING_IDS_PER_QUERY) parts.push(unique.slice(i, i + BOOKING_IDS_PER_QUERY));
+        return parts.map((part) => fetchPages({ ...baseFilters, [field]: { operatorId: 36, value: part } }));
+      });
     const seen = new Set<string>();
     rows = (await Promise.all(queries)).flat().filter((b) => (seen.has(String(b.id)) ? false : (seen.add(String(b.id)), true)));
   } else {
     rows = await fetchPages(baseFilters);
   }
 
-  // The read is org-wide; a floor-scoped caller wants only its own records' bookings. An empty
-  // set can also mean the floor's lists failed — showing the unscoped rows beats blanking real
-  // bookings then.
+  // Unless `floorIds` scoped the query above, the read is org-wide; a floor-scoped caller wants
+  // only its own records' bookings. An empty set can also mean the floor's lists failed — showing
+  // the unscoped rows beats blanking real bookings then.
   const onFloor = floorId
     ? new Set((await Promise.all(Object.keys(BOOKING_FIELD_BY_MODULE).map((m) => floorRecordIds(m, floorId)))).flat())
     : null;

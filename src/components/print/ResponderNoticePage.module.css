@@ -1,0 +1,122 @@
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  overflow: hidden;
+}
+.sign {
+  flex: none;
+}
+.sections {
+  width: 82%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.section {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.title {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 4px 0 0;
+  font: 700 22px/1.2 var(--font-sans);
+}
+.table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font: 400 13px/1.35 var(--font-sans);
+  color: #111;
+}
+.table th,
+.table td {
+  border: 1px solid #222;
+  padding: 5px 10px;
+  text-align: left;
+}
+.table th {
+  background: #eaf1df;
+  font: 700 13.5px/1.3 var(--font-sans);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A short list, printed large, in one column. */
+.roomy {
+  gap: 18px;
+}
+.roomy .sections {
+  gap: 18px;
+}
+
+/* A longer list: two columns, the roles side by side. */
+.twoCol .sections,
+.dense .sections {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 26px;
+  align-items: start;
+}
+.twoCol .title,
+.dense .title {
+  justify-content: flex-start;
+  font-size: 20px;
+}
+.twoCol .table,
+.twoCol .table th {
+  font-size: 13.5px;
+}
+.twoCol .table th,
+.twoCol .table td {
+  padding: 5px 8px;
+}
+
+/* A long list: two columns of smaller type. */
+.dense {
+  gap: 8px;
+}
+.dense .title {
+  font-size: 14px;
+}
+.dense .table,
+.dense .table th {
+  font-size: 9.5px;
+}
+.dense .table th,
+.dense .table td {
+  padding: 2px 6px;
+}
+.roomy .title {
+  font-size: 28px;
+}
+.roomy .table {
+  font-size: 16px;
+}
+.roomy .table th {
+  font-size: 16px;
+}
+.roomy .table th,
+.roomy .table td {
+  padding: 7px 12px;
+}
+.num {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

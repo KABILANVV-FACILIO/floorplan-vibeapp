@@ -1,19 +1,37 @@
 import { dataSource } from '../lib/dataSource';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
+import { isVibeApp } from '../lib/vibe';
 import { isOrgZoneUnit, roomOutlineChanges, saveFloorplanMarkers, saveFloorplanZones } from '../lib/facilioApiDataSource';
 import { ROOM_OUTLINE_WRITES } from '../lib/featureFlags';
 import type { Unit } from '../lib/types';
+
+/**
+ * A save that reached this browser and nothing else, because the page has no way to write to the
+ * org. Its message is meant for the person who pressed Save, so callers show it as it stands.
+ *
+ * Desk positions reach Facilio through the host bridge (`invokeFacilioAPI`), which exists only when
+ * the app is opened inside Facilio or the mobile app. A preview link opened in its own tab has no
+ * host, so there is nowhere to send them — and it used to say "Changes saved" anyway.
+ */
+export class NotSavedToOrgError extends Error {
+  constructor() {
+    super('Saved in this browser only. To save to the floor, open Floorplan Manager from inside Facilio.');
+    this.name = 'NotSavedToOrgError';
+  }
+}
 
 /** What an explicit save could not get into the org although the save as a whole went through. */
 export interface PersistOutcome {
   /** Labels of rooms whose outline (a create, update or delete) did not reach the org. */
   roomsNotWritten: string[];
+  /** Labels of desks, lockers and stalls whose marker (a create, update or delete) did not reach the org. */
+  unitsNotWritten: string[];
   /**
-   * Ids of rooms whose outline write was tried and FAILED. The caller keeps these out of the new
+   * Ids of rooms and units whose write was tried and FAILED. The caller keeps these out of the new
    * saved snapshot (MARK_SAVED's `retry`), so they stay unsaved and the next Save sends them again
    * — a delete in particular is decided from that snapshot, and would otherwise never be retried.
    */
-  roomsToRetry: string[];
+  toRetry: string[];
 }
 
 /**
@@ -46,12 +64,18 @@ export interface PersistOutcome {
  * With ROOM_OUTLINE_WRITES off (the default for now — see featureFlags.ts) the zone sync is not
  * called at all: the save is the markers exactly as before rooms were read, and no request goes to
  * `floorplanmarkedzone` or `space`. The rooms whose outline the user changed anyway are handed back
- * in `roomsNotWritten` — never in `roomsToRetry`, which would keep them unsaved and have every
+ * in `roomsNotWritten` — never in `toRetry`, which would keep them unsaved and have every
  * later Save report them again — so the toast can say their changes did not reach Facilio.
  */
 export async function persistUnits(floorId: string, units: Unit[], baseline?: Unit[]): Promise<PersistOutcome> {
   await dataSource.saveUnits(floorId, units);
-  if (!isFacilioApiConfigured) return { roomsNotWritten: [], roomsToRetry: [] };
+  if (!isFacilioApiConfigured) {
+    // Deployed, but with no host to write through: the browser copy is all that happened, and the
+    // contract above says a write that persisted nothing is not called a save. Plain local dev
+    // (`npm run dev`, no backend) lands here too, and there a browser-only save IS the whole job.
+    if (isVibeApp) throw new NotSavedToOrgError();
+    return { roomsNotWritten: [], unitsNotWritten: [], toRetry: [] };
+  }
   const result = await saveFloorplanMarkers(floorId, units);
   const hasPointUnits = units.some((u) => u.geom.kind === 'point' && u.type !== 'amenity');
   if (hasPointUnits && result.plansSynced === 0 && result.skipped.length) {
@@ -59,9 +83,12 @@ export async function persistUnits(floorId: string, units: Unit[], baseline?: Un
     console.warn(`[facilio-api] Save changes wrote NO markers to the org — ${result.skipped.join('; ')}. Positions are kept in this browser only.`);
     throw new Error(`markers not written to the org: ${result.skipped.join('; ')}`);
   }
+  // A marker the org refused on a save that otherwise went through is named, not called saved, and
+  // kept unsaved so the next Save sends it again.
+  const markers = { unitsNotWritten: result.unitsNotWritten, toRetry: result.retryIds };
   // Room outline writes are off: nothing more goes to the org. Only say which room changes stayed
   // behind; a reload draws the org's outline for them again.
-  if (!ROOM_OUTLINE_WRITES) return { roomsNotWritten: roomOutlineChanges(floorId, units, baseline), roomsToRetry: [] };
+  if (!ROOM_OUTLINE_WRITES) return { roomsNotWritten: roomOutlineChanges(floorId, units, baseline), ...markers };
   // Room outlines next: real `floorplanmarkedzone` records for rooms that stand for an org space.
   // Run when the markers were skipped for want of any to write — a floor can have its rooms' plan
   // georeferenced and nothing else — and reported the same way, so a room that did not reach the
@@ -78,7 +105,7 @@ export async function persistUnits(floorId: string, units: Unit[], baseline?: Un
   if ((units.some(isOrgZoneUnit) || zones.retryIds.length > 0) && zones.plansSynced === 0 && zones.plansSkipped > 0) {
     throw new Error(`room outlines not written to the org: ${zones.skipped.join('; ')}`);
   }
-  return { roomsNotWritten: [...new Set(zones.roomsNotWritten)], roomsToRetry: [...new Set(zones.retryIds)] };
+  return { roomsNotWritten: [...new Set(zones.roomsNotWritten)], unitsNotWritten: markers.unitsNotWritten, toRetry: [...new Set([...markers.toRetry, ...zones.retryIds])] };
 }
 
 /**
@@ -88,10 +115,23 @@ export async function persistUnits(floorId: string, units: Unit[], baseline?: Un
  */
 export const ROOM_NOTICE_MS = 8000;
 
+/** Labels for a toast: a name shared by several is shown once with how many ("Store ×2"), then the first three. */
+function listLabels(labels: string[]): string {
+  const counts = new Map<string, number>();
+  for (const l of labels) counts.set(l, (counts.get(l) ?? 0) + 1);
+  const names = [...counts].map(([l, n]) => (n > 1 ? `${l} ×${n}` : l));
+  return names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3} more` : '');
+}
+
 /**
  * The toast for a save that went through: plain "Changes saved", or — when some room outlines did
  * not reach the org (drawn in Facilio's editor, a failed write, a room this floor never loaded) —
  * which ones, so the user isn't told a room was saved that will be gone, or back, on reload.
+ *
+ * A desk, locker or stall whose marker the org refused is named first, with how to try again: it
+ * used to be logged to the console only, and the toast said "Changes saved" over it. With one of
+ * those in the list the room half drops its "Desks saved" / "Saved —" opening, which would then be
+ * untrue.
  *
  * With room outline writes off (`writes` false, the flag's value by default) every listed room is
  * one the app did not even try to write, and the toast says that plainly, for someone who does not
@@ -102,18 +142,19 @@ export const ROOM_NOTICE_MS = 8000;
  * One entry per room: two rooms that share a name are both counted and the name is shown once with
  * how many ("Store ×2") — see roomOutlineChanges.
  */
-export function savedNotice(outcome: Pick<PersistOutcome, 'roomsNotWritten'>, writes: boolean = ROOM_OUTLINE_WRITES): string {
+export function savedNotice(outcome: Pick<PersistOutcome, 'roomsNotWritten'> & Partial<Pick<PersistOutcome, 'unitsNotWritten'>>, writes: boolean = ROOM_OUTLINE_WRITES): string {
+  const units = outcome.unitsNotWritten ?? [];
   const labels = outcome.roomsNotWritten;
-  if (!labels.length) return 'Changes saved';
-  const counts = new Map<string, number>();
-  for (const l of labels) counts.set(l, (counts.get(l) ?? 0) + 1);
-  const names = [...counts].map(([l, n]) => (n > 1 ? `${l} ×${n}` : l));
-  const named = names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3} more` : '');
-  if (!writes) {
+  if (!labels.length && !units.length) return 'Changes saved';
+  const parts: string[] = [];
+  if (units.length) parts.push(`Not saved to Facilio: ${listLabels(units)} — save again to retry.`);
+  if (labels.length) {
     const n = labels.length;
-    return `Desks saved. ${n === 1 ? "1 room change can't" : `${n} room changes can't`} be saved to Facilio yet and will be undone when you reload: ${named}`;
+    const named = listLabels(labels);
+    if (!writes) parts.push(`${units.length ? '' : 'Desks saved. '}${n === 1 ? "1 room change can't" : `${n} room changes can't`} be saved to Facilio yet and will be undone when you reload: ${named}`);
+    else parts.push(`${units.length ? '' : 'Saved — '}${n} room outline${n === 1 ? '' : 's'} not written to the org: ${named}`);
   }
-  return `Saved — ${labels.length} room outline${labels.length === 1 ? '' : 's'} not written to the org: ${named}`;
+  return parts.join(' ');
 }
 
 /**
