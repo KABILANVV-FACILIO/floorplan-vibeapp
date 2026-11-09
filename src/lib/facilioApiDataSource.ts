@@ -14,7 +14,7 @@ import { isVibeApp, vibe } from './vibe';
 import { isRoomLike, TYPE_META } from './types';
 import { ROOM_OUTLINE_WRITES } from './featureFlags';
 import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, PlanId, PointGeom, PolyGeom, Site, Unit, UnitType } from './types';
-import { buildEmployeeFilters, mapFilterFields } from './employeeFilters';
+import { buildEmployeeFilters, employeeIdField, mapFilterFields } from './employeeFilters';
 import { byDepartmentName, byPersonName } from './displayNames';
 import type { AppliedFilter, FilterFieldDef } from './employeeFilters';
 
@@ -979,7 +979,10 @@ export async function queryEmployees(
   limit = 50,
 ): Promise<Employee[] | null> {
   if (!isFacilioApiConfigured) return null;
-  const filters = buildEmployeeFilters(req.query, req.applied, req.fields);
+  // The HRMS field goes into the search under the org's own name, read off its filter fields —
+  // the People page and the assign picker have no panel, so they ask for the list here.
+  const known = req.fields.length ? req.fields : ((await fetchEmployeeFilterFields()) ?? []);
+  const filters = buildEmployeeFilters(req.query, req.applied, req.fields, employeeIdField(known));
   const params: Record<string, unknown> = { perPage: limit };
   if (Object.keys(filters).length) params.filters = JSON.stringify(filters);
   const res = await facilioApi.fetchAll('employee', params).catch(() => null);
@@ -999,7 +1002,8 @@ let employeeFilterFields: Promise<FilterFieldDef[] | null> | null = null;
 export function fetchEmployeeFilterFields(): Promise<FilterFieldDef[] | null> {
   if (!isFacilioApiConfigured) return Promise.resolve(null);
   if (!employeeFilterFields) {
-    employeeFilterFields = customGet('v2/filter/advanced/fields/employee')
+    employeeFilterFields = Promise.resolve()
+      .then(() => customGet('v2/filter/advanced/fields/employee'))
       .then((body: any) => {
         const raw = body?.result?.fields ?? body?.data?.fields ?? body?.fields;
         const fields = mapFilterFields(raw);
@@ -1015,17 +1019,45 @@ export function fetchEmployeeFilterFields(): Promise<FilterFieldDef[] | null> {
   return employeeFilterFields;
 }
 
+export interface PicklistOption {
+  value: string;
+  label: string;
+  /** The record's second line, when the module has one (an employee's email, say). */
+  secondary?: string;
+}
+
 /**
- * The choices for a lookup field other than Department (which the app already holds, with its
- * colours): the first page of that module's records, by name. Enough for the pickers people
- * filter a roster with — a module too big for one page is better searched than ticked.
+ * A lookup's choices from the org's picklist — `GET v3/picklist/{module}`, the read Facilio's own
+ * lookup pickers make (V3PIckListAction): the module's records as `{value, label}`, searched on
+ * its main field, a page at a time, and `default` ids always included so picked records keep
+ * their names. `more` says another page exists, so the caller searches rather than lists.
  */
-export async function fetchLookupOptions(moduleName: string, limit = 200): Promise<{ value: string; label: string }[] | null> {
+export async function fetchPicklist(
+  moduleName: string,
+  opts: { search?: string; page?: number; perPage?: number; defaultIds?: string[] } = {},
+): Promise<{ options: PicklistOption[]; more: boolean } | null> {
   if (!isFacilioApiConfigured) return null;
-  const res = await facilioApi.fetchAll(moduleName, { perPage: limit }).catch(() => null);
-  if (!res || res.error || !res.list) return null;
-  return sortByName(res.list)
-    .map((r: any) => ({ value: String(r.id), label: String(r.name ?? r.displayName ?? r.id) }));
+  const perPage = opts.perPage ?? 50;
+  const params: Record<string, unknown> = { page: opts.page ?? 1, perPage };
+  if (opts.search?.trim()) params.search = opts.search.trim();
+  if (opts.defaultIds?.length) params.default = opts.defaultIds.join(',');
+  const read = async (p: Record<string, unknown>) => {
+    const body = await customGet(`v3/picklist/${encodeURIComponent(moduleName)}`, p).catch(() => null);
+    if (!body || (body.code !== undefined && body.code !== 0)) return null;
+    const list = body?.data?.pickList ?? body?.result?.pickList ?? body?.pickList;
+    return Array.isArray(list) ? list : null;
+  };
+  // `default` keeps picked records named; a server that refuses the parameter still lists.
+  let raw = await read(params);
+  if (!raw && params.default) {
+    const { default: _ids, ...rest } = params;
+    raw = await read(rest);
+  }
+  if (!raw) return null;
+  const options: PicklistOption[] = raw
+    .filter((o: any) => o?.value != null && o?.label != null)
+    .map((o: any) => ({ value: String(o.value), label: String(o.label), ...(o.secondaryLabel ? { secondary: String(o.secondaryLabel) } : {}) }));
+  return { options, more: raw.length >= perPage };
 }
 
 /**
@@ -1061,7 +1093,9 @@ export async function searchDesks(query: string, limit = 50): Promise<{ id: stri
  * `getEmployees` logs the field names a real record actually carries, which settles it if this
  * list ever misses.
  */
-const HRMS_ID_KEYS = ['hrmsEmployeeId', 'hrmsEmployeeID', 'hrmsEmpId', 'hrmsId', 'employeeNumber', 'employeeId', 'empId'];
+const HRMS_ID_KEYS = ['hrmsEmployeeId', 'hrms_employee_id_employee', 'hrmsEmployeeID', 'hrmsEmpId', 'hrmsId', 'employeeNumber', 'employeeId', 'empId'];
+/** Any other spelling of the same custom field ("hrms_employee_id", "hrmsEmployeeId_employee"…). */
+const HRMS_ID_PATTERN = /^hrms_?(employee|emp)_?id/i;
 
 function firstString(row: any, keys: string[]): string | undefined {
   for (const k of keys) {
@@ -1078,7 +1112,7 @@ export function mapEmployee(e: any): Employee {
   return {
     id: String(e.id),
     name: e.name,
-    hrmsEmployeeId: firstString(e, HRMS_ID_KEYS),
+    hrmsEmployeeId: firstString(e, HRMS_ID_KEYS) ?? firstString(e, Object.keys(e ?? {}).filter((k) => HRMS_ID_PATTERN.test(k))),
     email: firstString(e, ['email', 'emailId', 'primaryEmail']),
     department: typeof dept === 'string' ? dept : (dept?.displayName ?? dept?.name ?? undefined),
     // The person record's own number fields (V3PeopleContext: `mobile`, `phone`) — the number a

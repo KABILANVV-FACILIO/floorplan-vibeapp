@@ -11,6 +11,7 @@ import type {
   OrgRole,
   PanelsState,
   PlanId,
+  PlanViews,
   Site,
   Unit,
   UnitType,
@@ -143,6 +144,7 @@ export interface AppState {
   date: string;
   start: number;
   end: number;
+  /** The signed-in person's people id, '' until the org has said who that is. */
   bookBy: string;
   bookPurpose: string;
   bookNotes: string;
@@ -195,6 +197,11 @@ export interface AppState {
    * of settings (vibe DB when deployed).
    */
   enabledModules: EnabledModules;
+  /**
+   * The viewer's Assignment and Booking rights (Roles & access › Floorplans), worked out from
+   * `access` and `viewerRole` by the reducer's settleAccess — never set on its own.
+   */
+  planViews: PlanViews;
 
   toast: string | null;
 

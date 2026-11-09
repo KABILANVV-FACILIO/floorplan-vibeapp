@@ -3,7 +3,7 @@ import type { PointGeom, ResponderRoleDef, Unit } from './types';
 import { responderRolesFor, rolesText } from './firstResponders';
 import { markerStyle, unitStatus } from './unitStatus';
 import type { MarkerStyle } from './unitStatus';
-import { contactName, markerSubTexts, myAssignedUnit } from '../state/selectors';
+import { contactName, markerSubTexts, myAssignedUnit, unitDepartment } from '../state/selectors';
 
 /**
  * Everything a marker on the plan needs in order to draw itself, read from the app state ONCE —
@@ -28,6 +28,8 @@ export interface MarkerModel {
   /** The user's own desk: draws the "Your desk" pill. */
   isMine: boolean;
   isHighlighted: boolean;
+  /** Outside the department the plan is filtered to: drawn faint, still clickable. */
+  isDimmed: boolean;
   /** An org write is in flight for this record. */
   isBusy: boolean;
   /** Edit mode, Select tool: the chip can be dragged to reposition it. */
@@ -36,7 +38,7 @@ export interface MarkerModel {
   responderRoles: ResponderRoleDef[];
 }
 
-export function markerModel(state: AppState, unit: Unit, opts: { personal?: boolean } = {}): MarkerModel {
+export function markerModel(state: AppState, unit: Unit, opts: { personal?: boolean; /** The department filter (activeDepartment). */ department?: string | null } = {}): MarkerModel {
   const style = markerStyle(state, unit);
   const status = unitStatus(state, unit, (id) => contactName(state, id));
   const { holder, dept } = markerSubTexts(state, unit);
@@ -58,6 +60,8 @@ export function markerModel(state: AppState, unit: Unit, opts: { personal?: bool
     // read by everyone, and the pill would stand where the desk's name belongs.
     isMine: opts.personal !== false && myAssignedUnit(state)?.id === unit.id,
     isHighlighted: state.highlightUnitId === unit.id,
+    // Landmarks (stairs, extinguishers) belong to no department and stay as they are.
+    isDimmed: !!opts.department && unit.type !== 'amenity' && unitDepartment(state, unit) !== opts.department,
     isBusy: state.busyUnitId === unit.id,
     draggable: state.mode === 'edit' && state.tool === 'select',
     responderRoles,

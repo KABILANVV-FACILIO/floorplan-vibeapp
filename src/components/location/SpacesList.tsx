@@ -1,7 +1,8 @@
 import type { DragEvent as ReactDragEvent } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { activateOnKey } from '../../lib/keyboard';
-import { contactName, moduleEnabled } from '../../state/selectors';
+import { contactName, floorDepartments, moduleEnabled, unitDepartment } from '../../state/selectors';
+import { departmentDisplayName } from '../../lib/displayNames';
 import { unitSortCompare } from '../../lib/geometry';
 import { unitStatus } from '../../lib/unitStatus';
 import { Chip } from '../primitives/Chip';
@@ -68,17 +69,15 @@ export function SpacesList() {
   const units = allUnits.filter((u) => moduleEnabled(state, u.type));
 
   /**
-   * Departments present on THIS floor, from the desk records' own `department` field — the same
-   * one the plan colours by. Only desks carry it, so the control is offered only where the org
-   * actually fills it in; a floor with none shows the type chips alone, as before.
+   * Departments present on THIS floor: a desk's own `department`, else its holder's (see
+   * unitDepartment). The same choice filters this list and dims the rest of the plan; a floor
+   * with no department anywhere shows the type chips alone.
    */
-  const departments = [...new Set(units.map((u) => u.department).filter((d): d is string => !!d))].sort((a, b) =>
-    a.localeCompare(b)
-  );
+  const departments = floorDepartments(state);
   // A department that vanished (floor switch, module toggle) must not silently narrow the list to
   // nothing — the list reads as empty with no visible cause.
   const dept = state.spaceDepartment && departments.includes(state.spaceDepartment) ? state.spaceDepartment : null;
-  const inDept = (u: Unit) => !dept || u.department === dept;
+  const inDept = (u: Unit) => !dept || unitDepartment(state, u) === dept;
 
   // Counts follow the department, so a chip never promises rows the list won't show.
   const scoped = units.filter(inDept);
@@ -130,7 +129,7 @@ export function SpacesList() {
             value={dept ?? ''}
             options={[
               { value: '', label: 'All departments' },
-              ...departments.map((d) => ({ value: d, label: d, sublabel: `${scopedCount(units, d)}` })),
+              ...departments.map((d) => ({ value: d, label: departmentDisplayName(d) || d, sublabel: `${units.filter((u) => unitDepartment(state, u) === d).length}` })),
             ]}
             onChange={(v) => actions.setSpaceDepartment(v || null)}
             size="sm"
@@ -258,7 +257,3 @@ function SpaceRow({ unit }: { unit: Unit }) {
   );
 }
 
-/** How many of this floor's spaces belong to a department — shown beside its name in the picker. */
-function scopedCount(units: Unit[], department: string): number {
-  return units.reduce((n, u) => (u.department === department ? n + 1 : n), 0);
-}

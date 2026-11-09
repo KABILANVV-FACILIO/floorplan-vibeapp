@@ -1,7 +1,7 @@
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { moduleColor } from '../../lib/unitStatus';
 import { AMENITY_META, isRoomLike, TYPE_META } from '../../lib/types';
-import { enabledTypes } from '../../state/selectors';
+import { activeDepartment, enabledTypes } from '../../state/selectors';
 import { departmentColor, departmentsIn } from '../../lib/departmentColors';
 import { departmentDisplayName } from '../../lib/displayNames';
 import type { AmenityIcon, ResponderRoleDef } from '../../lib/types';
@@ -79,11 +79,43 @@ export function legendItems(state: AppState): LegendItem[] {
 }
 
 export function Legend() {
-  const { state } = useFloorplanData();
+  const { state, actions } = useFloorplanData();
   const items = legendItems(state);
+  // The department filter dims the rest of the plan; this says why, and undoes it in one click.
+  const department = activeDepartment(state);
 
   return (
     <div style={{ position: 'absolute', left: 12, bottom: 12, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', maxWidth: '70%' }}>
+      {department && (
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            height: 24,
+            padding: '0 4px 0 10px',
+            background: 'var(--blue-025)',
+            border: '1px solid var(--blue-100)',
+            borderRadius: 999,
+            font: '500 11px/1 var(--font-sans)',
+            color: 'var(--blue-600)',
+            boxShadow: 'var(--shadow-xs)',
+          }}
+        >
+          Department: {departmentDisplayName(department) || department}
+          <button
+            type="button"
+            aria-label="Show all departments"
+            data-tip="Show all departments"
+            onClick={() => actions.setSpaceDepartment(null)}
+            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18, border: 'none', borderRadius: 999, background: 'transparent', color: 'inherit', cursor: 'pointer', padding: 0 }}
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden>
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </span>
+      )}
       <FloorResponders />
       {items.map((it) => (
         <span

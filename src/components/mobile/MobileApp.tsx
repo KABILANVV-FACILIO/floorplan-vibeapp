@@ -136,14 +136,17 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
               </button>
             </div>
 
-            <div className={styles.tabs}>
-              <button className={state.mobileTab === 'book' ? styles.tabActive : styles.tab} onClick={() => actions.setMobileTab('book')}>
-                Book
-              </button>
-              <button className={state.mobileTab === 'assign' ? styles.tabActive : styles.tab} onClick={() => actions.setMobileTab('assign')}>
-                Assign
-              </button>
-            </div>
+            {/* Only when this role holds both views (Roles & access › Floorplans). */}
+            {state.planViews.book && state.planViews.assign && (
+              <div className={styles.tabs}>
+                <button className={state.mobileTab === 'book' ? styles.tabActive : styles.tab} onClick={() => actions.setMobileTab('book')}>
+                  Book
+                </button>
+                <button className={state.mobileTab === 'assign' ? styles.tabActive : styles.tab} onClick={() => actions.setMobileTab('assign')}>
+                  Assign
+                </button>
+              </div>
+            )}
 
             {state.mobileTab === 'book' && (
               <div className={styles.slotPicker}>

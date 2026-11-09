@@ -56,7 +56,11 @@ describe('getting into and out of Edit', () => {
   it('always lets someone OUT of Edit, right or no right', () => {
     const trapped = stateWith(editOnlyFor(['21']), VIEWER, 'edit');
     expect(reducer(trapped, { type: 'TOGGLE_EDIT' }).mode).toBe('assign');
-    expect(reducer(trapped, { type: 'SET_MODE', mode: 'book' }).mode).toBe('book');
+    // Out to Booking, for a role that holds it (the reducer's settleAccess works planViews out).
+    const booker = { ...trapped, planViews: { assign: true, book: true } };
+    expect(reducer(booker, { type: 'SET_MODE', mode: 'book' }).mode).toBe('book');
+    // Without it, out to the plan's base view rather than into a view the role lacks.
+    expect(reducer(trapped, { type: 'SET_MODE', mode: 'book' }).mode).toBe('assign');
   });
 
   it('moves someone out of Edit when their role turns out not to have the right', () => {

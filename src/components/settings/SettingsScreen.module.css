@@ -367,6 +367,27 @@
   min-width: 0;
 }
 
+/* A right under its tab (Floorplans › Assignment, Booking, Edit): set in on a guide line, so the
+   three read as the plan's own rather than as tabs of their own. The edit row's label column gives
+   back the indent, so every role field still starts on one line. */
+.sumRowSub,
+.editRowSub {
+  position: relative;
+  padding-left: 48px;
+}
+.sumRowSub::before,
+.editRowSub::before {
+  content: '';
+  position: absolute;
+  left: 30px;
+  top: 0;
+  bottom: 0;
+  border-left: 2px solid var(--ink-100);
+}
+.editRowSub {
+  grid-template-columns: 152px minmax(0, 1fr);
+}
+
 /* The role lookup. The menu opens IN the row rather than floating: inside a
    scrolling modal body a floating menu is clipped by the body's overflow, which
    is exactly what happened to the last row. */
@@ -547,6 +568,17 @@
   }
   .editLabel {
     padding-top: 0;
+  }
+  .sumRowSub,
+  .editRowSub {
+    padding-left: 36px;
+  }
+  .sumRowSub::before,
+  .editRowSub::before {
+    left: 20px;
+  }
+  .editRowSub {
+    grid-template-columns: 1fr;
   }
 }
 

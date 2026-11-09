@@ -10,6 +10,9 @@ export function Toolbar({ leftPad, rightPad }: { leftPad: number; rightPad: numb
   // servicePortalHome (state.myDesk). Either one lights the button up.
   const hasMyDesk = !!myUnit || !!state.myDesk;
   const openPrint = usePrintViewer();
+  // Which of the plan's views this role holds (Roles & access › Floorplans): the switch is only
+  // there when there are two to switch between.
+  const bothViews = state.planViews.assign && state.planViews.book;
 
   function onMyDesk() {
     if (myUnit) actions.focusUnit(myUnit.id, state.stage.w, state.stage.h, { select: false });
@@ -19,6 +22,7 @@ export function Toolbar({ leftPad, rightPad }: { leftPad: number; rightPad: numb
   return (
     <div className={styles.wrap} style={{ paddingLeft: leftPad, paddingRight: rightPad }}>
       <div className={styles.pill}>
+        {bothViews && (
         <div className={styles.segment}>
           <button className={[styles.segBtn, state.mode === 'assign' ? styles.segBtnActive : ''].join(' ')} onClick={() => actions.setMode('assign')}>
             Assignment
@@ -27,6 +31,7 @@ export function Toolbar({ leftPad, rightPad }: { leftPad: number; rightPad: numb
             Booking
           </button>
         </div>
+        )}
 
         {/* Shown while editing even if the right was just withdrawn, so the way out never vanishes. */}
         {(canEdit(state) || state.mode === 'edit') && (

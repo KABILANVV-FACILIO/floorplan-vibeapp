@@ -1075,6 +1075,8 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     },
 
     assign: async (contactId: string, unitId: string) => {
+      // Without the Assignment right (Roles & access › Floorplans): nothing assigns, whatever asked.
+      if (!state.planViews.assign) return;
       // Before anything is written here: with no Facilio host, the assignment would live in this
       // browser alone while the toast said it was made.
       if (refuseOrgWrite(showToast)) return;
@@ -1123,6 +1125,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       }
     },
     vacate: async (unitId: string) => {
+      if (!state.planViews.assign) return;
       if (refuseOrgWrite(showToast)) return;
       const target = unitById(state, unitId);
       const prevContactId = state.assignments[unitId];
@@ -1230,6 +1233,8 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       /** The form's own resource lookup field name, from its response. */
       resourceField?: string;
     }): Promise<boolean> => {
+      // Without the Booking right no form should be open, and nothing books if one is.
+      if (!state.planViews.book) return false;
       const unit =
         unitById(state, form.unitId) ??
         (state.bookForm?.resourceUnit?.id === form.unitId ? state.bookForm.resourceUnit : null) ??

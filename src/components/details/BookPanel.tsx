@@ -7,6 +7,7 @@ import { DatePicker } from '../primitives/DatePicker';
 import { Select } from '../primitives/Select';
 import { Button } from '../primitives/Button';
 import { SkeletonRows } from '../primitives/Skeleton';
+import { PeopleCard } from './AssignPanel';
 import card from './Card.module.css';
 import styles from './BookPanel.module.css';
 
@@ -107,6 +108,10 @@ export function BookPanel() {
           </div>
         </div>
       )}
+      {/* Booking without Assignment has no other way to the People list, so it follows here, at a
+          height of its own — this stack scrolls, and a list as tall as the directory would bury
+          the booking above it. */}
+      {!state.planViews.assign && <PeopleCard fixed />}
     </div>
   );
 }

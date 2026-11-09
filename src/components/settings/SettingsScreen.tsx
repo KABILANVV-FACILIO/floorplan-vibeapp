@@ -194,9 +194,9 @@ export function CardHead({ title, desc, onConfigure, action = 'Configure' }: { t
 }
 
 /** One read-only line of a card: what the thing is, and what it is set to. */
-export function SummaryRow({ name, desc, children }: { name: string; desc?: ReactNode; children: ReactNode }) {
+export function SummaryRow({ name, desc, sub, children }: { name: string; desc?: ReactNode; sub?: boolean; children: ReactNode }) {
   return (
-    <div className={styles.sumRow}>
+    <div className={[styles.sumRow, sub ? styles.sumRowSub : ''].join(' ')}>
       <div className={styles.sumText}>
         <div className={styles.sumName}>{name}</div>
         {desc != null && <div className={styles.sumDesc}>{desc}</div>}
@@ -274,7 +274,8 @@ function SwatchPick({ palette, current, label, onPick }: { palette: readonly str
 }
 
 /**
- * Who reaches which TAB.
+ * Who reaches which TAB, and what each role may do on the plan (Floorplans › Assignment, Booking,
+ * Edit — drawn under their tab).
  *
  * The card reads; the modal edits. Staged rather than live because access is the one setting where
  * a half-finished state is dangerous — a role stripped of its last tab between two clicks is a
@@ -292,7 +293,10 @@ function PermissionsTab() {
         <div className={styles.cardHead}>
           <div>
             <h3 className={styles.cardTitle}>Roles &amp; access</h3>
-            <p className={styles.cardDesc}>Which of the org&rsquo;s roles can reach each tab. A tab nobody&rsquo;s role reaches is not shown to them at all.</p>
+            <p className={styles.cardDesc}>
+              Which of the org&rsquo;s roles can reach each tab, and what they may do on the floor plan. A tab nobody&rsquo;s role reaches is not shown to them at
+              all.
+            </p>
           </div>
           <Button variant="secondary" onClick={() => setEditing(true)}>
             Configure access
@@ -301,13 +305,13 @@ function PermissionsTab() {
         {SURFACES.map((s) => {
           const rule = accessOf(s.id);
           return (
-            <SummaryRow key={s.id} name={s.name} desc={s.desc}>
+            <SummaryRow key={s.id} name={s.name} desc={s.desc} sub={!!s.parent}>
               {rule.all ? (
                 <span className={[styles.pill, styles.pillOn].join(' ')}>Everyone</span>
               ) : rule.roles.length ? (
                 <RoleChips ids={rule.roles} roles={state.orgRoles} />
               ) : (
-                <span className={[styles.pill, styles.pillMuted].join(' ')}>Hidden for everyone</span>
+                <span className={[styles.pill, styles.pillMuted].join(' ')}>{s.parent ? 'No one' : 'Hidden for everyone'}</span>
               )}
             </SummaryRow>
           );
@@ -364,6 +368,7 @@ export function RoleLookup({
   roles,
   loading,
   locked,
+  right = false,
   onToggleAll,
   onToggleRole,
   onClear,
@@ -373,6 +378,8 @@ export function RoleLookup({
   roles: OrgRole[];
   loading: boolean;
   locked: string[];
+  /** A right on the plan (Assignment, Booking, Edit) rather than a tab: it may be held by no one. */
+  right?: boolean;
   onToggleAll: () => void;
   onToggleRole: (id: string) => void;
   onClear: () => void;
@@ -431,8 +438,8 @@ export function RoleLookup({
   const visible = q ? roles.filter((r) => r.name.toLowerCase().includes(q)) : roles;
   const count = rule.all ? roles.length : rule.roles.length;
   // With no roles to choose from, turning Everyone off can only leave the tab empty — hidden from
-  // every role — so it is not offered.
-  const everyoneLocked = rule.all && !roles.length;
+  // every role — so it is not offered. A right held by no one locks nobody out of anything.
+  const everyoneLocked = rule.all && !roles.length && !right;
 
   return (
     <div className={styles.lookup}>
@@ -442,7 +449,7 @@ export function RoleLookup({
         className={styles.lookupField}
         aria-expanded={open}
         aria-haspopup="listbox"
-        aria-label={`Roles that can reach ${label}`}
+        aria-label={right ? `Roles that may use ${label}` : `Roles that can reach ${label}`}
         onClick={() => {
           setOpen((o) => !o);
           setQuery('');
@@ -454,7 +461,7 @@ export function RoleLookup({
           ) : rule.roles.length ? (
             <RoleChips ids={rule.roles} roles={roles} />
           ) : (
-            <span className={styles.lookupPlaceholder}>Choose roles</span>
+            <span className={styles.lookupPlaceholder}>{right ? 'No one — choose roles' : 'Choose roles'}</span>
           )}
         </span>
         <svg className={styles.caret} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
@@ -507,7 +514,9 @@ export function RoleLookup({
               {loading ? (
                 <div className={styles.menuEmpty}>Loading roles…</div>
               ) : !roles.length ? (
-                <div className={styles.menuEmpty}>The org&rsquo;s roles could not be loaded, so this tab stays open to everyone for now.</div>
+                <div className={styles.menuEmpty}>
+                  {right ? 'The org’s roles could not be loaded, so this can only be given to everyone or no one for now.' : 'The org’s roles could not be loaded, so this tab stays open to everyone for now.'}
+                </div>
               ) : !visible.length ? (
                 <div className={styles.menuEmpty}>No role matches &ldquo;{query}&rdquo;.</div>
               ) : (
@@ -549,6 +558,9 @@ export function RoleLookup({
     </div>
   );
 }
+
+/** A row that is a right on a tab (Floorplans › Assignment…), not a tab of its own. */
+const isRight = (surface: Surface): boolean => !!SURFACES.find((s) => s.id === surface)?.parent;
 
 function AccessModal({ onClose }: { onClose: () => void }) {
   const { state, actions } = useFloorplanData();
@@ -613,7 +625,8 @@ function AccessModal({ onClose }: { onClose: () => void }) {
   }
   function toggleAll(surface: Surface): void {
     const cur = draft[surface];
-    if (cur.all && !state.orgRoles.length) {
+    // A right may go to no one; only a tab must keep somebody.
+    if (cur.all && !state.orgRoles.length && !isRight(surface)) {
       // Nothing to choose instead, so turning Everyone off could only leave the tab empty —
       // hidden from every role — and the save would lock everyone out of it.
       setRefused("The org's roles haven't loaded, so this tab can only be open to everyone for now.");
@@ -635,9 +648,9 @@ function AccessModal({ onClose }: { onClose: () => void }) {
   return (
     <StagedModal
       title="Configure access"
-      subtitle="Choose who can reach each tab. Nothing changes until you save."
+      subtitle="Choose who can reach each tab, and who may assign, book and edit on the floor plan. Nothing changes until you save."
       changed={changed}
-      unit="tab"
+      unit="permission"
       refused={refused}
       onCancel={onClose}
       onSave={() => {
@@ -646,7 +659,7 @@ function AccessModal({ onClose }: { onClose: () => void }) {
       }}
     >
       {SURFACES.map((s) => (
-        <div key={s.id} className={styles.editRow}>
+        <div key={s.id} className={[styles.editRow, s.parent ? styles.editRowSub : ''].join(' ')}>
           <div className={styles.editLabel}>
             <div className={styles.sumName}>{s.name}</div>
             <div className={styles.sumDesc}>{s.desc}</div>
@@ -657,6 +670,7 @@ function AccessModal({ onClose }: { onClose: () => void }) {
             roles={state.orgRoles}
             loading={state.orgRolesLoading}
             locked={lockedFor(s.id)}
+            right={!!s.parent}
             onToggleAll={() => toggleAll(s.id)}
             onToggleRole={(id) => toggleRole(s.id, id)}
             onClear={() => clearRoles(s.id)}

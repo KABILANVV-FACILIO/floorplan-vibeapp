@@ -1,12 +1,12 @@
-import { DEFAULT_ENABLED_MODULES, floorImageKey, isRoomLike, planForPlacement } from '../lib/types';
+import { DEFAULT_ENABLED_MODULES, DEFAULT_PLAN_VIEWS, floorImageKey, isRoomLike, planForPlacement } from '../lib/types';
 import { DEFAULT_LABEL_STYLE } from '../lib/labelLayout';
 import type { LabelStyle } from '../lib/labelLayout';
-import type { Booking, Building, Floor, FloorSearchHit, MarkerDef, ModuleKey, OrgRole, PlanId, Site, Surface, SurfaceAccess, Unit } from '../lib/types';
+import type { AppMode, Booking, Building, Floor, FloorSearchHit, MarkerDef, ModuleKey, OrgRole, PlanId, PlanViews, Site, Surface, SurfaceAccess, Unit } from '../lib/types';
 import { clamp, fitView } from '../lib/geometry';
 import { seedBookings } from '../lib/mockData';
 import { viewFromLocation } from '../lib/routes';
 import type { AppState } from './types';
-import { canEdit, clampView } from './selectors';
+import { canAssign, canBook, canEdit, clampView } from './selectors';
 import { sanitizeResponders, sanitizeRoles, withRecordNames } from '../lib/firstResponders';
 import { BUILTIN_RESPONDER_ROLES } from '../lib/types';
 import type { FirstResponder, ResponderRoleDef } from '../lib/types';
@@ -108,7 +108,10 @@ export function buildInitialState(): AppState {
     date: iso,
     start: 600,
     end: 660,
-    bookBy: 'c1',
+    // Nobody until Facilio says who is signed in (boot sets it from the account's people id). It
+    // used to start as the demo seed's first person, so that person's desk wore "Your desk" for
+    // anyone the account read could not identify.
+    bookBy: '',
     bookPurpose: '',
     bookNotes: '',
     bookModalOpen: false,
@@ -133,10 +136,14 @@ export function buildInitialState(): AppState {
     departmentColors: {},
     slotGranularity: 30,
     enabledModules: DEFAULT_ENABLED_MODULES,
+    // Nobody is known yet, so neither right is held (selectors.canSee); settleAccess works them
+    // out again once the role and the grid arrive.
+    planViews: DEFAULT_PLAN_VIEWS,
 
     toast: null,
 
-    mobileTab: 'book',
+    // Book is the phone's default, but not without the Booking right (nobody has it yet).
+    mobileTab: permittedMode(DEFAULT_PLAN_VIEWS, 'book') as AppState['mobileTab'],
     mobSel: null,
     mobPickSite: null,
     mobPickBuilding: null,
@@ -288,6 +295,18 @@ export type Action =
   | { type: 'SET_PENDING_MODE_SWITCH'; mode: AppState['mode'] | null }
   | { type: 'RESET_DEMO'; units: Unit[]; assignments: AppState['assignments']; bookings: Booking[] };
 
+/**
+ * The view the plan may be in, given the viewer's rights. A view they lack is never entered:
+ * asking for it lands on the other one, and with neither the plan stays in its base view
+ * ('assign') with nothing to assign or book — the floor, its markers and a read-only People
+ * list. Edit is its own right (canEdit).
+ */
+export function permittedMode(views: PlanViews, wanted: AppMode): AppMode {
+  if (wanted === 'book' && !views.book) return 'assign';
+  if (wanted === 'assign' && !views.assign && views.book) return 'book';
+  return wanted;
+}
+
 function resetSelectionState(_s: AppState): Partial<AppState> {
   return { selected: null, multiSelected: [], placingUnitId: null, draft: [], calib: [], calibLen: '', dragOverId: null };
 }
@@ -310,14 +329,34 @@ function poolEntryFor(u: Unit): Unit | null {
 /**
  * After who is looking, or what they may reach, has changed: keep them somewhere they are allowed to
  * be. A tab they lost moves them to the first one they keep; Edit mode they lost drops them back to
- * the plan's Assign view. Resolving the viewer's role at boot is the usual trigger — it can arrive
- * after someone is already standing on a tab, or already in Edit.
+ * the plan; a view they lost (Assignment, Booking) moves the plan, and the phone's tabs, to one they
+ * hold, and closes a booking form they may no longer send. Resolving the viewer's role at boot is
+ * the usual trigger — it can arrive after someone is already standing on a tab, or in Edit.
+ *
+ * `planViews` is worked out here and nowhere else: it is the viewer's two rights, cached so every
+ * surface reads one answer, and every change to the role or the grid passes through here.
  */
 function settleAccess(next: AppState): AppState {
+  const was = next.planViews;
+  const views: PlanViews = { assign: canAssign(next), book: canBook(next) };
+  const viewsChanged = views.assign !== was.assign || views.book !== was.book;
   const activeView = clampView(next, next.activeView);
-  const mode = next.mode === 'edit' && !canEdit(next) ? 'assign' : next.mode;
-  if (activeView === next.activeView && mode === next.mode) return next;
-  return { ...next, activeView, mode, ...(mode !== next.mode ? { tool: 'select' as const, ...resetSelectionState(next) } : {}) };
+  const mode = next.mode === 'edit' ? (canEdit(next) ? 'edit' : permittedMode(views, 'assign')) : permittedMode(views, next.mode);
+  // The phone's tab is a choice only while both views are held; otherwise it was forced, so it
+  // starts again from Book, the phone's own default.
+  const tabWanted = was.assign && was.book ? next.mobileTab : 'book';
+  const mobileTab = viewsChanged ? (permittedMode(views, tabWanted) as AppState['mobileTab']) : next.mobileTab;
+  const bookingGone = !views.book && (next.bookForm !== null || next.bookModalOpen);
+  if (!viewsChanged && activeView === next.activeView && mode === next.mode && !bookingGone) return next;
+  return {
+    ...next,
+    planViews: viewsChanged ? views : was,
+    activeView,
+    mode,
+    mobileTab,
+    ...(mode !== next.mode ? { tool: 'select' as const, ...resetSelectionState(next) } : {}),
+    ...(bookingGone ? { bookForm: null, bookModalOpen: false } : {}),
+  };
 }
 
 export function reducer(state: AppState, action: Action): AppState {
@@ -325,10 +364,10 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'SET_MODE':
       // Entering Edit needs the right to; leaving it never does, so no one is ever trapped in it.
       if (action.mode === 'edit' && state.mode !== 'edit' && !canEdit(state)) return state;
-      return { ...state, mode: action.mode, tool: 'select', ...resetSelectionState(state) };
+      return { ...state, mode: permittedMode(state.planViews, action.mode), tool: 'select', ...resetSelectionState(state) };
     case 'TOGGLE_EDIT':
       if (state.mode !== 'edit' && !canEdit(state)) return state;
-      return { ...state, mode: state.mode === 'edit' ? 'assign' : 'edit', tool: 'select', ...resetSelectionState(state) };
+      return { ...state, mode: state.mode === 'edit' ? permittedMode(state.planViews, 'assign') : 'edit', tool: 'select', ...resetSelectionState(state) };
     case 'SET_TOOL':
       return { ...state, tool: action.tool, draft: [], calib: [], calibLen: '', placingUnitId: null, multiSelected: [] };
     case 'SET_MARKER_KIND':
@@ -667,10 +706,14 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'SET_TIME_RANGE':
       return { ...state, start: action.start, end: action.end };
     case 'SET_BOOK_MODAL':
+      // Every way into the booking form — the plan, the sidebar, the calendar, a scanned QR code —
+      // passes through here or SET_BOOK_FORM, so the Booking right is asked once, here.
+      if (action.open && !state.planViews.book) return state;
       return { ...state, bookModalOpen: action.open, bookPurpose: action.open ? state.bookPurpose : '', bookNotes: action.open ? state.bookNotes : '' };
     case 'SET_BOOK_FIELD':
       return { ...state, [action.field]: action.value } as AppState;
     case 'SET_BOOK_FORM':
+      if (action.form && !state.planViews.book) return state;
       return { ...state, bookForm: action.form, bookModalOpen: !!action.form };
     case 'UPDATE_BOOK_FORM':
       return { ...state, bookForm: state.bookForm ? { ...state.bookForm, ...action.patch } : state.bookForm };
@@ -678,7 +721,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, bookingModule: action.module };
     case 'APPLY_SETTINGS': {
       const c = action.config;
-      return {
+      // The blob lands after boot, and can carry the grid, so the view on screen is checked then.
+      return settleAccess({
         ...state,
         // The database's grid, once it holds one, is the grid; the blob's is from before the move.
         access: state.accessStoredInDb ? state.access : (c.access ?? state.access),
@@ -709,7 +753,7 @@ export function reducer(state: AppState, action: Action): AppState {
                 firstResponders: withRecordNames(sanitizeResponders(c.firstResponders !== undefined ? c.firstResponders : state.firstResponders, ids), state.employees),
               };
             })()),
-      };
+      });
     }
     case 'ADD_BOOKING':
       return {
@@ -745,7 +789,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'ORG_ROLES_LOADED':
       return { ...state, orgRoles: action.roles, orgRolesLoading: false };
     case 'RESET_ACCESS':
-      return { ...state, access: {} };
+      return settleAccess({ ...state, access: {} });
 
     case 'SET_ACTIVE_VIEW': {
       // Clamped, not trusted: this is also the landing point for a deep link, which can name a tab
@@ -819,7 +863,7 @@ export function reducer(state: AppState, action: Action): AppState {
       };
 
     case 'SET_MOBILE_TAB':
-      return { ...state, mobileTab: action.tab, mobSel: null };
+      return { ...state, mobileTab: permittedMode(state.planViews, action.tab) as AppState['mobileTab'], mobSel: null };
     case 'SET_MOB_SEL':
       return { ...state, mobSel: action.id, mobAssignEdit: action.id ? state.mobAssignEdit : false };
     case 'SET_MOB_FLOOR_OPEN':

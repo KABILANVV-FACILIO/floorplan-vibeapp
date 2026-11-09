@@ -192,6 +192,12 @@ export function BookingsView() {
   function openForm(date: string, start: number, end: number, endDate?: string) {
     // Nothing to book onto: the drag simply does nothing.
     if (!resourceId) return;
+    // The calendar is its own tab; booking from it is Floorplans › Booking. Said, not swallowed:
+    // a drag that silently does nothing reads as a broken calendar.
+    if (!state.planViews.book) {
+      actions.showToast('Your role can see bookings here but not make them');
+      return;
+    }
     const today = orgTodayISO();
     if (date < today) {
       actions.showToast('That day has already passed — pick an upcoming one');

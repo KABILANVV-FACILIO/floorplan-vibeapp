@@ -73,6 +73,38 @@ export function visibleUnits(state: AppState): Unit[] {
   return state.units.filter((u) => moduleEnabled(state, u.type));
 }
 
+/**
+ * The department a space belongs to, for the plan's department filter: the record's own (a desk
+ * carries one), else the department of the person who holds it. Most org desks have no
+ * department of their own, so filtering on that alone offered nothing on most floors.
+ */
+export function unitDepartment(state: AppState, unit: Unit): string | null {
+  const own = unit.department?.trim();
+  if (own) return own;
+  const holderId = state.assignments[unit.id];
+  return (holderId ? contactById(state, holderId)?.department?.trim() : undefined) || null;
+}
+
+/** The departments on this floor, by name — what the department filter offers. */
+export function floorDepartments(state: AppState): string[] {
+  const names = new Set<string>();
+  for (const u of visibleUnits(state)) {
+    const d = unitDepartment(state, u);
+    if (d) names.add(d);
+  }
+  return [...names].sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * The department the plan is filtered to, when it names one on this floor. One that has gone
+ * (its last holder vacated, a module switched off) filters nothing rather than dimming the floor.
+ */
+export function activeDepartment(state: AppState): string | null {
+  const d = state.spaceDepartment;
+  if (!d) return null;
+  return visibleUnits(state).some((u) => unitDepartment(state, u) === d) ? d : null;
+}
+
 /** Unit types that are switched on, in the given order — for filter chips, tabs and legends. */
 export function enabledTypes(state: AppState, types: UnitType[]): UnitType[] {
   return types.filter((t) => moduleEnabled(state, t));
@@ -151,7 +183,9 @@ export function isAssignable(u: Unit): boolean {
   return u.type === 'locker' || u.type === 'parking';
 }
 
+/** The desk (or locker, stall) the signed-in person holds — none while the org hasn't said who they are. */
 export function myAssignedUnit(state: AppState): Unit | null {
+  if (!state.bookBy) return null;
   const mine = unitHeldBy(state.assignments).get(state.bookBy);
   return mine ? unitById(state, mine) : null;
 }
@@ -249,14 +283,16 @@ export function roomLabelInputs(state: AppState, rooms: Unit[], opts: { measure?
  * (or the "Your desk" pill in its place), and the holder with their department below. Shared with
  * the print sheet so a label reads the same on paper as on screen.
  */
-export function markerLabelInputs(state: AppState, markers: Unit[], opts: { personal?: boolean; measure?: LabelTextMeasure; /** The chip's screen size at the current zoom (see chipScreenSize); 24 when unsaid. */ chipSize?: number; /** The type the cards are drawn in at this zoom (see scaleTypography); the setting's own size when unsaid. */ typography?: LabelTypography } = {}): MarkerLabelInput[] {
+export function markerLabelInputs(state: AppState, markers: Unit[], opts: { personal?: boolean; /** The department filter: other departments' desks are dimmed and lose their cards. */ department?: string | null; measure?: LabelTextMeasure; /** The chip's screen size at the current zoom (see chipScreenSize); 24 when unsaid. */ chipSize?: number; /** The type the cards are drawn in at this zoom (see scaleTypography); the setting's own size when unsaid. */ typography?: LabelTypography } = {}): MarkerLabelInput[] {
   // `personal: false` (the print sheet): no "Your desk" pill — a sheet on a wall is read by everyone.
   const mineId = opts.personal === false ? null : (myAssignedUnit(state)?.id ?? null);
   const labelsOn = state.mode === 'assign' || state.mode === 'book';
   const measure = opts.measure;
   const t = opts.typography ?? typographyOf(state.labelStyle);
+  const dept = opts.department ?? null;
   return markers
     .filter((m) => labelsOn || m.type === 'amenity')
+    .filter((m) => !dept || m.type === 'amenity' || m.id === state.selected || unitDepartment(state, m) === dept)
     .map((m) => {
       const g = m.geom as { x?: number; y?: number };
       const mine = m.id === mineId;
@@ -301,7 +337,10 @@ export function canSee(state: AppState, surface: Surface): boolean {
   if (surface === 'settings' && !state.viewerRole) return false;
   const rule = state.access[surface] ?? DEFAULT_ACCESS[surface];
   if (rule.all) return true;
-  if (!state.viewerRole) return true;
+  // Assigning and booking are closed until granted, so a viewer we cannot place gets them only
+  // when they are open to everyone. Denying them never empties the app — the plan still shows —
+  // and granting them to "we could not tell who you are" would hand out exactly what was withheld.
+  if (!state.viewerRole) return surface !== 'map.assign' && surface !== 'map.book';
   // The org's admin roles never lose Settings, whatever the grid says — otherwise one bad save
   // locks out the only people who could undo it.
   if (surface === 'settings' && state.viewerRole.isAdmin) return true;
@@ -328,4 +367,18 @@ export function clampView(state: AppState, wanted: AppState['activeView']): AppS
  */
 export function canEdit(state: AppState): boolean {
   return canSee(state, 'map') && canSee(state, 'map.edit');
+}
+
+/** Whether this viewer may assign and vacate from the plan (Floorplans › Assignment). */
+export function canAssign(state: AppState): boolean {
+  return canSee(state, 'map') && canSee(state, 'map.assign');
+}
+
+/**
+ * Whether this viewer may book (Floorplans › Booking) — from the plan, and from the Bookings
+ * calendar, which needs only the right and not the plan: a role given the calendar alone books
+ * there.
+ */
+export function canBook(state: AppState): boolean {
+  return canSee(state, 'map.book');
 }

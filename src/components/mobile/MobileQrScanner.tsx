@@ -41,14 +41,14 @@ export function MobileQrScanner({ onClose }: { onClose: () => void }) {
       return;
     }
     doneRef.current = true;
-    if (isBookable(unit)) {
+    if (isBookable(unit) && state.planViews.book) {
       // The ask: scanning opens the booking form with the scanned space set.
       actions.openBookingForm({ unitId: unit.id, date: state.date, start: state.start, end: state.end });
       actions.showToast(`Space scanned — ${unit.label}`);
     } else {
-      // Not a bookable type (e.g. locker) — show its detail sheet instead.
+      // Not a bookable type (e.g. locker), or no Booking right — show its detail sheet instead.
       actions.setMobSel(unit.id);
-      actions.showToast(`Space scanned — ${unit.label} isn't bookable; showing details`);
+      actions.showToast(state.planViews.book ? `Space scanned — ${unit.label} isn't bookable; showing details` : `Space scanned — ${unit.label}`);
     }
     onClose();
   }

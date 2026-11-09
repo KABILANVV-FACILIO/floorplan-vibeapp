@@ -63,7 +63,7 @@ export const Marker = memo(function Marker({
   /** The type the card is drawn in — the one the labels were laid out for (Settings › Desks). */
   typography?: LabelTypography;
 }) {
-  const { unit, style, title, holder, dept, isMine, isHighlighted, isBusy, draggable, responderRoles } = model;
+  const { unit, style, title, holder, dept, isMine, isHighlighted, isDimmed, isBusy, draggable, responderRoles } = model;
   const geom = previewGeom ?? model.geom;
   const t = typography;
 
@@ -122,7 +122,7 @@ export const Marker = memo(function Marker({
           color: style.fg,
           borderRadius: style.radius,
           boxShadow: style.shadow,
-          opacity: style.opacity,
+          opacity: isDimmed ? Math.min(style.opacity ?? 1, 0.22) : style.opacity,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',

@@ -23,6 +23,20 @@ export const DEFAULT_ENABLED_MODULES: EnabledModules = {
   delivery: true,
 };
 
+/**
+ * The plan's two working views, as THIS viewer has them: Assignment and Booking are rights in
+ * Roles & access (Floorplans › Assignment / Booking), and these are their answers for the role
+ * signed in (see selectors.canAssign / canBook). A view the role lacks goes entirely — its switch
+ * and its actions — and with neither the plan is a map: the floor, its markers and a read-only
+ * People list, plus Edit (its own right), My desk, print and refresh.
+ */
+export interface PlanViews {
+  assign: boolean;
+  book: boolean;
+}
+
+export const DEFAULT_PLAN_VIEWS: PlanViews = { assign: false, book: false };
+
 /** Whether a unit's module is switched on. Amenity markers are never gated. */
 export function isModuleEnabled(enabled: EnabledModules, type: UnitType): boolean {
   if (type === 'amenity') return true;
@@ -432,26 +446,31 @@ export const TYPE_META: Record<UnitType, { name: string; prefix: string }> = {
 };
 
 /**
- * ACCESS — which of the org's roles reach which TAB.
+ * ACCESS — which of the org's roles reach which TAB, and what each may do on the plan.
  *
- * A surface is a tab, and only a tab. What someone may DO once they are on the plan — assign,
- * book, edit — is answered by the org's own stateflow and by the module settings; asking it twice
- * would mean two configurations that can disagree, and the one in this app would quietly win.
+ * A tab is somewhere to land. The plan's three rights — assign, book, edit — sit under Floorplans
+ * as sub-permissions: they are never somewhere the app sends anyone, only what the plan offers
+ * once someone is on it. The org's own stateflow still decides which buttons a record shows; these
+ * decide whether the plan offers that kind of work to this role at all.
  */
 /** A tab someone can navigate to. The bottom nav, the view clamp and the last-tab rule use only these. */
 export type Tab = 'map' | 'bookings' | 'people' | 'settings';
 
 /**
- * Everything the grid governs: the four tabs, plus editing the plan. Editing is a capability, not a
- * place — it is never somewhere the app sends someone, so it is kept out of `Tab`. Keyed `map.edit`
- * because the floorplanApi function already stores it under that key; the UI shows only its name.
+ * Everything the grid governs: the four tabs, plus the plan's three rights. A right is a
+ * capability, not a place, so it is kept out of `Tab`. Keyed `map.*` because the floorplanApi
+ * function already names them so; the UI shows only their names.
  */
-export type Surface = Tab | 'map.edit';
+export type Surface = Tab | PlanRight;
+export type PlanRight = 'map.assign' | 'map.book' | 'map.edit';
 
-export const SURFACES: { id: Surface; name: string; desc: string }[] = [
+/** The grid's rows, in order. A right names its tab as `parent` and is drawn under it. */
+export const SURFACES: { id: Surface; name: string; desc: string; parent?: Tab }[] = [
   { id: 'map', name: 'Floorplans', desc: 'The plan itself, and everything on it' },
-  { id: 'map.edit', name: 'Edit floorplans', desc: 'Upload plans, auto-map and place units. Web only — the mobile app has no edit mode' },
-  { id: 'bookings', name: 'Bookings', desc: 'The org-wide booking calendar' },
+  { id: 'map.assign', parent: 'map', name: 'Assignment', desc: 'Assign desks, lockers and parking stalls to people, and vacate them. Without it the People list is read-only' },
+  { id: 'map.book', parent: 'map', name: 'Booking', desc: 'Book desks, rooms and stalls, from the plan and from the Bookings calendar' },
+  { id: 'map.edit', parent: 'map', name: 'Edit', desc: 'Upload plans, auto-map and place units. Web only — the mobile app has no edit mode' },
+  { id: 'bookings', name: 'Bookings', desc: 'The org-wide booking calendar. Booking from it needs Floorplans › Booking' },
   { id: 'people', name: 'People', desc: 'The employee directory' },
   { id: 'settings', name: 'Settings', desc: 'This screen and every other configuration' },
 ];
@@ -490,6 +509,10 @@ export type Access = Partial<Record<Surface, SurfaceAccess>>;
  */
 export const DEFAULT_ACCESS: Record<Surface, SurfaceAccess> = {
   map: { all: true, roles: [] },
+  // Closed until granted: ENEC asked for assigning and booking to be taken away and given back
+  // role by role. With both closed the plan is a map — the floor, its markers, the People list.
+  'map.assign': { all: false, roles: [] },
+  'map.book': { all: false, roles: [] },
   // Open, as editing was before this grid existed: restricting it is a decision an admin makes,
   // not one an upgrade should make for them by quietly taking the Edit button away.
   'map.edit': { all: true, roles: [] },

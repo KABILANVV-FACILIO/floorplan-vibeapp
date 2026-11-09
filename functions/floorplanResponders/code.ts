@@ -20,7 +20,7 @@ import StudioFunctions, { StudioDatabase } from '@facilio/studio-functions';
  *                                (The table's group_name / ext / mobile columns are from a first
  *                                draft that typed those in; they are left empty. A table cannot
  *                                be dropped from here, and nothing reads them.)
- *   fp_access                    one row per surface (tab or mode): `all_roles` 1 for every role,
+ *   fp_access                    one row per surface (a tab, or a right on the plan): `all_roles` 1 for every role,
  *                                else the role ids in `roles` (a JSON list). No row = the app's
  *                                default for that surface.
  *
@@ -52,7 +52,8 @@ const ICONS = ['cross', 'warden', 'flame', 'aed', 'shield', 'megaphone', 'radiat
 const SHAPES = ['square', 'circle', 'diamond'];
 const HEX = /^#[0-9a-fA-F]{6}$/;
 
-const SURFACE_IDS = ['map', 'map.edit', 'bookings', 'people', 'settings'];
+// The four tabs, and the plan's three rights under Floorplans (the app's lib/types SURFACES).
+const SURFACE_IDS = ['map', 'map.assign', 'map.book', 'map.edit', 'bookings', 'people', 'settings'];
 
 /** One connection action, run as the caller. Throws on anything but a clean answer. */
 async function action(connection: string, slug: string, input: Record<string, unknown>): Promise<any> {

@@ -24,13 +24,15 @@ export function MobileUnitSheet() {
   }, !!unit);
 
   const contactId = unit ? state.assignments[unit.id] : undefined;
-  const showBookTab = state.mobileTab === 'book';
+  const showBookTab = state.mobileTab === 'book' && state.planViews.book;
+  // No Assignment right: the sheet says who holds the space and offers nothing to change it.
+  const assignOn = state.planViews.assign;
   const isAmenity = unit?.type === 'amenity';
   const isAsset = isAmenity && !!unit?.assetId;
   const assignable = unit && !isAmenity ? isAssignable(unit) : false;
   // Contact picking expands the sheet to near-full height with its own
   // search — a plain dropdown was unusable against the full directory.
-  const picking = !!unit && !showBookTab && assignable && (!contactId || state.mobAssignEdit);
+  const picking = !!unit && !showBookTab && assignOn && assignable && (!contactId || state.mobAssignEdit);
 
   const filtered = useMemo(() => {
     const q = contactQuery.trim().toLowerCase();
@@ -109,14 +111,16 @@ export function MobileUnitSheet() {
               <span className={styles.avatar}>{initials(contactName(state, contactId))}</span>
               <span className={styles.assignedName}>{contactName(state, contactId)}</span>
             </div>
-            <div className={styles.actionsRow}>
-              <button className={styles.vacateBtn} onClick={() => actions.vacate(unit.id)}>
-                Vacate
-              </button>
-              <button className={styles.reassignBtn} onClick={() => actions.setMobAssignEdit(true)}>
-                Reassign
-              </button>
-            </div>
+            {assignOn && (
+              <div className={styles.actionsRow}>
+                <button className={styles.vacateBtn} onClick={() => actions.vacate(unit.id)}>
+                  Vacate
+                </button>
+                <button className={styles.reassignBtn} onClick={() => actions.setMobAssignEdit(true)}>
+                  Reassign
+                </button>
+              </div>
+            )}
           </>
         )}
 
