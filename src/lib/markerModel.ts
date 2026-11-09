@@ -3,7 +3,7 @@ import type { PointGeom, ResponderRoleDef, Unit } from './types';
 import { responderRolesFor, rolesText } from './firstResponders';
 import { markerStyle, unitStatus } from './unitStatus';
 import type { MarkerStyle } from './unitStatus';
-import { contactName, markerSubTexts, myAssignedUnit, unitDepartment } from '../state/selectors';
+import { contactName, markerSubTexts, myPinText, unitDepartment, unitPlanLabel } from '../state/selectors';
 
 /**
  * Everything a marker on the plan needs in order to draw itself, read from the app state ONCE —
@@ -20,13 +20,17 @@ export interface MarkerModel {
   unit: Unit;
   geom: PointGeom;
   style: MarkerStyle;
+  /** What the card names it — see unitPlanLabel. */
+  label: string;
   /** The chip's hover text — name, room, status, department: everything the labels may cut. */
   title: string;
   /** Who holds it (Assignment view), as the label shows it — see markerSubTexts. */
   holder: string | null;
   dept: string | null;
-  /** The user's own desk: draws the "Your desk" pill. */
+  /** The user's own desk or stall: draws the pill. */
   isMine: boolean;
+  /** What the pill says — "Your desk" or "Your parking" (see myPinText). */
+  pinText: string | null;
   isHighlighted: boolean;
   /** Outside the department the plan is filtered to: drawn faint, still clickable. */
   isDimmed: boolean;
@@ -48,17 +52,23 @@ export function markerModel(state: AppState, unit: Unit, opts: { personal?: bool
   // The badge says it in a glyph; the tooltip (and a screen reader, which reads it as the chip's
   // name) says it in words.
   const roleText = rolesText(responderRoles);
-  const title = `${unit.label}${unit.room ? ' · ' + unit.room : ''} — ${status.text}${holder && dept ? ` · ${dept}` : ''}${roleText ? ` · ${roleText}` : ''}`;
+  const label = unitPlanLabel(state, unit);
+  // `personal: false` (the print sheet): no pill on paper — a sheet on a wall is read by everyone,
+  // and the pill would stand where the desk's name belongs.
+  const pinText = opts.personal !== false ? myPinText(state, unit) : null;
+  // A stall labelled by another field keeps its record name in the tooltip: the card no longer says it.
+  const named = label === unit.label ? label : `${label} (${unit.label})`;
+  const title = `${named}${unit.room ? ' · ' + unit.room : ''} — ${status.text}${holder && dept ? ` · ${dept}` : ''}${roleText ? ` · ${roleText}` : ''}`;
   return {
     unit,
     geom: unit.geom as PointGeom,
     style,
+    label,
     title,
     holder,
     dept,
-    // `personal: false` (the print sheet): no "Your desk" pill on paper — a sheet on a wall is
-    // read by everyone, and the pill would stand where the desk's name belongs.
-    isMine: opts.personal !== false && myAssignedUnit(state)?.id === unit.id,
+    isMine: !!pinText,
+    pinText,
     isHighlighted: state.highlightUnitId === unit.id,
     // Landmarks (stairs, extinguishers) belong to no department and stay as they are.
     isDimmed: !!opts.department && unit.type !== 'amenity' && unitDepartment(state, unit) !== opts.department,

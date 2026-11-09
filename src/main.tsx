@@ -5,6 +5,19 @@ import App from './App';
 import { isVibeApp } from './lib/vibe';
 import { isConnectedApp, isFacilioApiConfigured } from './lib/facilioApi';
 import { currentHostKind } from './lib/hostKind';
+// Roboto is served from the app itself, not from Google. The print PDF draws each page through
+// html-to-image, which can only embed a font whose stylesheet it may read: Google's is
+// cross-origin, and inside Facilio's frame the fetch that works around that is refused — the PDF
+// then fell back to a wider face, and the floor's name wrapped onto the line under it. Latin only,
+// in the four weights the app uses.
+import '@fontsource/roboto/latin-400.css';
+import '@fontsource/roboto/latin-500.css';
+import '@fontsource/roboto/latin-600.css';
+import '@fontsource/roboto/latin-700.css';
+import '@fontsource/roboto/latin-ext-400.css';
+import '@fontsource/roboto/latin-ext-500.css';
+import '@fontsource/roboto/latin-ext-600.css';
+import '@fontsource/roboto/latin-ext-700.css';
 import './styles/global.css';
 
 // Deployed only: the route-rescue worker (public/sw.js) that makes /bookings, /people and

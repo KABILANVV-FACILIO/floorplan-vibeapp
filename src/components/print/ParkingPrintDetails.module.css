@@ -1,0 +1,170 @@
+.body {
+  max-height: 62vh;
+  overflow-y: auto;
+  padding: 0 20px 8px;
+}
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 0;
+  border-top: 1px solid var(--ink-100);
+}
+.section:first-child {
+  border-top: none;
+}
+.heading {
+  margin: 0;
+  font: 600 14px/1.3 var(--font-sans);
+  color: var(--ink-900);
+}
+.note {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-600);
+}
+.note b {
+  font-weight: 600;
+  color: var(--ink-900);
+}
+.hint {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--ink-500);
+}
+.switchRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.switch {
+  position: relative;
+  flex: none;
+  width: 36px;
+  height: 20px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ink-200);
+  cursor: pointer;
+}
+.switchOn {
+  background: var(--blue-500);
+}
+.knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: left 0.15s;
+}
+.switchOn .knob {
+  left: 18px;
+}
+.switch:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+.colsHead {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.colsNote {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--ink-600);
+}
+.warn {
+  color: var(--warning-700);
+}
+
+/* One box per source: the stall record, the person's employee record, the record's dates. */
+.group {
+  border: 1px solid var(--ink-100);
+  border-radius: var(--radius-lg);
+}
+.groupHead {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 9px 12px;
+  background: var(--ink-050);
+  border-bottom: 1px solid var(--ink-100);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+.groupHead b {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-900);
+}
+.link {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: 500 12px/1 var(--font-sans);
+  color: var(--blue-500);
+  cursor: pointer;
+}
+.link:hover {
+  text-decoration: underline;
+}
+/* One detail per line: a plain list, each row the whole width. */
+.list {
+  display: flex;
+  flex-direction: column;
+}
+.opt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--ink-100);
+  cursor: pointer;
+}
+.opt:first-child {
+  border-top: none;
+}
+.opt:hover {
+  background: var(--ink-050);
+}
+.opt input {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--blue-500);
+}
+.optName {
+  font-size: 13px;
+  color: var(--ink-900);
+}
+.opt input:disabled + .optName {
+  color: var(--ink-600);
+}
+.selRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.selLabel {
+  font-size: 13px;
+  color: var(--ink-700);
+}
+.count {
+  margin-right: auto;
+  font-size: 12.5px;
+  color: var(--ink-600);
+}
+@media (prefers-reduced-motion: reduce) {
+  .knob {
+    transition: none;
+  }
+}

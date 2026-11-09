@@ -7,6 +7,8 @@ import { Button } from '../primitives/Button';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
 import { PrintSheet, printFileName } from './PrintSheet';
 import { downloadBlob, printImages, sheetToImages, sheetToPdfBlob } from './sheetPdf';
+import { ParkingPrintDetails } from './ParkingPrintDetails';
+import { useParkingRegister } from './useParkingRegister';
 import styles from './PrintViewer.module.css';
 
 /** The page's layout size in CSS px — letter landscape at 96px per inch. */
@@ -46,6 +48,10 @@ export function PrintViewer({ onClose, printRequest = 0 }: { onClose: () => void
   const onProgress = (done: number, total: number) => setProgress(total > 1 ? { done, total } : null);
   const progressText = progress ? ` page ${Math.min(progress.done + 1, progress.total)} of ${progress.total}` : '';
   const [error, setError] = useState<string | null>(null);
+  // A parking plan prints a register after it; Details chooses what it lists.
+  const isParking = state.planId === 'parking';
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const parking = useParkingRegister(state);
 
   // Fit the whole page in the preview area, never larger than life.
   useLayoutEffect(() => {
@@ -149,6 +155,11 @@ export function PrintViewer({ onClose, printRequest = 0 }: { onClose: () => void
             Whole floor
           </button>
         </div>
+        {isParking && (
+          <Button variant="secondary" onClick={() => setDetailsOpen(true)} disabled={!!busy} icon={<DetailsIcon />}>
+            Details
+          </Button>
+        )}
         {error && <span className={styles.error}>{error}</span>}
         <Button variant="secondary" onClick={() => void onDownload()} disabled={!!busy} icon={busy === 'pdf' ? <ButtonSpinner /> : <DownloadIcon />}>
           {busy === 'pdf' ? `Preparing PDF…${progressText}` : 'Download PDF'}
@@ -157,7 +168,17 @@ export function PrintViewer({ onClose, printRequest = 0 }: { onClose: () => void
           {busy === 'print' ? `Preparing…${progressText}` : 'Print'}
         </Button>
       </ModalFooter>
+      {detailsOpen && <ParkingPrintDetails labelField={parking.labelField} onClose={() => setDetailsOpen(false)} />}
     </Modal>
+  );
+}
+
+function DetailsIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden>
+      <path d="M4 6h16M4 12h10M4 18h7" />
+      <circle cx="18" cy="16" r="3" />
+    </svg>
   );
 }
 

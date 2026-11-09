@@ -1,6 +1,6 @@
 import type { AppState } from '../state/types';
 import { personInitials } from './displayNames';
-import { conflictsFor, contactById, isAssignable, isBookable, multiSelectedSet } from '../state/selectors';
+import { conflictsFor, contactById, isAssignable, isBookable, multiSelectedSet, showsHolder } from '../state/selectors';
 import { isRoomLike, resolveMarkerDef, STATE_DEFS } from './types';
 import { departmentColor, departmentsIn } from './departmentColors';
 import type { Unit } from './types';
@@ -63,6 +63,9 @@ export function markerStyle(state: AppState, unit: Unit, markerScale = 1): Marke
   const shadow = dropTarget ? '0 0 0 4px rgba(41,160,30,0.4)' : selected ? '0 0 0 3px rgba(0,89,214,0.28)' : 'var(--shadow-xs)';
   const zIndex = dropTarget ? 6 : selected ? 5 : 2;
   const contactId = state.assignments[unit.id];
+  // The holder's initials on the chip — unless Settings › Parking hides who holds a stall, when an
+  // assigned stall keeps its colour and shows the parking glyph instead.
+  const initialsFor = (id: string | undefined): string | null => (id && showsHolder(state, unit) ? initialsOf(contactNameFallback(state, id)) : null);
 
   // Amenity markers are informational in every mode: FILLED with the marker's
   // own color (stairs teal, elevator amber, …) with a white glyph / short text
@@ -124,8 +127,8 @@ export function markerStyle(state: AppState, unit: Unit, markerScale = 1): Marke
         zIndex,
         // The holder's initials still read on the fill, so a department colour never costs you
         // the one thing the marker already told you.
-        occText: contactId ? initialsOf(contactNameFallback(state, contactId)) : null,
-        icon: contactId ? null : markerIcon(unit.type),
+        occText: initialsFor(contactId),
+        icon: initialsFor(contactId) ? null : markerIcon(unit.type),
       };
     }
     if (!isAssignable(unit)) {
@@ -133,12 +136,12 @@ export function markerStyle(state: AppState, unit: Unit, markerScale = 1): Marke
       return { bg: 'var(--ink-100)', bd: 'var(--ink-500)', fg: 'var(--ink-600)', opacity: 1, shadow, size, radius, zIndex, occText: null, icon: markerIcon(unit.type) };
     }
     if (state.dragOverId === unit.id) {
-      return { bg: 'var(--blue-100)', bd: 'var(--blue-500)', fg: 'var(--blue-700)', opacity: 1, shadow: '0 0 0 4px rgba(0,89,214,0.22)', size, radius, zIndex: 6, occText: contactId ? initialsOf(contactNameFallback(state, contactId)) : null, icon: contactId ? null : markerIcon(unit.type) };
+      return { bg: 'var(--blue-100)', bd: 'var(--blue-500)', fg: 'var(--blue-700)', opacity: 1, shadow: '0 0 0 4px rgba(0,89,214,0.22)', size, radius, zIndex: 6, occText: initialsFor(contactId), icon: initialsFor(contactId) ? null : markerIcon(unit.type) };
     }
     if (contactId) {
       // Occupied desk: solid fill in the configurable "assigned" color, white initials.
       const c = moduleColor(state, unit.type, 'assigned');
-      return { bg: c, bd: c, fg: '#fff', opacity: 1, shadow, size, radius, zIndex, occText: initialsOf(contactNameFallback(state, contactId)), icon: null };
+      return { bg: c, bd: c, fg: '#fff', opacity: 1, shadow, size, radius, zIndex, occText: initialsFor(contactId), icon: initialsFor(contactId) ? null : markerIcon(unit.type) };
     }
     const free = moduleColor(state, unit.type, 'free');
     return { bg: tint(free), bd: free, fg: free, opacity: 1, shadow, size, radius, zIndex, occText: null, icon: markerIcon(unit.type) };
@@ -158,8 +161,8 @@ export function markerStyle(state: AppState, unit: Unit, markerScale = 1): Marke
       size,
       radius,
       zIndex,
-      occText: contactId ? initialsOf(contactNameFallback(state, contactId)) : null,
-      icon: contactId ? null : markerIcon(unit.type),
+      occText: initialsFor(contactId),
+      icon: initialsFor(contactId) ? null : markerIcon(unit.type),
     };
   }
   const conflicts = conflictsFor(state.bookings, unit.id, state.date, state.start, state.end);

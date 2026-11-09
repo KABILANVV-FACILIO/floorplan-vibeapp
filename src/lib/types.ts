@@ -37,6 +37,36 @@ export interface PlanViews {
 
 export const DEFAULT_PLAN_VIEWS: PlanViews = { assign: false, book: false };
 
+/**
+ * What a parking stall says on the plan, on screen and on paper (Settings › Parking): the value of
+ * one of the stall record's text fields — its Name unless the org picks another, such as a short
+ * "Stall Number" field of its own — and whether the assigned person shows under it (and as
+ * initials in the chip).
+ */
+export interface ParkingLabel {
+  /** A field name on the parking stall record; 'name' is the record's Name. */
+  field: string;
+  showHolder: boolean;
+}
+export const DEFAULT_PARKING_LABEL: ParkingLabel = { field: 'name', showHolder: true };
+
+/**
+ * The parking register printed after a parking plan (print window › Details): one row per stall,
+ * a column per detail. Columns are register column keys (see lib/parkingRegister).
+ */
+export interface ParkingPrint {
+  register: boolean;
+  cols: string[];
+  rows: 'all' | 'assigned' | 'vacant';
+  sort: 'name' | 'status' | 'dept' | 'emp';
+}
+export const DEFAULT_PARKING_PRINT: ParkingPrint = {
+  register: true,
+  cols: ['name', 'id', 'type', 'mode', 'status', 'emp', 'hrms', 'dept', 'since'],
+  rows: 'all',
+  sort: 'name',
+};
+
 /** Whether a unit's module is switched on. Amenity markers are never gated. */
 export function isModuleEnabled(enabled: EnabledModules, type: UnitType): boolean {
   if (type === 'amenity') return true;
@@ -245,6 +275,13 @@ export interface Unit {
    * department without identifying it.
    */
   departmentId?: string;
+  /**
+   * Parking stalls only — the stall record's own values as text, keyed by the org's field names
+   * (custom text fields included, e.g. a "Stall Number" ENEC adds): what Settings › Parking can
+   * label a stall with, and what the print's parking register lists. Picklists hold the option as
+   * the API sent it (a label, or a raw id the register resolves); times hold epoch ms.
+   */
+  record?: Record<string, string>;
 }
 
 export interface Employee {
@@ -260,6 +297,10 @@ export interface Employee {
   department?: string;
   /** The person record's own `mobile` (falling back to `phone`) — the number a first responder is listed with. */
   mobile?: string;
+  designation?: string;
+  grade?: string;
+  /** The org's Line Manager lookup — a people id; ENEC's managers are employee records of the same id. */
+  lineManagerId?: string;
 }
 
 /**

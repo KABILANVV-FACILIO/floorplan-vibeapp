@@ -289,67 +289,83 @@ export function PeopleCard({ fixed = false }: { /** A set height, for a panel th
             </div>
           </div>
         )}
+        {/* Clearing never depends on opening the panel: with a filter on, the line says so and clears it. */}
+        {activeFilters > 0 && (
+          <div className={styles.filterLine}>
+            <span>
+              {activeFilters} {activeFilters === 1 ? 'filter' : 'filters'} applied
+            </span>
+            <button type="button" className={styles.linkBtn} onClick={() => setFilters([])}>
+              Clear
+            </button>
+          </div>
+        )}
         {assignOn && <p className={styles.dragHint}>Drag a person onto a desk, locker, or parking stall to assign it.</p>}
       </div>
+      {/* While the Filter panel is open it takes the list's place in the layout, rather than
+          covering it: laid over the list, it was only as tall as the list, and a filter that left
+          one person showed the panel's search alone, with Clear all and Apply out of reach. */}
       <div className={styles.peopleBody}>
-        <div className={styles.peopleList}>
-          {((state.loading && state.employees.length === 0) || (activeFilters > 0 && peopleLoading)) && <SkeletonRows rows={6} avatar />}
-          {activeFilters > 0 && filterFailed && (
-            <div className={styles.listNote}>
-              <b>Couldn’t filter people right now.</b>
-              <span>Try again in a moment, or clear the filters.</span>
-              <button type="button" className={styles.linkBtn} onClick={() => setFilters([])}>
-                Clear filters
-              </button>
-            </div>
-          )}
-          {activeFilters > 0 && !peopleLoading && !filterFailed && contacts.length === 0 && (
-            <div className={styles.listNote}>
-              <b>No one matches these filters.</b>
-              <span>Change them, or clear them to see everyone.</span>
-              <button type="button" className={styles.linkBtn} onClick={() => setFilters([])}>
-                Clear filters
-              </button>
-            </div>
-          )}
-          {contacts.map((contact) => {
-            const held = unitsHeldBy(contact.id);
-            // Mock demo ids look like "c1".."c14" and have no real record to open — only
-            // real (numeric) employee ids from the real backend get a working summary-page link.
-            const recordUrl = /^\d+$/.test(contact.id) ? facilioRecordUrl('employee', contact.id) : null;
-            return (
-              <div
-                key={contact.id}
-                className={styles.personRow}
-                // Dragging a person onto a desk IS assigning them, so without the right nothing drags.
-                draggable={assignOn}
-                onDragStart={assignOn ? (e) => onDragStart(e, contact.id, contact.name) : undefined}
-                onDragEnd={assignOn ? onDragEnd : undefined}
-                onClick={() => recordUrl && window.open(recordUrl, '_blank', 'noopener,noreferrer')}
-                style={{ opacity: dragId === contact.id ? 0.45 : 1, cursor: recordUrl ? 'pointer' : assignOn ? 'grab' : 'default' }}
-                data-tip={recordUrl ? 'Open employee record' : undefined}
-              >
-                <span className={styles.avatar}>
-                  {initials(contact.name)}
-                  {contact.department && <span className={styles.deptDot} style={{ background: deptColorForName(contact.department) }} />}
-                </span>
-                <div className={styles.personText}>
-                  <div className={styles.personName}>{personDisplayName(contact.name)}</div>
-                  {(employeeNumber(contact) || contact.department) && (
-                    <div className={styles.personSub}>{[employeeNumber(contact), departmentDisplayName(contact.department)].filter(Boolean).join(' · ')}</div>
+        {!(filterOpen && filterFields) && (
+          <div className={styles.peopleList}>
+            {((state.loading && state.employees.length === 0) || (activeFilters > 0 && peopleLoading)) && <SkeletonRows rows={6} avatar />}
+            {activeFilters > 0 && filterFailed && (
+              <div className={styles.listNote}>
+                <b>Couldn’t filter people right now.</b>
+                <span>Try again in a moment, or clear the filters.</span>
+                <button type="button" className={styles.linkBtn} onClick={() => setFilters([])}>
+                  Clear filters
+                </button>
+              </div>
+            )}
+            {activeFilters > 0 && !peopleLoading && !filterFailed && contacts.length === 0 && (
+              <div className={styles.listNote}>
+                <b>No one matches these filters.</b>
+                <span>Change them, or clear them to see everyone.</span>
+                <button type="button" className={styles.linkBtn} onClick={() => setFilters([])}>
+                  Clear filters
+                </button>
+              </div>
+            )}
+            {contacts.map((contact) => {
+              const held = unitsHeldBy(contact.id);
+              // Mock demo ids look like "c1".."c14" and have no real record to open — only
+              // real (numeric) employee ids from the real backend get a working summary-page link.
+              const recordUrl = /^\d+$/.test(contact.id) ? facilioRecordUrl('employee', contact.id) : null;
+              return (
+                <div
+                  key={contact.id}
+                  className={styles.personRow}
+                  // Dragging a person onto a desk IS assigning them, so without the right nothing drags.
+                  draggable={assignOn}
+                  onDragStart={assignOn ? (e) => onDragStart(e, contact.id, contact.name) : undefined}
+                  onDragEnd={assignOn ? onDragEnd : undefined}
+                  onClick={() => recordUrl && window.open(recordUrl, '_blank', 'noopener,noreferrer')}
+                  style={{ opacity: dragId === contact.id ? 0.45 : 1, cursor: recordUrl ? 'pointer' : assignOn ? 'grab' : 'default' }}
+                  data-tip={recordUrl ? 'Open employee record' : undefined}
+                >
+                  <span className={styles.avatar}>
+                    {initials(contact.name)}
+                    {contact.department && <span className={styles.deptDot} style={{ background: deptColorForName(contact.department) }} />}
+                  </span>
+                  <div className={styles.personText}>
+                    <div className={styles.personName}>{personDisplayName(contact.name)}</div>
+                    {(employeeNumber(contact) || contact.department) && (
+                      <div className={styles.personSub}>{[employeeNumber(contact), departmentDisplayName(contact.department)].filter(Boolean).join(' · ')}</div>
+                    )}
+                  </div>
+                  {held.length > 0 && <span className={styles.heldBadge}>{held.join(', ')}</span>}
+                  {recordUrl && (
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={styles.openIcon}>
+                      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                      <path d="M15 3h6v6M10 14L21 3" />
+                    </svg>
                   )}
                 </div>
-                {held.length > 0 && <span className={styles.heldBadge}>{held.join(', ')}</span>}
-                {recordUrl && (
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={styles.openIcon}>
-                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                    <path d="M15 3h6v6M10 14L21 3" />
-                  </svg>
-                )}
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
         {filterOpen && filterFields && (
           <PeopleFilterPanel
             fields={filterFields}

@@ -1,4 +1,4 @@
-import type { Access, EnabledModules, FirstResponder, MarkerDef, ResponderRoleDef } from './types';
+import type { Access, EnabledModules, FirstResponder, MarkerDef, ParkingLabel, ParkingPrint, ResponderRoleDef } from './types';
 import type { AppState } from '../state/types';
 import type { LabelStyle } from './labelLayout';
 import { isVibeApp, vibe } from './vibe';
@@ -42,6 +42,10 @@ export interface SettingsConfig {
   customMarkers?: MarkerDef[];
   /** Which modules the org runs. A disabled one is hidden app-wide (Settings › Modules). */
   enabledModules?: EnabledModules;
+  /** What a parking stall says on the plan (Settings › Parking › Label on the plan). */
+  parkingLabel?: ParkingLabel;
+  /** The parking register printed after a parking plan (print window › Details), for everyone. */
+  parkingPrint?: ParkingPrint;
   /** The type the desk labels are drawn in (Settings › Desks › Desk labels). */
   labelStyle?: LabelStyle;
   /** The org's first aiders and floor wardens (Settings › First responders). */
@@ -66,6 +70,8 @@ export function settingsFromState(state: AppState): SettingsConfig {
     bookingModule: state.bookingModule,
     customMarkers: state.customMarkers,
     enabledModules: state.enabledModules,
+    parkingLabel: state.parkingLabel,
+    parkingPrint: state.parkingPrint,
     labelStyle: state.labelStyle,
     // Not when the app database holds them: one source, never two (see lib/sharedSettings).
     ...(state.respondersInDb ? {} : { firstResponders: state.firstResponders, responderRoles: state.responderRoles }),

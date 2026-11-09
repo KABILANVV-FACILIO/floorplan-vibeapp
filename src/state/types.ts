@@ -10,6 +10,8 @@ import type {
   MarkerDef,
   OrgRole,
   PanelsState,
+  ParkingLabel,
+  ParkingPrint,
   PlanId,
   PlanViews,
   Site,
@@ -202,6 +204,10 @@ export interface AppState {
    * `access` and `viewerRole` by the reducer's settleAccess — never set on its own.
    */
   planViews: PlanViews;
+  /** What a parking stall says on the plan (Settings › Parking) — see ParkingLabel. */
+  parkingLabel: ParkingLabel;
+  /** The parking register every print of a parking plan carries (print window › Details), kept for everyone. */
+  parkingPrint: ParkingPrint;
 
   toast: string | null;
 

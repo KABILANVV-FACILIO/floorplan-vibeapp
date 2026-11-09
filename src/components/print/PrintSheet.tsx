@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import type { Ref } from 'react';
 import { flushSync } from 'react-dom';
 import { useFloorplan } from '../../state/FloorplanContext';
-import { bookedUnitIds, floorMeta, markerLabelInputs, planMarkers, planRooms, roomLabelInputs, visibleUnits } from '../../state/selectors';
-import { floorImageKey, unitOnPlan } from '../../lib/types';
+import { bookedUnitIds, floorMeta, markerLabelInputs, planMarkers, planRooms, roomLabelInputs } from '../../state/selectors';
+import { floorImageKey } from '../../lib/types';
 import type { Unit } from '../../lib/types';
 import type { AppState } from '../../state/types';
 import { IMG_H, IMG_W } from '../../lib/mockData';
@@ -19,6 +19,9 @@ import { ResponderNoticePage } from './ResponderNoticePage';
 import { respondersOnFloor } from '../../lib/firstResponders';
 import { planLabelledDetailAreas } from '../../lib/printAreas';
 import type { DetailArea } from '../../lib/printAreas';
+import { REGISTER_GROUPS, registerCell, registerColumns, registerPages, registerRows, registerType, rowsPerPage } from '../../lib/parkingRegister';
+import type { RegisterColumn, RegisterContext } from '../../lib/parkingRegister';
+import { printableUnits, useParkingRegister } from './useParkingRegister';
 import styles from './PrintSheet.module.css';
 
 /**
@@ -92,9 +95,7 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
   const booked = bookedUnitIds(state);
 
   // What the occupancy figures count: the plan's own units, less amenities, which hold no one.
-  const units = visibleUnits(state).filter(
-    (u) => u.type !== 'amenity' && !u.unplaced && unitOnPlan(u, state.planId) && (u.geom.kind === 'point' || u.geom.pts.length > 0),
-  );
+  const units = printableUnits(state);
 
   // The plan is built only while printing. Every Marker reads the whole shared app state, so a
   // permanently mounted second copy would re-render on every pan and zoom frame of the viewer for
@@ -166,9 +167,19 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
     return areas.length > DETAIL_PAGES_COMFORTABLE ? planAt(DETAIL_LABEL_SCALE_SMALL) : areas;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showPlan, scope, state]);
+  // A parking plan's register: every stall on it with the details print › Details asks for, after
+  // the plan (see lib/parkingRegister). Parking only — desks and lockers print as before.
+  const parking = useParkingRegister(state);
+  const register = useMemo(() => {
+    if (!showPlan || state.planId !== 'parking' || !state.parkingPrint.register) return null;
+    const cols = registerColumns(state.parkingPrint, parking.labelField);
+    const rows = registerRows(parking.stalls, state.parkingPrint, parking.ctx);
+    return { cols, total: rows.length, pages: registerPages(rows, rowsPerPage(cols.length)) };
+  }, [showPlan, state.planId, state.parkingPrint, parking]);
+  const registerCount = register?.pages.length ?? 0;
   // The floor's emergency-contacts notice, last — only when someone on this floor is named.
   const hasNotice = respondersOnFloor(state).length > 0;
-  const pageCount = 1 + detailAreas.length + (hasNotice ? 1 : 0);
+  const pageCount = 1 + detailAreas.length + registerCount + (hasNotice ? 1 : 0);
 
   const planPage = (
     <div className={styles.page} data-print-page="">
@@ -210,6 +221,7 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
           <span className={styles.pageNo}>
             Page 1 of {pageCount}
             {detailAreas.length ? ' · zoomed-in pages of every area follow' : ''}
+            {registerCount ? ' · parking register follows' : ''}
             {hasNotice ? ' · first responders on the last page' : ''}
           </span>
         )}
@@ -228,6 +240,21 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
           count={detailAreas.length}
           where={where}
           pageNo={i + 2}
+          pageCount={pageCount}
+        />
+      ))}
+      {register?.pages.map((rows, i) => (
+        <RegisterPage
+          key={`r${i}`}
+          rows={rows}
+          cols={register.cols}
+          ctx={parking.ctx}
+          index={i}
+          count={register.pages.length}
+          total={register.total}
+          print={state.parkingPrint}
+          where={where}
+          pageNo={1 + detailAreas.length + i + 1}
           pageCount={pageCount}
         />
       ))}
@@ -404,6 +431,123 @@ function DetailPage({
 
       <div className={styles.foot}>
         <span className={styles.footNote}>Every desk in this area, with who is placed there. The whole floor is on page 1.</span>
+        <span className={styles.pageNo}>
+          Page {pageNo} of {pageCount}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+const ROWS_TEXT: Record<AppState['parkingPrint']['rows'], string> = { all: 'All stalls', assigned: 'Assigned stalls only', vacant: 'Vacant stalls only' };
+const SORT_TEXT: Record<AppState['parkingPrint']['sort'], string> = { name: 'stall', status: 'status', dept: 'department', emp: 'assigned person' };
+
+/**
+ * One page of the parking register: a row per stall, a column per detail, the columns grouped by
+ * where they come from (the stall record, the person's employee record, the record's dates). The
+ * header repeats on every page; an empty value prints as a dash, never as an invented one.
+ */
+function RegisterPage({
+  rows,
+  cols,
+  ctx,
+  index,
+  count,
+  total,
+  print,
+  where,
+  pageNo,
+  pageCount,
+}: {
+  rows: Unit[];
+  cols: RegisterColumn[];
+  ctx: RegisterContext;
+  index: number;
+  count: number;
+  total: number;
+  print: AppState['parkingPrint'];
+  where: Where;
+  pageNo: number;
+  pageCount: number;
+}) {
+  const type = registerType(cols.length);
+  const width = cols.reduce((a, c) => a + c.width, 0);
+  return (
+    <div className={styles.page} data-print-page="">
+      <div className={styles.bar}>
+        <LocationBox where={where} />
+        <span className={styles.barLabel}>
+          Parking register {index + 1} of {count}
+        </span>
+        <span className={styles.spacer} />
+        <span className={styles.statPlain}>
+          Stalls <b>{total}</b>
+        </span>
+      </div>
+      <div className={styles.regFilters}>
+        <span>{ROWS_TEXT[print.rows]}</span>
+        <span>Sorted by {SORT_TEXT[print.sort]}</span>
+        <span>{cols.length} columns</span>
+      </div>
+      <table className={styles.reg} style={{ fontSize: type.font }}>
+        <colgroup>
+          {cols.map((c) => (
+            <col key={c.key} style={{ width: `${((100 * c.width) / width).toFixed(2)}%` }} />
+          ))}
+        </colgroup>
+        <thead>
+          <tr className={styles.regGroups}>
+            {REGISTER_GROUPS.map((g) => {
+              const span = cols.filter((c) => c.group === g.key).length;
+              return span ? (
+                <th key={g.key} colSpan={span}>
+                  <span>{g.label}</span>
+                </th>
+              ) : null;
+            })}
+          </tr>
+          <tr className={styles.regCols}>
+            {cols.map((c) => (
+              <th key={c.key}>{c.head ?? c.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((u) => (
+            <tr key={u.id} style={{ height: type.row }}>
+              {cols.map((c) => {
+                const v = registerCell(u, c.key, ctx);
+                if (c.key === 'status' && v) {
+                  const s = v.toLowerCase();
+                  return (
+                    <td key={c.key}>
+                      <span className={[styles.regStatus, s === 'occupied' ? styles.regOccupied : s === 'vacant' ? styles.regVacant : ''].join(' ')}>{v}</span>
+                    </td>
+                  );
+                }
+                return v ? (
+                  <td key={c.key} className={c.key === 'name' || c.key === 'label' ? styles.regKey : undefined}>
+                    {v}
+                  </td>
+                ) : (
+                  <td key={c.key} className={styles.regEmpty}>
+                    —
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+          {!rows.length && (
+            <tr>
+              <td colSpan={cols.length} className={styles.regEmpty}>
+                No stalls to list.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      <div className={[styles.foot, styles.regFoot].join(' ')}>
+        <span className={styles.footNote}>From the parking stall records and each assigned person’s employee record, at the time of printing. A dash means the record leaves it empty.</span>
         <span className={styles.pageNo}>
           Page {pageNo} of {pageCount}
         </span>

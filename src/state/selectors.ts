@@ -183,10 +183,28 @@ export function isAssignable(u: Unit): boolean {
   return u.type === 'locker' || u.type === 'parking';
 }
 
-/** The desk (or locker, stall) the signed-in person holds — none while the org hasn't said who they are. */
+const deskHoldings = new WeakMap<AppState['assignments'], { units: Unit[]; byPerson: Map<string, string> }>();
+
+/**
+ * The DESK the signed-in person holds — what "Your desk" and My desk point at. None while the org
+ * hasn't said who they are.
+ *
+ * Desks only. It used to be the first unit of any kind they held, so someone holding a parking
+ * stall (ENEC's admin account holds two) saw "Your desk" over the stall, on the parking floor
+ * where they hold no desk at all.
+ */
 export function myAssignedUnit(state: AppState): Unit | null {
   if (!state.bookBy) return null;
-  const mine = unitHeldBy(state.assignments).get(state.bookBy);
+  let held = deskHoldings.get(state.assignments);
+  if (!held || held.units !== state.units) {
+    // Built once per assignment map and unit list: every marker asks, on every model build.
+    const desks = new Set(state.units.filter((u) => u.type === 'workstation').map((u) => u.id));
+    const byPerson = new Map<string, string>();
+    for (const [unitId, contactId] of Object.entries(state.assignments)) if (desks.has(unitId) && !byPerson.has(contactId)) byPerson.set(contactId, unitId);
+    held = { units: state.units, byPerson };
+    deskHoldings.set(state.assignments, held);
+  }
+  const mine = held.byPerson.get(state.bookBy);
   return mine ? unitById(state, mine) : null;
 }
 
@@ -241,6 +259,7 @@ export function planMarkers(state: AppState): Unit[] {
  * its cost-centre code.
  */
 export function markerSubTexts(state: AppState, unit: Unit): { holder: string | null; dept: string | null } {
+  if (!showsHolder(state, unit)) return { holder: null, dept: null };
   const holderId = state.mode === 'assign' ? state.assignments[unit.id] : undefined;
   const contact = holderId ? contactById(state, holderId) : null;
   const name = personDisplayName(contact?.name);
@@ -279,13 +298,40 @@ export function roomLabelInputs(state: AppState, rooms: Unit[], opts: { measure?
 }
 
 /**
+ * What the pin over a unit the signed-in person holds says, or null for any other unit: "Your desk"
+ * over their desk, "Your parking" over each stall they hold. Lockers and rooms wear none.
+ */
+export function myPinText(state: AppState, unit: Unit): string | null {
+  if (!state.bookBy) return null;
+  if (unit.type === 'workstation') return myAssignedUnit(state)?.id === unit.id ? 'Your desk' : null;
+  if (unit.type === 'parking') return state.assignments[unit.id] === state.bookBy ? 'Your parking' : null;
+  return null;
+}
+
+/**
+ * What a marker is called on the plan, screen and paper alike. A parking stall says the stall
+ * record field Settings › Parking names — a short "Stall Number" the org added, say, in place of a
+ * long record name — and its name when that field is empty, so no stall goes unlabelled.
+ */
+export function unitPlanLabel(state: AppState, unit: Unit): string {
+  const field = unit.type === 'parking' ? state.parkingLabel.field : 'name';
+  if (!field || field === 'name') return unit.label;
+  return unit.record?.[field]?.trim() || unit.label;
+}
+
+/** Whether the plan names who holds a unit: always, but for parking stalls Settings › Parking can say not. */
+export function showsHolder(state: AppState, unit: Unit): boolean {
+  return unit.type !== 'parking' || state.parkingLabel.showHolder;
+}
+
+/**
  * The label each marker WANTS, before `planMarkerLabels` decides which ones fit: its name above
  * (or the "Your desk" pill in its place), and the holder with their department below. Shared with
  * the print sheet so a label reads the same on paper as on screen.
  */
 export function markerLabelInputs(state: AppState, markers: Unit[], opts: { personal?: boolean; /** The department filter: other departments' desks are dimmed and lose their cards. */ department?: string | null; measure?: LabelTextMeasure; /** The chip's screen size at the current zoom (see chipScreenSize); 24 when unsaid. */ chipSize?: number; /** The type the cards are drawn in at this zoom (see scaleTypography); the setting's own size when unsaid. */ typography?: LabelTypography } = {}): MarkerLabelInput[] {
   // `personal: false` (the print sheet): no "Your desk" pill — a sheet on a wall is read by everyone.
-  const mineId = opts.personal === false ? null : (myAssignedUnit(state)?.id ?? null);
+  const personal = opts.personal !== false;
   const labelsOn = state.mode === 'assign' || state.mode === 'book';
   const measure = opts.measure;
   const t = opts.typography ?? typographyOf(state.labelStyle);
@@ -295,16 +341,19 @@ export function markerLabelInputs(state: AppState, markers: Unit[], opts: { pers
     .filter((m) => !dept || m.type === 'amenity' || m.id === state.selected || unitDepartment(state, m) === dept)
     .map((m) => {
       const g = m.geom as { x?: number; y?: number };
-      const mine = m.id === mineId;
+      const pillText = personal ? myPinText(state, m) : null;
+      const mine = !!pillText;
       const { holder, dept } = markerSubTexts(state, m);
+      const name = unitPlanLabel(state, m);
       return {
         id: m.id,
         x: g.x ?? 0,
         y: g.y ?? 0,
         size: opts.chipSize ?? 24,
-        name: m.label,
+        name,
         // "Your desk" stands above the chip; the card, with the desk's own name, goes elsewhere.
         pill: mine,
+        ...(pillText ? { pillText } : {}),
         must: mine,
         sub: holder,
         dept,
@@ -312,7 +361,7 @@ export function markerLabelInputs(state: AppState, markers: Unit[], opts: { pers
         // Measured in the page's font where there is one, so the card is exactly as wide as its text.
         ...(measure
           ? {
-              nameW: measure(m.label, t.nameFont, t.nameWeight),
+              nameW: measure(name, t.nameFont, t.nameWeight),
               subW: holder ? measure(holder, t.subFont, t.subWeight) : undefined,
               deptW: dept ? measure(dept, t.deptFont, t.deptWeight) : undefined,
             }

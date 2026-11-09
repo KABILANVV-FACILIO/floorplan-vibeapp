@@ -3,12 +3,13 @@ import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { DEFAULT_ACCESS, STATE_DEFS, STATE_SWATCHES, SURFACE_ORDER, SURFACES, TOGGLEABLE_MODULES, TYPE_META } from '../../lib/types';
-import type { ModuleKey, OrgRole, Surface, SurfaceAccess, UnitType } from '../../lib/types';
+import type { ModuleKey, OrgRole, ParkingLabel, Surface, SurfaceAccess, UnitType } from '../../lib/types';
 import { Modal, ModalFooter, ModalHeader } from '../primitives/Modal';
-import { computePlacement } from '../primitives/Select';
+import { computePlacement, Select } from '../primitives/Select';
 
 type Placement = ReturnType<typeof computePlacement>;
-import { moduleEnabled } from '../../state/selectors';
+import { contactName, moduleEnabled, unitPlanLabel } from '../../state/selectors';
+import { useParkingFields } from '../../hooks/useParkingFields';
 import { Button } from '../primitives/Button';
 import { moduleColor } from '../../lib/unitStatus';
 import { DEFAULT_LABEL_STYLE, HALO_TEXT, typographyOf } from '../../lib/labelLayout';
@@ -801,7 +802,106 @@ function ModuleTab({ type }: { type: UnitType }) {
 
       {type === 'workstation' && <DeskLabelStyle />}
       {type === 'workstation' && <DepartmentColors />}
+      {type === 'parking' && <ParkingLabelSettings />}
     </div>
+  );
+}
+
+/**
+ * What a parking stall says on the plan, on screen and in print: one of the stall record's text
+ * fields (its Name unless another is picked — a short "Stall Number" the org adds, say), and
+ * whether the assigned person shows under it.
+ */
+function ParkingLabelSettings() {
+  const { state } = useFloorplanData();
+  const [editing, setEditing] = useState(false);
+  const fields = useParkingFields(state.units);
+  const label = state.parkingLabel;
+  const fieldName = fields.text.find((f) => f.name === label.field)?.label ?? (label.field === 'name' ? 'Name' : label.field);
+
+  return (
+    <div className={styles.card}>
+      <CardHead title="Label on the plan" desc="What each parking stall says on the floor plan, on screen and in print." onConfigure={() => setEditing(true)} />
+      <SummaryRow name="Stall label" desc="A text field on the parking stall record. A stall with that field empty shows its name.">
+        <span className={[styles.pill, styles.pillOn].join(' ')}>{fieldName}</span>
+      </SummaryRow>
+      <SummaryRow name="Assigned person" desc="Their name under the label, and their initials in the stall’s marker.">
+        <span className={[styles.pill, label.showHolder ? styles.pillOn : styles.pillMuted].join(' ')}>{label.showHolder ? 'Shown' : 'Hidden'}</span>
+      </SummaryRow>
+      <p className={styles.footNote}>
+        To label stalls with something new, such as a short stall number, add a text field to the Parking Stall module in Facilio. It appears here once it exists.
+      </p>
+      {editing && <ParkingLabelModal fields={fields.text} onClose={() => setEditing(false)} />}
+    </div>
+  );
+}
+
+function ParkingLabelModal({ fields, onClose }: { fields: { name: string; label: string }[]; onClose: () => void }) {
+  const { state, actions } = useFloorplanData();
+  const [draft, setDraft] = useState<ParkingLabel>(() => ({ ...state.parkingLabel }));
+  const changed = (draft.field !== state.parkingLabel.field ? 1 : 0) + (draft.showHolder !== state.parkingLabel.showHolder ? 1 : 0);
+  // A field saved earlier and since removed from the org stays listed, so the choice is visible.
+  const options = fields.some((f) => f.name === draft.field) ? fields : [...fields, { name: draft.field, label: `${draft.field} (not found)` }];
+  // A stall on this floor, drawn as the draft would draw it.
+  const sample = state.units.find((u) => u.type === 'parking' && state.assignments[u.id]) ?? state.units.find((u) => u.type === 'parking');
+  const sampleLabel = sample ? unitPlanLabel({ ...state, parkingLabel: draft }, sample) : null;
+  const sampleHolder = sample && draft.showHolder && state.assignments[sample.id] ? contactName(state, state.assignments[sample.id]) : null;
+
+  return (
+    <StagedModal
+      title="Parking — label on the plan"
+      subtitle="What each stall says on the floor plan, on screen and in print."
+      changed={changed}
+      unit="setting"
+      onCancel={onClose}
+      onSave={() => {
+        actions.setParkingLabel(draft);
+        onClose();
+      }}
+    >
+      <div className={styles.editRow}>
+        <div className={styles.editLabel}>
+          <div className={styles.sumName}>Stall label</div>
+          <div className={styles.sumDesc}>A text field on the parking stall record</div>
+        </div>
+        <Select
+          value={draft.field}
+          options={options.map((f) => ({ value: f.name, label: f.label }))}
+          onChange={(v) => setDraft({ ...draft, field: v })}
+          fullWidth
+          aria-label="Stall label"
+        />
+      </div>
+      <div className={styles.moduleRow}>
+        <div className={styles.sumText} style={{ flex: 1 }}>
+          <div className={styles.rowName}>Show the assigned person</div>
+          <div className={styles.rowDesc}>Their name under the label, and their initials in the marker. Off, an assigned stall keeps its colour and shows the parking sign.</div>
+        </div>
+        <button
+          className={[styles.switch, draft.showHolder ? styles.switchOn : ''].join(' ')}
+          onClick={() => setDraft({ ...draft, showHolder: !draft.showHolder })}
+          aria-pressed={draft.showHolder}
+          aria-label="Show the assigned person"
+        >
+          <span className={styles.knob} style={{ left: draft.showHolder ? 18 : 2 }} />
+        </button>
+      </div>
+      {sample && (
+        <div className={styles.moduleRow}>
+          <div className={styles.sumText} style={{ flex: 1 }}>
+            <div className={styles.rowName}>On the plan</div>
+            <div className={styles.rowDesc}>
+              {sample.label}
+              {sampleLabel !== sample.label ? ' reads' : ' keeps its name'}
+            </div>
+          </div>
+          <div style={{ textAlign: 'center', ...HALO_TEXT }}>
+            <div style={{ font: '600 13px/1.3 var(--font-sans)', color: 'var(--ink-900)' }}>{sampleLabel}</div>
+            {sampleHolder && <div style={{ font: '400 12px/1.3 var(--font-sans)', color: 'var(--ink-700)' }}>{sampleHolder}</div>}
+          </div>
+        </div>
+      )}
+    </StagedModal>
   );
 }
 

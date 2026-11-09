@@ -52,6 +52,27 @@ describe('"Your desk"', () => {
     expect(myAssignedUnit(s)?.id).toBe('1');
     expect(s.units.filter((u) => markerModel(s, u).isMine).map((u) => u.id)).toEqual(['1']);
   });
+
+  it('is only ever on a desk: their parking stall says "Your parking", and a locker nothing', () => {
+    // ENEC's accounts hold parking stalls: on the parking floor, the stall wore "Your desk".
+    const stall = { id: 'p1', type: 'parking', label: 'ABU/EHQ/PKG/HQ-623', geom: { kind: 'point', x: 0.6, y: 0.5 }, floor: 'f1', plan: 'parking' } as Unit;
+    const stall2 = { ...stall, id: 'p2', label: 'ABU/EHQ/PKG/HQ-624', geom: { kind: 'point', x: 0.65, y: 0.5 } } as Unit;
+    const locker = { id: 'l1', type: 'locker', label: 'L-04', geom: { kind: 'point', x: 0.7, y: 0.5 }, floor: 'f1', plan: 'locker' } as Unit;
+    const s = floor({ bookBy: '9', units: [...floor().units, stall, stall2, locker], assignments: { p1: '9', p2: '9', l1: '9' } });
+    expect(myAssignedUnit(s)).toBeNull(); // My desk finds no desk here
+    const pins = s.units.map((u) => markerModel(s, u)).filter((m) => m.isMine).map((m) => [m.unit.id, m.pinText]);
+    expect(pins).toEqual([
+      ['p1', 'Your parking'],
+      ['p2', 'Your parking'],
+    ]);
+    expect(markerLabelInputs(s, s.units).find((l) => l.id === 'p1')).toMatchObject({ pill: true, pillText: 'Your parking' });
+    // …and their desk, where they hold one too, whatever order the floor lists them in.
+    const withDesk = { ...s, assignments: { p1: '9', l1: '9', '4': '9' } };
+    expect(myAssignedUnit(withDesk)?.id).toBe('4');
+    expect(markerModel(withDesk, withDesk.units[3]).pinText).toBe('Your desk');
+    // Never on paper.
+    expect(markerModel(s, stall, { personal: false }).isMine).toBe(false);
+  });
 });
 
 describe('the department filter on the plan', () => {

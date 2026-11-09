@@ -4,7 +4,7 @@ import { dataSource, clearLocalData } from '../lib/dataSource';
 import type { CreateSpaceLoc } from '../lib/dataSource';
 import { PORTFOLIO as MOCK_PORTFOLIO, EMPLOYEES as MOCK_EMPLOYEES, seedBookings, seedUnits, seedAssignments } from '../lib/mockData';
 import { floorImageKey, isRoomLike, planForPlacement, resolveMarkerDef, TYPE_META, unitOnPlan } from '../lib/types';
-import type { AmenityIcon, Booking, FirstResponder, FloorSearchHit, MarkerDef, ModuleKey, OrgRole, PlanId, ResponderRoleDef, Site, Surface, SurfaceAccess, Unit, UnitType } from '../lib/types';
+import type { AmenityIcon, Booking, FirstResponder, FloorSearchHit, MarkerDef, ModuleKey, OrgRole, ParkingLabel, ParkingPrint, PlanId, ResponderRoleDef, Site, Surface, SurfaceAccess, Unit, UnitType } from '../lib/types';
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
@@ -1437,6 +1437,9 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       });
     },
     setModuleEnabled: (module: ModuleKey, enabled: boolean) => dispatch({ type: 'SET_MODULE_ENABLED', module, enabled }),
+    setParkingLabel: (value: ParkingLabel) => dispatch({ type: 'SET_PARKING_LABEL', value }),
+    /** The parking register, for everyone who prints parking (the settings blob). */
+    setParkingPrint: (value: ParkingPrint) => dispatch({ type: 'SET_PARKING_PRINT', value }),
     /**
      * Fetches the asset catalog on first use of the Edit-mode asset picker. Idempotent: the guard
      * is checked before the await, so mounting the picker twice in quick succession still issues
@@ -1671,6 +1674,8 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
     state.bookingModule,
     state.customMarkers,
     state.enabledModules,
+    state.parkingLabel,
+    state.parkingPrint,
   ]);
 
   useEffect(() => {

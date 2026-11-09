@@ -1,7 +1,7 @@
-import { DEFAULT_ENABLED_MODULES, DEFAULT_PLAN_VIEWS, floorImageKey, isRoomLike, planForPlacement } from '../lib/types';
+import { DEFAULT_ENABLED_MODULES, DEFAULT_PARKING_LABEL, DEFAULT_PARKING_PRINT, DEFAULT_PLAN_VIEWS, floorImageKey, isRoomLike, planForPlacement } from '../lib/types';
 import { DEFAULT_LABEL_STYLE } from '../lib/labelLayout';
 import type { LabelStyle } from '../lib/labelLayout';
-import type { AppMode, Booking, Building, Floor, FloorSearchHit, MarkerDef, ModuleKey, OrgRole, PlanId, PlanViews, Site, Surface, SurfaceAccess, Unit } from '../lib/types';
+import type { AppMode, Booking, Building, Floor, FloorSearchHit, MarkerDef, ModuleKey, OrgRole, ParkingLabel, ParkingPrint, PlanId, PlanViews, Site, Surface, SurfaceAccess, Unit } from '../lib/types';
 import { clamp, fitView } from '../lib/geometry';
 import { seedBookings } from '../lib/mockData';
 import { viewFromLocation } from '../lib/routes';
@@ -139,6 +139,8 @@ export function buildInitialState(): AppState {
     // Nobody is known yet, so neither right is held (selectors.canSee); settleAccess works them
     // out again once the role and the grid arrive.
     planViews: DEFAULT_PLAN_VIEWS,
+    parkingLabel: DEFAULT_PARKING_LABEL,
+    parkingPrint: DEFAULT_PARKING_PRINT,
 
     toast: null,
 
@@ -293,6 +295,8 @@ export type Action =
   | { type: 'SET_REFRESHING'; value: boolean }
   | { type: 'DISCARD_CHANGES' }
   | { type: 'SET_PENDING_MODE_SWITCH'; mode: AppState['mode'] | null }
+  | { type: 'SET_PARKING_LABEL'; value: ParkingLabel }
+  | { type: 'SET_PARKING_PRINT'; value: ParkingPrint }
   | { type: 'RESET_DEMO'; units: Unit[]; assignments: AppState['assignments']; bookings: Booking[] };
 
 /**
@@ -734,6 +738,8 @@ export function reducer(state: AppState, action: Action): AppState {
         // Merged over the defaults, not replaced: a config stored before a module existed would
         // otherwise leave the new one undefined and read as disabled.
         enabledModules: { ...DEFAULT_ENABLED_MODULES, ...(c.enabledModules ?? {}) },
+        parkingLabel: { ...DEFAULT_PARKING_LABEL, ...(c.parkingLabel ?? {}) },
+        parkingPrint: { ...DEFAULT_PARKING_PRINT, ...(c.parkingPrint ?? {}) },
         // Over the defaults too: a config saved before the setting existed must not blank it.
         labelStyle: c.labelStyle
           ? { name: { ...DEFAULT_LABEL_STYLE.name, ...c.labelStyle.name }, detail: { ...DEFAULT_LABEL_STYLE.detail, ...c.labelStyle.detail } }
@@ -790,6 +796,10 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, orgRoles: action.roles, orgRolesLoading: false };
     case 'RESET_ACCESS':
       return settleAccess({ ...state, access: {} });
+    case 'SET_PARKING_LABEL':
+      return { ...state, parkingLabel: action.value };
+    case 'SET_PARKING_PRINT':
+      return { ...state, parkingPrint: action.value };
 
     case 'SET_ACTIVE_VIEW': {
       // Clamped, not trusted: this is also the landing point for a deep link, which can name a tab

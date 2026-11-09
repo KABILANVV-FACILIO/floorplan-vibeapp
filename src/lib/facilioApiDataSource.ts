@@ -665,6 +665,17 @@ function buildFloorUnits(
       }
     }
   }
+  // The stall rows carry the record itself — its name, QR value, type, mode, status and any text
+  // field the org has added. Stamped like the desks' department: what Settings › Parking labels a
+  // stall with, and what the print's parking register lists (see Unit.record).
+  const stallRecords = new Map<string, Record<string, string>>();
+  for (const r of stalls as any[]) if (r?.id != null) stallRecords.set(String(r.id), stallRecordText(r));
+  if (stallRecords.size) {
+    for (const u of units) {
+      const rec = u.type === 'parking' ? stallRecords.get(u.id) : undefined;
+      if (rec) u.record = rec;
+    }
+  }
   const rooms = spaces.filter((r: any) => !pointIds.has(String(r.id)) && (r.spaceTypeEnum ?? 'SPACE') === 'SPACE');
 
   let unmatchedMarkers = 0;
@@ -678,6 +689,8 @@ function buildFloorUnits(
         continue;
       }
       const unit = toUnplacedUnit(r, type, floorId);
+      const rec = type === 'parking' ? stallRecords.get(id) : undefined;
+      if (rec) unit.record = rec;
       const dept = deptById.get(id);
       if (dept) {
         unit.department = dept.name;
@@ -1107,6 +1120,31 @@ function firstString(row: any, keys: string[]): string | undefined {
 }
 
 /** One employee row -> the app's Employee, with the searchable identifiers the org exposes. */
+/** Keys on a stall row that are plumbing, never a value anyone reads. */
+const STALL_SKIP = /^(sys|form|org|module(?!State)|stateFlow|approvalFlow|space\d|data$|_)|Id$/;
+
+/**
+ * A parking stall row's values as text, for `Unit.record`: strings as they are, numbers as digits
+ * (a picklist's raw option id, an area, a time in epoch ms), a lookup or the record's state by its
+ * name. Empty values and plumbing (ids, audit fields) are left out.
+ */
+export function stallRecordText(r: any): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(r ?? {})) {
+    if (k !== 'id' && STALL_SKIP.test(k)) continue;
+    if (typeof v === 'string') {
+      if (v.trim()) out[k] = v.trim();
+    } else if (typeof v === 'number' && Number.isFinite(v) && v !== -1) {
+      out[k] = String(v);
+    } else if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const o = v as Record<string, unknown>;
+      const name = o.displayName ?? o.name ?? o.status ?? o.label;
+      if (typeof name === 'string' && name.trim()) out[k] = name.trim();
+    }
+  }
+  return out;
+}
+
 export function mapEmployee(e: any): Employee {
   const dept = e?.department;
   return {
@@ -1118,6 +1156,10 @@ export function mapEmployee(e: any): Employee {
     // The person record's own number fields (V3PeopleContext: `mobile`, `phone`) — the number a
     // first responder is listed and printed with.
     mobile: firstString(e, ['mobile', 'phone']),
+    // Read for the parking register (print › Details): ENEC's own employee fields.
+    designation: firstString(e, ['designation']),
+    grade: firstString(e, ['grade']),
+    lineManagerId: lookupId(e, 'line_manager_employee') != null ? String(lookupId(e, 'line_manager_employee')) : undefined,
   };
 }
 

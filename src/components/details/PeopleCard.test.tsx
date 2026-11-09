@@ -80,4 +80,22 @@ describe('the People list beside the plan', () => {
     expect(ctx.filters).toEqual([]);
     expect(screen.getByText('Priya Nair')).toBeTruthy();
   });
+
+  it('says a filter is on, and clears it there, without opening the Filter panel', () => {
+    show(false);
+    fireEvent.click(screen.getByRole('button', { name: /Department/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Finance', pressed: false }));
+    expect(screen.getByText('1 filter applied')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    expect(ctx.filters).toEqual([]);
+    expect(screen.queryByText(/filter applied/)).toBeNull();
+  });
+
+  it('opens the Filter panel in the list’s place, so Clear all and Apply are there however short the list', () => {
+    show(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Filter' }));
+    expect(screen.queryByText('Priya Nair')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Clear all' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeTruthy();
+  });
 });

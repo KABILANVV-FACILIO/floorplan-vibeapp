@@ -63,7 +63,7 @@ export const Marker = memo(function Marker({
   /** The type the card is drawn in — the one the labels were laid out for (Settings › Desks). */
   typography?: LabelTypography;
 }) {
-  const { unit, style, title, holder, dept, isMine, isHighlighted, isDimmed, isBusy, draggable, responderRoles } = model;
+  const { unit, style, label, title, holder, dept, isMine, pinText, isHighlighted, isDimmed, isBusy, draggable, responderRoles } = model;
   const geom = previewGeom ?? model.geom;
   const t = typography;
 
@@ -84,7 +84,7 @@ export const Marker = memo(function Marker({
               <path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0z" />
               <circle cx="12" cy="10" r="3" />
             </svg>
-            Your desk
+            {pinText ?? 'Your desk'}
           </div>
           <div className={styles.myDeskTail} />
         </div>
@@ -176,7 +176,7 @@ export const Marker = memo(function Marker({
               ...HALO_TEXT,
             }}
           >
-            <div style={{ ...LINE, font: `${t.nameWeight} ${t.nameFont}px/${t.nameLine}px var(--font-sans)`, color: 'var(--ink-900)' }}>{unit.label}</div>
+            <div style={{ ...LINE, font: `${t.nameWeight} ${t.nameFont}px/${t.nameLine}px var(--font-sans)`, color: 'var(--ink-900)' }}>{label}</div>
             {labels.sub && holder && <div style={{ ...LINE, font: `${t.subWeight} ${t.subFont}px/${t.subLine}px var(--font-sans)`, color: 'var(--ink-800)' }}>{holder}</div>}
             {labels.dept && dept && (
               <div
