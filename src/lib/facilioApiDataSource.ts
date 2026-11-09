@@ -6,6 +6,7 @@ import { epochAtInTz, isValidTimezone, setOrgTimezone } from './orgTime';
 import { bookingSegmentsFromRow, cancelledStateIdOf, clipSegmentsToRange, isoPlusDays } from './bookingRows';
 import type { SpaceBookingRow } from './bookingRows';
 import { renderPdfToDataUrl } from './pdfPreview';
+import { IncompleteListError, isRateLimited, rateLimitWait, RATE_LIMIT_RETRIES } from './rateLimit';
 import { computeSyntheticGeometry, geometryStringToQuad, lngLatToQuadFraction, quadFittingPoints, quadToGeometryString, quadToLngLat } from './geoReference';
 import type { CreateSpaceLoc, FloorplanDataSource } from './dataSource';
 import type { Asset } from './assets';
@@ -178,10 +179,18 @@ export class FacilioApiDataSource implements FloorplanDataSource {
    */
   async getEmployees(): Promise<Employee[]> {
     this.assertConfigured();
-    const rows = await fetchAllPaged('employee');
+    const toEmployees = (rows: any[]) => rows.map(mapEmployee).sort(byPersonName);
+    let rows: any[];
+    try {
+      rows = await fetchAllPaged('employee');
+    } catch (err) {
+      // The people read before a refusal are kept (see fetchAllPaged), mapped like the whole list.
+      if (err instanceof IncompleteListError) throw err.map(toEmployees);
+      throw err;
+    }
     // eslint-disable-next-line no-console
     console.info(`[facilio-api] getEmployees: ${rows.length} employees`, rows[0] ? `(fields seen: ${Object.keys(rows[0]).join(', ')})` : '');
-    return rows.map(mapEmployee).sort(byPersonName);
+    return toEmployees(rows);
   }
 
   /**
@@ -1163,19 +1172,49 @@ export function mapEmployee(e: any): Employee {
   };
 }
 
-async function fetchAllPaged(moduleName: string, perPage = 200): Promise<any[]> {
-  const out: any[] = [];
-  let lastFirstId: unknown;
-  for (let page = 1; page <= 50; page++) {
-    const res = await facilioApi.fetchAll(moduleName, { page, perPage });
-    if (res.error) throw new Error(`facilio-api: ${moduleName} fetch failed (${res.error.code ?? '?'} ${res.error.message ?? ''})`.trim());
-    const rows = res.list ?? [];
-    if (!rows.length || rows[0]?.id === lastFirstId) break;
-    lastFirstId = rows[0]?.id;
-    out.push(...rows);
-    if (rows.length < perPage) break;
-  }
-  return out;
+type PageFetch = (page: number, perPage: number) => Promise<FacilioApiListResult<any>>;
+
+/**
+ * Every row of a module's list, a page at a time (50 pages at most).
+ *
+ * A refused page never costs the pages read before it. Refused for rate (lib/rateLimit), the read
+ * throws an IncompleteListError holding those rows and a `resume` that waits out Facilio's window
+ * and carries on from the refused page — at most RATE_LIMIT_RETRIES times. Refused for anything
+ * else after the first page, it throws one with the rows and no resume (no wait fixes it). The
+ * first page refused for anything but rate is a plain failure, as before.
+ */
+export async function fetchAllPaged(
+  moduleName: string,
+  perPage = 200,
+  deps: { fetchPage?: PageFetch; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<any[]> {
+  const fetchPage: PageFetch = deps.fetchPage ?? ((page, n) => facilioApi.fetchAll(moduleName, { page, perPage: n }));
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const read = async (from: number, out: any[], lastFirstId: unknown, retriesLeft: number): Promise<any[]> => {
+    for (let page = from; page <= 50; page++) {
+      const res = await fetchPage(page, perPage);
+      if (res.error) {
+        const message = `facilio-api: ${moduleName} fetch failed on page ${page} (${res.error.code ?? '?'} ${res.error.message ?? ''})`.trim();
+        const limited = isRateLimited(res.error);
+        if (!limited && !out.length) throw new Error(message);
+        const resume =
+          limited && retriesLeft > 0
+            ? async () => {
+                await sleep(rateLimitWait());
+                return read(page, out, lastFirstId, retriesLeft - 1);
+              }
+            : undefined;
+        throw new IncompleteListError(out, limited, message, resume);
+      }
+      const rows = res.list ?? [];
+      if (!rows.length || rows[0]?.id === lastFirstId) break;
+      lastFirstId = rows[0]?.id;
+      out.push(...rows);
+      if (rows.length < perPage) break;
+    }
+    return out;
+  };
+  return read(1, [], undefined, RATE_LIMIT_RETRIES);
 }
 
 /**
@@ -1187,6 +1226,12 @@ async function fetchAllPaged(moduleName: string, perPage = 200): Promise<any[]> 
 const RELATED_PAGE_SIZE = 500;
 /** A backstop for the page loop when the count is unavailable. */
 const MAX_RELATED_PAGES = 200;
+/**
+ * At most this many pages of one list in flight. Every page of a list is the same request URI to
+ * Facilio's rate limiter — 100 calls a minute (lib/rateLimit) — so asking for all of a big floor's
+ * pages in the same second spends the user's whole minute at once and loses the pages it refuses.
+ */
+const RELATED_PAGE_CONCURRENCY = 2;
 
 type RelatedOpts = { moduleName: string; id: string | number; relatedModuleName: string; relatedFieldName: string };
 type RelatedPage<T> = (page: number, perPage: number) => Promise<FacilioApiListResult<T>>;
@@ -1263,10 +1308,20 @@ export async function loadRelated<T = any>(
   const page = (n: number) => fetchPage(n, perPage).then((r) => (r.error ? failed() : r.list ?? []), failed);
   const rest: Promise<T[]> =
     total !== null
-      ? // The count says how many pages: ask for all of them at once.
-        Promise.all(Array.from({ length: Math.min(MAX_RELATED_PAGES, Math.ceil(total / perPage)) - 1 }, (_, i) => page(i + 2))).then((lists) =>
-          lists.flatMap((l) => fresh(l)),
-        )
+      ? // The count says how many pages: read them RELATED_PAGE_CONCURRENCY at a time, kept in order.
+        (async () => {
+          const numbers = Array.from({ length: Math.min(MAX_RELATED_PAGES, Math.ceil(total / perPage)) - 1 }, (_, i) => i + 2);
+          const lists: (T[] | null)[] = new Array(numbers.length).fill(null);
+          let next = 0;
+          const worker = async () => {
+            while (next < numbers.length) {
+              const i = next++;
+              lists[i] = await page(numbers[i]);
+            }
+          };
+          await Promise.all(Array.from({ length: Math.min(RELATED_PAGE_CONCURRENCY, numbers.length) }, worker));
+          return lists.flatMap((l) => fresh(l));
+        })()
       : // No count: page on while pages come back full and bring something new.
         (async () => {
           const out: T[] = [];

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
-import { contactName, isBookable, mergeWithOrgPool } from '../../state/selectors';
+import { canBookFromCalendar, contactName, isBookable, mergeWithOrgPool } from '../../state/selectors';
 import { fmtTime } from '../../lib/geometry';
 import { dataSource } from '../../lib/dataSource';
 import { isFacilioApiConfigured } from '../../lib/facilioApi';
@@ -100,6 +100,8 @@ export function BookingsView() {
   const [myOpen, setMyOpen] = useState(false);
   // A portal user sees their own bookings (scoped by the org); the admin app sees everyone's.
   const scopedToUser = useMemo(() => isFacilioApiConfigured && bookingsScopedToUser(), []);
+  // Bookings › Book: whether selecting a slot books. Without it the calendar is for looking.
+  const mayBookHere = canBookFromCalendar(state);
   const [refreshTick, setRefreshTick] = useState(0);
   // The floor filter rides the range request as an API filter, never as a client-side row filter.
   const [floorFilter, setFloorFilter] = useState<{ id: string; name: string }[]>([]);
@@ -192,12 +194,9 @@ export function BookingsView() {
   function openForm(date: string, start: number, end: number, endDate?: string) {
     // Nothing to book onto: the drag simply does nothing.
     if (!resourceId) return;
-    // The calendar is its own tab; booking from it is Floorplans › Booking. Said, not swallowed:
-    // a drag that silently does nothing reads as a broken calendar.
-    if (!state.planViews.book) {
-      actions.showToast('Your role can see bookings here but not make them');
-      return;
-    }
+    // Booking by selecting a slot is its own right (Roles & access › Bookings › Book). Without it
+    // the grid starts no selection at all (CalendarGrid `canCreate`); this is the backstop.
+    if (!mayBookHere) return;
     const today = orgTodayISO();
     if (date < today) {
       actions.showToast('That day has already passed — pick an upcoming one');
@@ -219,6 +218,7 @@ export function BookingsView() {
       ...(picked ? { resourceUnit: picked } : {}),
       ...(floorFilter.length ? { floorIds: floorFilter.map((f) => f.id) } : {}),
       ...(endDate && endDate !== date ? { endDate } : {}),
+      fromCalendar: true,
     });
   }
 
@@ -329,9 +329,11 @@ export function BookingsView() {
         </div>
 
         <p className={styles.hint}>
-          {resourceId
-            ? 'Click a time on the calendar, or drag across hours and days, to pick a window — the space is picked in the form.'
-            : 'No bookable desks or rooms yet — mark desks as hot desks or spaces as reservable in Facilio, then book them here.'}
+          {!resourceId
+            ? 'No bookable desks or rooms yet — mark desks as hot desks or spaces as reservable in Facilio, then book them here.'
+            : mayBookHere
+              ? 'Click a time on the calendar, or drag across hours and days, to pick a window — the space is picked in the form.'
+              : 'Your role can look at bookings here but not book from the calendar.'}
         </p>
 
         <div className={styles.calToolbar}>
@@ -380,7 +382,16 @@ export function BookingsView() {
               }}
             />
           ) : (
-            <CalendarGrid dates={visibleDates} bookingsFor={bookingsFor} myId={state.bookBy} onCreate={openForm} onPreview={(date, ids) => setPreview({ date, ids })} contactNameOf={(id) => contactName(state, id)} />
+            <CalendarGrid
+              dates={visibleDates}
+              bookingsFor={bookingsFor}
+              myId={state.bookBy}
+              canCreate={mayBookHere}
+              onBlocked={() => actions.showToast('Your role can look at bookings here but not book from the calendar')}
+              onCreate={openForm}
+              onPreview={(date, ids) => setPreview({ date, ids })}
+              contactNameOf={(id) => contactName(state, id)}
+            />
           )}
         </div>
 
@@ -434,12 +445,21 @@ interface CalendarGridProps {
   dates: string[];
   bookingsFor: (date: string) => Booking[];
   myId: string;
+  /** Whether selecting a slot books (Bookings › Book). Without it a press says so and selects nothing. */
+  canCreate: boolean;
+  onBlocked: () => void;
   onCreate: (date: string, start: number, end: number, endDate?: string) => void;
   onPreview: (date: string, ids: string[]) => void;
   contactNameOf: (id: string) => string;
 }
 
-function CalendarGrid({ dates, bookingsFor, myId, onCreate, onPreview, contactNameOf }: CalendarGridProps) {
+/**
+ * A block this short (30 minutes is 26px) has room for one line, not two: the time and the name go
+ * on it together, rather than the name running out of the bottom of the block.
+ */
+const ONE_LINE_BELOW = 38;
+
+function CalendarGrid({ dates, bookingsFor, myId, canCreate, onBlocked, onCreate, onPreview, contactNameOf }: CalendarGridProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<{ date: string; from: number; to: number; endDate?: string } | null>(null);
   const dragRef = useRef<{
@@ -476,6 +496,10 @@ function CalendarGrid({ dates, bookingsFor, myId, onCreate, onPreview, contactNa
 
   function onColMouseDown(date: string, e: ReactMouseEvent) {
     if (e.button !== 0) return;
+    if (!canCreate) {
+      onBlocked();
+      return;
+    }
     const colEl = e.currentTarget as HTMLElement;
     const colTop = colEl.getBoundingClientRect().top;
     const cols = Array.from(colEl.parentElement?.querySelectorAll<HTMLElement>('[data-daycol]') ?? []).map((el) => {
@@ -554,7 +578,7 @@ function CalendarGrid({ dates, bookingsFor, myId, onCreate, onPreview, contactNa
             const blocks = bookingsFor(d);
             const inDrag = drag && (drag.endDate && drag.endDate !== drag.date ? d >= drag.date && d <= drag.endDate : drag.date === d);
             return (
-              <div key={d} data-daycol={d} className={styles.dayCol} onMouseDown={(e) => onColMouseDown(d, e)}>
+              <div key={d} data-daycol={d} className={[styles.dayCol, canCreate ? '' : styles.dayColReadOnly].join(' ')} onMouseDown={(e) => onColMouseDown(d, e)}>
                 {Array.from({ length: (DAY_END - DAY_START) / 60 }, (_, i) => (
                   <div key={i} className={styles.hourCell} style={{ top: (i + 1) * PX_PER_HOUR }} />
                 ))}
@@ -563,21 +587,30 @@ function CalendarGrid({ dates, bookingsFor, myId, onCreate, onPreview, contactNa
                   const cEnd = Math.max(...cluster.map((b) => b.end));
                   const top = (Math.max(DAY_START, cStart) - DAY_START) * PX_PER_MIN;
                   const height = Math.max(16, (Math.min(DAY_END, cEnd) - Math.max(DAY_START, cStart)) * PX_PER_MIN);
+                  const oneLine = height < ONE_LINE_BELOW;
                   if (cluster.length > 1) {
                     // Overlapping bookings collapse into one count block; clicking previews them all.
                     return (
                       <button
                         key={cluster[0].id}
                         type="button"
-                        className={[styles.block, styles.blockOther].join(' ')}
+                        className={[styles.block, styles.blockOther, oneLine ? styles.blockOneLine : ''].join(' ')}
                         style={{ top, height, cursor: 'pointer', textAlign: 'left' }}
                         onMouseDown={(e) => e.stopPropagation()}
                         onClick={() => onPreview(d, cluster.map((b) => b.id))}
                         data-tip={`${fmtTime(cStart)} – ${fmtTime(cEnd)} · ${cluster.length} overlapping bookings — click to preview`}
                         data-tip-pos="top"
                       >
-                        <div className={styles.blockTime}>{fmtTime(cStart)} - {fmtTime(cEnd)}</div>
-                        <div className={styles.blockName}>{cluster.length} bookings</div>
+                        {oneLine ? (
+                          <div className={styles.blockTime}>
+                            {fmtTime(cStart)} - {fmtTime(cEnd)} · {cluster.length} bookings
+                          </div>
+                        ) : (
+                          <>
+                            <div className={styles.blockTime}>{fmtTime(cStart)} - {fmtTime(cEnd)}</div>
+                            <div className={styles.blockName}>{cluster.length} bookings</div>
+                          </>
+                        )}
                       </button>
                     );
                   }
@@ -586,7 +619,7 @@ function CalendarGrid({ dates, bookingsFor, myId, onCreate, onPreview, contactNa
                   return (
                     <div
                       key={b.id}
-                      className={[styles.block, mine ? styles.blockMine : styles.blockOther].join(' ')}
+                      className={[styles.block, mine ? styles.blockMine : styles.blockOther, oneLine ? styles.blockOneLine : ''].join(' ')}
                       // Pending approval reads amber, so a request looks different from a confirmed booking.
                       style={{ top, height, cursor: 'pointer', ...(b.approvalPending ? { background: 'var(--warning-050)', borderColor: 'var(--warning-700)', color: 'var(--warning-700)' } : {}) }}
                       onMouseDown={(e) => e.stopPropagation()}
@@ -594,8 +627,16 @@ function CalendarGrid({ dates, bookingsFor, myId, onCreate, onPreview, contactNa
                       data-tip={`${fmtTime(b.start)} – ${fmtTime(b.end)} · ${mine ? 'Your booking' : `Booked by ${contactNameOf(b.by) || 'someone'}`}${b.approvalPending ? ' · pending approval' : ''} — click to preview`}
                       data-tip-pos="top"
                     >
-                      <div className={styles.blockTime}>{fmtTime(b.start)} - {fmtTime(b.end)}</div>
-                      <div className={styles.blockName}>{mine ? 'Your booking' : contactNameOf(b.by) || 'Booked'}</div>
+                      {oneLine ? (
+                        <div className={styles.blockTime}>
+                          {fmtTime(b.start)} - {fmtTime(b.end)} · {mine ? 'Your booking' : contactNameOf(b.by) || 'Booked'}
+                        </div>
+                      ) : (
+                        <>
+                          <div className={styles.blockTime}>{fmtTime(b.start)} - {fmtTime(b.end)}</div>
+                          <div className={styles.blockName}>{mine ? 'Your booking' : contactNameOf(b.by) || 'Booked'}</div>
+                        </>
+                      )}
                     </div>
                   );
                 })}

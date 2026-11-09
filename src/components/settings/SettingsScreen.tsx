@@ -295,8 +295,7 @@ function PermissionsTab() {
           <div>
             <h3 className={styles.cardTitle}>Roles &amp; access</h3>
             <p className={styles.cardDesc}>
-              Which of the org&rsquo;s roles can reach each tab, and what they may do on the floor plan. A tab nobody&rsquo;s role reaches is not shown to them at
-              all.
+              Which of the org&rsquo;s roles can reach each tab, and what they may do in it. A tab nobody&rsquo;s role reaches is not shown to them at all.
             </p>
           </div>
           <Button variant="secondary" onClick={() => setEditing(true)}>
@@ -649,7 +648,7 @@ function AccessModal({ onClose }: { onClose: () => void }) {
   return (
     <StagedModal
       title="Configure access"
-      subtitle="Choose who can reach each tab, and who may assign, book and edit on the floor plan. Nothing changes until you save."
+      subtitle="Choose who can reach each tab, and what they may do in it. Nothing changes until you save."
       changed={changed}
       unit="permission"
       refused={refused}

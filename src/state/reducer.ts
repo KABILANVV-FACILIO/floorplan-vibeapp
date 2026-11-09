@@ -6,7 +6,7 @@ import { clamp, fitView } from '../lib/geometry';
 import { seedBookings } from '../lib/mockData';
 import { viewFromLocation } from '../lib/routes';
 import type { AppState } from './types';
-import { canAssign, canBook, canEdit, clampView } from './selectors';
+import { bookingAllowed, canAssign, canBook, canEdit, clampView } from './selectors';
 import { sanitizeResponders, sanitizeRoles, withRecordNames } from '../lib/firstResponders';
 import { BUILTIN_RESPONDER_ROLES } from '../lib/types';
 import type { FirstResponder, ResponderRoleDef } from '../lib/types';
@@ -350,7 +350,8 @@ function settleAccess(next: AppState): AppState {
   // starts again from Book, the phone's own default.
   const tabWanted = was.assign && was.book ? next.mobileTab : 'book';
   const mobileTab = viewsChanged ? (permittedMode(views, tabWanted) as AppState['mobileTab']) : next.mobileTab;
-  const bookingGone = !views.book && (next.bookForm !== null || next.bookModalOpen);
+  // The form closes with the right it was opened under: the calendar's own, or the plan's.
+  const bookingGone = next.bookForm ? !bookingAllowed({ ...next, planViews: views }, next.bookForm) : next.bookModalOpen && !views.book;
   if (!viewsChanged && activeView === next.activeView && mode === next.mode && !bookingGone) return next;
   return {
     ...next,
@@ -717,7 +718,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'SET_BOOK_FIELD':
       return { ...state, [action.field]: action.value } as AppState;
     case 'SET_BOOK_FORM':
-      if (action.form && !state.planViews.book) return state;
+      if (action.form && !bookingAllowed(state, action.form)) return state;
       return { ...state, bookForm: action.form, bookModalOpen: !!action.form };
     case 'UPDATE_BOOK_FORM':
       return { ...state, bookForm: state.bookForm ? { ...state.bookForm, ...action.patch } : state.bookForm };

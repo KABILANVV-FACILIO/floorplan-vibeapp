@@ -46,6 +46,8 @@ export interface BookFormTarget {
   resourceUnit?: Unit;
   /** Floors the calendar's filter is limited to — the form's lookups follow it. */
   floorIds?: string[];
+  /** Opened from the Bookings calendar by selecting a slot — Bookings › Book decides, not Floorplans › Booking. */
+  fromCalendar?: boolean;
 }
 
 export interface AppState {

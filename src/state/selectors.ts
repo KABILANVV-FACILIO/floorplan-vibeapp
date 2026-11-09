@@ -1,4 +1,4 @@
-import { DEFAULT_ACCESS, SURFACE_ORDER, isModuleEnabled, isRoomLike, unitOnPlan } from '../lib/types';
+import { CLOSED_RIGHTS, DEFAULT_ACCESS, SURFACE_ORDER, isModuleEnabled, isRoomLike, unitOnPlan } from '../lib/types';
 import { ROOM_FONT, subMaxChars, typographyOf } from '../lib/labelLayout';
 import type { LabelTypography } from '../lib/labelLayout';
 import type { LabelTextMeasure } from '../lib/textMeasure';
@@ -389,7 +389,7 @@ export function canSee(state: AppState, surface: Surface): boolean {
   // Assigning and booking are closed until granted, so a viewer we cannot place gets them only
   // when they are open to everyone. Denying them never empties the app — the plan still shows —
   // and granting them to "we could not tell who you are" would hand out exactly what was withheld.
-  if (!state.viewerRole) return surface !== 'map.assign' && surface !== 'map.book';
+  if (!state.viewerRole) return !CLOSED_RIGHTS.has(surface);
   // The org's admin roles never lose Settings, whatever the grid says — otherwise one bad save
   // locks out the only people who could undo it.
   if (surface === 'settings' && state.viewerRole.isAdmin) return true;
@@ -423,11 +423,20 @@ export function canAssign(state: AppState): boolean {
   return canSee(state, 'map') && canSee(state, 'map.assign');
 }
 
-/**
- * Whether this viewer may book (Floorplans › Booking) — from the plan, and from the Bookings
- * calendar, which needs only the right and not the plan: a role given the calendar alone books
- * there.
- */
+/** Whether this viewer may book from the plan (Floorplans › Booking). */
 export function canBook(state: AppState): boolean {
-  return canSee(state, 'map.book');
+  return canSee(state, 'map') && canSee(state, 'map.book');
+}
+
+/** Whether this viewer may book by selecting a slot in the Bookings calendar (Bookings › Book). */
+export function canBookFromCalendar(state: AppState): boolean {
+  return canSee(state, 'bookings') && canSee(state, 'bookings.book');
+}
+
+/**
+ * Whether this booking form may be open, and sent: one opened from the calendar needs Bookings ›
+ * Book, any other Floorplans › Booking (the plan, its sidebar, a scanned QR code).
+ */
+export function bookingAllowed(state: AppState, form: AppState['bookForm']): boolean {
+  return form?.fromCalendar ? canBookFromCalendar(state) : state.planViews.book;
 }

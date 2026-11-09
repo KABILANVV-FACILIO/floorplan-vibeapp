@@ -7,7 +7,7 @@ vi.mock('../lib/pdfPreview', () => ({ renderPdfToDataUrl: vi.fn() }));
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { buildInitialState, permittedMode, reducer } from './reducer';
-import { activeDepartment, canAssign, canSee, floorDepartments, markerLabelInputs, myAssignedUnit, unitDepartment } from './selectors';
+import { activeDepartment, bookingAllowed, canAssign, canBookFromCalendar, canSee, floorDepartments, markerLabelInputs, myAssignedUnit, unitDepartment } from './selectors';
 import { markerModel } from '../lib/markerModel';
 import { settingsFromState } from '../lib/settingsStore';
 import { SURFACES, SURFACE_ORDER } from '../lib/types';
@@ -202,5 +202,36 @@ describe('Assignment and Booking as rights in Roles & access', () => {
     expect(applied.mode).toBe('book');
     // Nothing of the old org-wide switch is written any more.
     expect('planViews' in settingsFromState(applied)).toBe(false);
+  });
+});
+
+describe('booking from the Bookings calendar (Bookings › Book)', () => {
+  const slot = { unitId: '1', date: '2026-11-09', start: 600, end: 660, fromCalendar: true };
+
+  it('is a right of its own under the Bookings tab, closed until granted', () => {
+    expect(SURFACES.filter((s) => s.parent === 'bookings').map((s) => s.id)).toEqual(['bookings.book']);
+    expect(canBookFromCalendar(signedIn(ADMIN))).toBe(false);
+    expect(canBookFromCalendar(signedIn(STAFF, { 'bookings.book': only(STAFF.id) }))).toBe(true);
+    expect(canBookFromCalendar(signedIn(null, { 'bookings.book': only(STAFF.id) }))).toBe(false);
+    // …and needs the calendar itself.
+    expect(canBookFromCalendar(signedIn(STAFF, { bookings: only(ADMIN.id), 'bookings.book': everyone }))).toBe(false);
+  });
+
+  it('lets a slot open the booking form without the plan’s Booking right, and only with its own', () => {
+    const calendarOnly = signedIn(STAFF, { 'bookings.book': everyone });
+    expect(calendarOnly.planViews.book).toBe(false);
+    expect(reducer(calendarOnly, { type: 'SET_BOOK_FORM', form: slot }).bookForm).toEqual(slot);
+    // The plan's form is still the plan's right.
+    expect(reducer(calendarOnly, { type: 'SET_BOOK_FORM', form: { ...slot, fromCalendar: undefined } }).bookForm).toBeNull();
+    const planOnly = signedIn(STAFF, { 'map.book': everyone });
+    expect(reducer(planOnly, { type: 'SET_BOOK_FORM', form: slot }).bookForm).toBeNull();
+    expect(bookingAllowed(planOnly, { ...slot, fromCalendar: undefined })).toBe(true);
+  });
+
+  it('closes a calendar booking form when the right is taken away', () => {
+    const open = reducer(signedIn(STAFF, { 'bookings.book': everyone }), { type: 'SET_BOOK_FORM', form: slot });
+    const next = reducer(open, { type: 'SET_ACCESS', access: {} });
+    expect(next.bookForm).toBeNull();
+    expect(next.bookModalOpen).toBe(false);
   });
 });

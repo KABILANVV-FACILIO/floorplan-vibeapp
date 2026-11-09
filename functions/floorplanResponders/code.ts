@@ -52,8 +52,9 @@ const ICONS = ['cross', 'warden', 'flame', 'aed', 'shield', 'megaphone', 'radiat
 const SHAPES = ['square', 'circle', 'diamond'];
 const HEX = /^#[0-9a-fA-F]{6}$/;
 
-// The four tabs, and the plan's three rights under Floorplans (the app's lib/types SURFACES).
-const SURFACE_IDS = ['map', 'map.assign', 'map.book', 'map.edit', 'bookings', 'people', 'settings'];
+// The four tabs and the rights within them: the plan's three, and booking from the calendar (the
+// app's lib/types SURFACES).
+const SURFACE_IDS = ['map', 'map.assign', 'map.book', 'map.edit', 'bookings', 'bookings.book', 'people', 'settings'];
 
 /** One connection action, run as the caller. Throws on anything but a clean answer. */
 async function action(connection: string, slug: string, input: Record<string, unknown>): Promise<any> {

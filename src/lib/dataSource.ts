@@ -1,5 +1,6 @@
 import { FacilioApiDataSource } from './facilioApiDataSource';
 import { ConnectorDataSource } from './connectorDataSource';
+import { IncompleteListError } from './rateLimit';
 import type { Asset } from './assets';
 import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, Site, Unit } from './types';
 
@@ -312,6 +313,9 @@ export class CompositeDataSource implements FloorplanDataSource {
         console.info(`[dataSource] ${String(method)} <- ${tier.name}${describe(result)}`);
         return result;
       } catch (err) {
+        // The org answered in part (lib/rateLimit): its rows, and its own way to finish, are the
+        // answer. Another tier's would mix sources, and is refused by the same limit anyway.
+        if (err instanceof IncompleteListError) throw err;
         lastErr = err;
         // eslint-disable-next-line no-console
         console.warn(`[dataSource] ${String(method)} unavailable on "${tier.name}", falling back:`, (err as Error)?.message ?? err);

@@ -498,20 +498,25 @@ export const TYPE_META: Record<UnitType, { name: string; prefix: string }> = {
 export type Tab = 'map' | 'bookings' | 'people' | 'settings';
 
 /**
- * Everything the grid governs: the four tabs, plus the plan's three rights. A right is a
- * capability, not a place, so it is kept out of `Tab`. Keyed `map.*` because the floorplanApi
- * function already names them so; the UI shows only their names.
+ * Everything the grid governs: the four tabs, plus the rights within them — the plan's three, and
+ * booking from the Bookings calendar. A right is a capability, not a place, so it is kept out of
+ * `Tab`. Keyed `<tab>.<right>` (the floorplanApi function already names the plan's so); the UI
+ * shows only their names.
  */
-export type Surface = Tab | PlanRight;
-export type PlanRight = 'map.assign' | 'map.book' | 'map.edit';
+export type Surface = Tab | Right;
+export type Right = 'map.assign' | 'map.book' | 'map.edit' | 'bookings.book';
+
+/** The rights closed until granted: a viewer whose role is unknown never holds them (see canSee). */
+export const CLOSED_RIGHTS: ReadonlySet<Surface> = new Set<Surface>(['map.assign', 'map.book', 'bookings.book']);
 
 /** The grid's rows, in order. A right names its tab as `parent` and is drawn under it. */
 export const SURFACES: { id: Surface; name: string; desc: string; parent?: Tab }[] = [
   { id: 'map', name: 'Floorplans', desc: 'The plan itself, and everything on it' },
   { id: 'map.assign', parent: 'map', name: 'Assignment', desc: 'Assign desks, lockers and parking stalls to people, and vacate them. Without it the People list is read-only' },
-  { id: 'map.book', parent: 'map', name: 'Booking', desc: 'Book desks, rooms and stalls, from the plan and from the Bookings calendar' },
+  { id: 'map.book', parent: 'map', name: 'Booking', desc: 'Book desks, rooms and stalls from the plan' },
   { id: 'map.edit', parent: 'map', name: 'Edit', desc: 'Upload plans, auto-map and place units. Web only — the mobile app has no edit mode' },
-  { id: 'bookings', name: 'Bookings', desc: 'The org-wide booking calendar. Booking from it needs Floorplans › Booking' },
+  { id: 'bookings', name: 'Bookings', desc: 'The org-wide booking calendar' },
+  { id: 'bookings.book', parent: 'bookings', name: 'Book', desc: 'Book a desk or room by selecting a time slot in the calendar. Without it the calendar is for looking' },
   { id: 'people', name: 'People', desc: 'The employee directory' },
   { id: 'settings', name: 'Settings', desc: 'This screen and every other configuration' },
 ];
@@ -554,6 +559,8 @@ export const DEFAULT_ACCESS: Record<Surface, SurfaceAccess> = {
   // role by role. With both closed the plan is a map — the floor, its markers, the People list.
   'map.assign': { all: false, roles: [] },
   'map.book': { all: false, roles: [] },
+  // Booking from the calendar, closed until granted like booking from the plan.
+  'bookings.book': { all: false, roles: [] },
   // Open, as editing was before this grid existed: restricting it is a decision an admin makes,
   // not one an upgrade should make for them by quietly taking the Edit button away.
   'map.edit': { all: true, roles: [] },

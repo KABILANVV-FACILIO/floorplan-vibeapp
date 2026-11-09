@@ -4,12 +4,13 @@ import { dataSource, clearLocalData } from '../lib/dataSource';
 import type { CreateSpaceLoc } from '../lib/dataSource';
 import { PORTFOLIO as MOCK_PORTFOLIO, EMPLOYEES as MOCK_EMPLOYEES, seedBookings, seedUnits, seedAssignments } from '../lib/mockData';
 import { floorImageKey, isRoomLike, planForPlacement, resolveMarkerDef, TYPE_META, unitOnPlan } from '../lib/types';
-import type { AmenityIcon, Booking, FirstResponder, FloorSearchHit, MarkerDef, ModuleKey, OrgRole, ParkingLabel, ParkingPrint, PlanId, ResponderRoleDef, Site, Surface, SurfaceAccess, Unit, UnitType } from '../lib/types';
+import type { AmenityIcon, Booking, Employee, FirstResponder, FloorSearchHit, MarkerDef, ModuleKey, OrgRole, ParkingLabel, ParkingPrint, PlanId, ResponderRoleDef, Site, Surface, SurfaceAccess, Unit, UnitType } from '../lib/types';
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
 import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchCurrentPeopleId, fetchCurrentRole, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, fetchOrgBookingsForRange, fetchOrgRoles, cancelRealBooking, fetchOrgTimezone, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, takeRoomOutlineReadFailure, vacateUnitReal } from '../lib/facilioApiDataSource';
 import { DEMO_DATA, ROOM_OUTLINE_WRITES } from '../lib/featureFlags';
+import { IncompleteListError } from '../lib/rateLimit';
 import { personDisplayName } from '../lib/displayNames';
 import { measureImageDataUrl } from '../lib/geoReference';
 import { listFloorplanFloorIds, loadFloorplanFile, persistFloorplanFile } from '../lib/floorplanFileStore';
@@ -26,7 +27,7 @@ import { useDataState } from './useDataState';
 import type { Action } from './reducer';
 import type { AppState, BookFormTarget } from './types';
 import type { LabelStyle } from '../lib/labelLayout';
-import { canEdit, conflictsFor, contactById, isAssignable, nextLabel, planMarkers, unitById } from './selectors';
+import { bookingAllowed, canEdit, conflictsFor, contactById, isAssignable, nextLabel, planMarkers, unitById } from './selectors';
 import { calibratedPxPerMeter, clampPanelPos, defaultPanelPos, distNormToPx, fitUnitsView, fitView as fitViewFn, focusUnitView, pointInPoly, zoomAt as zoomAtFn } from '../lib/geometry';
 
 interface Ctx {
@@ -53,6 +54,62 @@ function delegatingActions(get: () => Ctx['actions']): Ctx['actions'] {
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** A toast for `ms` — shared by the actions and the boot effect, which has no actions of its own. */
+function postToast(dispatch: Dispatch<Action>, message: string, ms: number = 3200) {
+  dispatch({ type: 'SHOW_TOAST', message });
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => dispatch({ type: 'SHOW_TOAST', message: null }), ms);
+}
+
+export const ROSTER_FAILED = 'Couldn’t load people from Facilio — names may be missing. Refresh to try again.';
+export const ROSTER_BUSY = 'Facilio is busy — some names are missing. Trying again in a minute.';
+
+/**
+ * The org's roster, as much of it as Facilio gives, and never a silent empty one.
+ *
+ * Refused part-way (lib/rateLimit), the people already read are used — at boot, where there is no
+ * roster yet; on Refresh the one already on screen is kept, being more complete — and a refusal for
+ * rate carries on in the background after Facilio's window, at most twice, filling in the rest
+ * when it lands. Each step is said: "busy, trying again", then "couldn't load" when it gives up.
+ * A read that fails outright says so too, except under the dev server, where the demo roster
+ * stands in.
+ */
+export async function readRoster(dispatch: Dispatch<Action>, { refresh = false }: { refresh?: boolean } = {}): Promise<Employee[] | null> {
+  try {
+    return await dataSource.getEmployees();
+  } catch (err) {
+    if (err instanceof IncompleteListError) {
+      finishRoster(dispatch, err as IncompleteListError<Employee>);
+      return refresh || !err.rows.length ? null : (err.rows as Employee[]);
+    }
+    if (DEMO_DATA) return refresh ? null : MOCK_EMPLOYEES;
+    // On Refresh the roster from before is still on screen, names and all.
+    if (!refresh) postToast(dispatch, ROSTER_FAILED, 8000);
+    return null;
+  }
+}
+
+/** Waits out a refused roster read and finishes it in the background, or says it gave up. */
+function finishRoster(dispatch: Dispatch<Action>, stop: IncompleteListError<Employee>) {
+  if (!stop.resume) {
+    postToast(dispatch, ROSTER_FAILED, 8000);
+    return;
+  }
+  postToast(dispatch, ROSTER_BUSY, 6000);
+  stop.resume().then(
+    (employees) => dispatch({ type: 'EMPLOYEES_LOADED', employees }),
+    (next) => {
+      if (!(next instanceof IncompleteListError)) {
+        postToast(dispatch, ROSTER_FAILED, 8000);
+        return;
+      }
+      // More of the roster than before, though still not all of it: show what there is.
+      if (next.rows.length) dispatch({ type: 'EMPLOYEES_LOADED', employees: next.rows as Employee[] });
+      finishRoster(dispatch, next as IncompleteListError<Employee>);
+    },
+  );
+}
 /** Whether this session has shown the "room changes can't be saved yet" hint (see roomReadOnlyHint). */
 let roomReadOnlyHintShown = false;
 
@@ -332,11 +389,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       console.warn('[refresh] could not re-read assignments', err);
     }
   };
-  const showToast = (message: string, ms: number = 3200) => {
-    dispatch({ type: 'SHOW_TOAST', message });
-    if (toastTimer) clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => dispatch({ type: 'SHOW_TOAST', message: null }), ms);
-  };
+  const showToast = (message: string, ms: number = 3200) => postToast(dispatch, message, ms);
   /**
    * One write to the app database (lib/sharedSettings) — the responders or the access grid. The
    * function decides who may write and records who did, so nothing about the user is sent. A
@@ -623,7 +676,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
         // and a department added since would have no colour and no name anywhere.
         const [, employees, departments, scheme] = await Promise.all([
           loadFloor(state.floorId),
-          dataSource.getEmployees().catch(() => null),
+          readRoster(dispatch, { refresh: true }),
           fetchDepartments().catch(() => []),
           loadDepartmentColors().catch(() => ({})),
         ]);
@@ -1233,8 +1286,8 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       /** The form's own resource lookup field name, from its response. */
       resourceField?: string;
     }): Promise<boolean> => {
-      // Without the Booking right no form should be open, and nothing books if one is.
-      if (!state.planViews.book) return false;
+      // Without the right the form was opened under, none should be open, and nothing books if one is.
+      if (!bookingAllowed(state, state.bookForm)) return false;
       const unit =
         unitById(state, form.unitId) ??
         (state.bookForm?.resourceUnit?.id === form.unitId ? state.bookForm.resourceUnit : null) ??
@@ -1706,7 +1759,8 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
         // The demo seed stands in only under the dev server (featureFlags.DEMO_DATA). Deployed, an
         // org list that fails or comes back empty stays empty — never made-up sites or people.
         dataSource.getPortfolio().catch(() => (DEMO_DATA ? MOCK_PORTFOLIO : [])),
-        dataSource.getEmployees().catch(() => (DEMO_DATA ? MOCK_EMPLOYEES : [])),
+        // Never a silent empty roster: what Facilio gave, and a word when it gave less (readRoster).
+        readRoster(dispatch).then((employees) => employees ?? []),
         isFacilioApiConfigured ? fetchMyDesk().catch(() => null) : Promise.resolve(null),
         readUrlFloorId().catch(() => null),
         isFacilioApiConfigured ? fetchCurrentPeopleId().catch(() => null) : Promise.resolve(null),
