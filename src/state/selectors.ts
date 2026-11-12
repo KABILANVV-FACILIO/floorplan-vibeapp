@@ -1,4 +1,4 @@
-import { CLOSED_RIGHTS, DEFAULT_ACCESS, SURFACE_ORDER, isModuleEnabled, isRoomLike, unitOnPlan } from '../lib/types';
+import { CLOSED_RIGHTS, DEFAULT_ACCESS, SURFACE_ORDER, isModuleEnabled, isRoomLike, labelledType, unitOnPlan } from '../lib/types';
 import { ROOM_FONT, subMaxChars, typographyOf } from '../lib/labelLayout';
 import type { LabelTypography } from '../lib/labelLayout';
 import type { LabelTextMeasure } from '../lib/textMeasure';
@@ -283,16 +283,17 @@ export function roomLabelInputs(state: AppState, rooms: Unit[], opts: { measure?
       const c = polygonCentroid(pts);
       // Measured in the page's font where there is one, so a long caps name ("HQ-BKC-4F-…") gets
       // exactly the width it needs and never loses its tail to an estimate.
-      const longest = r.label.split(/\s+/).reduce((a, b) => (b.length > a.length ? b : a), '');
+      const name = unitPlanLabel(state, r);
+      const longest = name.split(/\s+/).reduce((a, b) => (b.length > a.length ? b : a), '');
       return {
         id: r.id,
         pts,
         x: c.x,
         y: c.y,
-        name: r.label,
+        name,
         must: r.id === state.selected,
         subHeight,
-        ...(measure ? { nameW: measure(r.label, ROOM_FONT, 600), wordW: measure(longest, ROOM_FONT, 600) } : {}),
+        ...(measure ? { nameW: measure(name, ROOM_FONT, 600), wordW: measure(longest, ROOM_FONT, 600) } : {}),
       };
     });
 }
@@ -309,19 +310,21 @@ export function myPinText(state: AppState, unit: Unit): string | null {
 }
 
 /**
- * What a marker is called on the plan, screen and paper alike. A parking stall says the stall
- * record field Settings › Parking names — a short "Stall Number" the org added, say, in place of a
- * long record name — and its name when that field is empty, so no stall goes unlabelled.
+ * What a unit is called on the plan, screen and paper alike. A desk, stall or room says the record
+ * field its Label on the plan setting names — a desk's Desk Code, a short "Stall Number" the org
+ * added, a room's Code — in place of a long record name, and its name when that field is empty,
+ * so nothing goes unlabelled. Lockers, delivery areas and markers keep their names.
  */
 export function unitPlanLabel(state: AppState, unit: Unit): string {
-  const field = unit.type === 'parking' ? state.parkingLabel.field : 'name';
+  const kind = labelledType(unit.type);
+  const field = kind ? state.planLabels[kind].field : 'name';
   if (!field || field === 'name') return unit.label;
   return unit.record?.[field]?.trim() || unit.label;
 }
 
-/** Whether the plan names who holds a unit: always, but for parking stalls Settings › Parking can say not. */
+/** Whether the plan names who holds a unit: always, but for desks and stalls their Label on the plan setting can say not. */
 export function showsHolder(state: AppState, unit: Unit): boolean {
-  return unit.type !== 'parking' || state.parkingLabel.showHolder;
+  return unit.type === 'workstation' || unit.type === 'parking' ? state.planLabels[unit.type].showHolder : true;
 }
 
 /**

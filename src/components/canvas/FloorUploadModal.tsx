@@ -6,7 +6,6 @@ import { Button } from '../primitives/Button';
 import { isCadFile } from '../../lib/cadPreview';
 import { analyzeCadFile } from '../../lib/cadAnalyze';
 import type { CadGroup } from '../../lib/cadAnalyze';
-import { renderPdfToDataUrl } from '../../lib/pdfPreview';
 import { isFacilioApiConfigured } from '../../lib/facilioApi';
 import { uploadFloorplanFile } from '../../lib/facilioApiDataSource';
 import { measureImageDataUrl } from '../../lib/geoReference';
@@ -93,6 +92,8 @@ export function FloorUploadModal() {
           console.warn('[FloorUploadModal] Browser CAD render failed; will try the server-rendered image', cadErr);
         }
       } else if (/\.pdf$/i.test(file.name)) {
+        // pdf.js only when a PDF is uploaded (see blobToRenderableDataUrl).
+        const { renderPdfToDataUrl } = await import('../../lib/pdfPreview');
         previewUrl = await renderPdfToDataUrl(file);
       } else if (isPlainImage) {
         previewUrl = await fileToDataUrl(file);

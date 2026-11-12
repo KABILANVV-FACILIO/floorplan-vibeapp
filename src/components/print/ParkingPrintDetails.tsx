@@ -48,7 +48,7 @@ export function ParkingPrintDetails({ labelField, onClose }: { labelField: { nam
           <h4 className={styles.heading}>On the plan</h4>
           <p className={styles.note}>
             Each stall reads its <b>{labelField?.label ?? 'name'}</b>
-            {state.parkingLabel.showHolder ? ', with the assigned person under it' : ', without the assigned person'}. Change this in Settings › Parking › Label on the plan.
+            {state.planLabels.parking.showHolder ? ', with the assigned person under it' : ', without the assigned person'}. Change this in Settings › Parking › Label on the plan.
           </p>
         </section>
 

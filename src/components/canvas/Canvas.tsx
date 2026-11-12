@@ -13,7 +13,7 @@ import { Tooltip } from './Tooltip';
 import { DeleteConfirmModal } from './DeleteConfirmModal';
 import { planShortcutAllowed } from '../../lib/keyboard';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
-import { activeDepartment, isBookable, markerLabelInputs, planMarkers, planRooms, roomLabelInputs, visibleUnits } from '../../state/selectors';
+import { activeDepartment, isBookable, markerLabelInputs, planMarkers, planRooms, roomLabelInputs, unitPlanLabel, visibleUnits } from '../../state/selectors';
 import { CHIP_FOOTPRINT_OF_PITCH, CHIP_PX, chipScreenSize, HALO_TEXT, LABEL_MAX_SCALE, planMarkerLabels, planRoomLabels, ROOM_FONT, ROOM_LINE_PX, scaleTypography, typographyOf } from '../../lib/labelLayout';
 import type { LabelPlacement, RoomLabelPlacement } from '../../lib/labelLayout';
 import { markerModel } from '../../lib/markerModel';
@@ -961,7 +961,7 @@ export function RoomLabel({ unit, placement }: { unit: Unit; placement: RoomLabe
           ...(placement.lines === 2 ? { whiteSpace: 'normal', overflowWrap: 'break-word', display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2, overflow: 'hidden' } : { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }),
         }}
       >
-        {unit.label}
+        {unitPlanLabel(state, unit)}
       </span>
       {busy ? (
         <span style={{ display: 'flex', alignItems: 'center', color: 'var(--ink-600)', font: `500 ${subPx}px/1 var(--font-sans)`, whiteSpace: 'nowrap' }}>

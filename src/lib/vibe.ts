@@ -44,19 +44,11 @@ export const isVibeApp: boolean = (() => {
 export const vibe: Vibe = createVibe(serverURL ? { serverURL } : undefined);
 
 /**
- * The app's Studio Function holding every app-owned record (placement geometry, assignments,
- * bookings, settings, floorplan files). The browser has no direct database access — the vibe DB
- * is a per-app Postgres schema reachable only through a function handler, so this name plus a
- * handler name is the entire data contract. See `functions/floorplanApi/code.ts`.
- */
-export const FLOORPLAN_FN = 'floorplanApi';
-
-/**
- * The Studio Function holding the settings a browser must not write — the first responders and
- * the Roles & access grid — in the app's own tables, each write checked against the caller (see
- * `functions/floorplanResponders/code.ts` and lib/sharedSettings). A function
- * of its own rather than handlers on FLOORPLAN_FN: that one is not deployed, and a call that fails
- * there trips its circuit breaker for everything it serves.
+ * The app's Studio Function: the settings a browser must not write — the first responders and the
+ * Roles & access grid — in the app's own tables, each write checked against the caller (see
+ * `functions/floorplanResponders/code.ts` and lib/sharedSettings); and the connection calls the
+ * browser must not make (the org's roles for the access grid). The browser has no database access
+ * of its own: the vibe DB is reachable only through a function handler.
  */
 export const RESPONDERS_FN = 'floorplanResponders';
 

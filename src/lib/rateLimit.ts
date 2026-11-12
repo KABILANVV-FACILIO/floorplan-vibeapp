@@ -1,5 +1,5 @@
 /**
- * Facilio's rate limit, and what a list read does when it hits it.
+ * Facilio's rate limit: what a list read does when it hits it, and how writes stay under it.
  *
  * Facilio allows a user 100 calls a minute to one request URI (per org, per region), in a fixed
  * 60-second window that starts at the first call. Past that it refuses with HTTP 429, error code 6,
@@ -49,5 +49,152 @@ export class IncompleteListError<T = unknown> extends Error {
   map<U>(fn: (rows: T[]) => U[]): IncompleteListError<U> {
     const resume = this.resume;
     return new IncompleteListError(fn(this.rows), this.rateLimited, this.message, resume ? () => resume().then(fn, (err) => Promise.reject(err instanceof IncompleteListError ? err.map(fn) : err)) : undefined);
+  }
+}
+
+/**
+ * Writes, paced under the limit. A plan save is one call per new, moved or removed desk — a freshly
+ * mapped floor of 150 desks is 150 creates to one address — so every write a save sends goes
+ * through `pacedWrites`: two at a time, and no more than WRITES_PER_WINDOW started in any window,
+ * counted across saves (the window is Facilio's, not one save's). A small save goes out at once;
+ * only a big one waits.
+ */
+export const WRITES_AT_ONCE = 2;
+/** Writes started in any window — under Facilio's 100, leaving room for the reads around them. */
+export const WRITES_PER_WINDOW = 80;
+/**
+ * When recent writes started, oldest first: one log for every save, as Facilio's window is one.
+ * Module-wide, so a test file whose saves send more than WRITES_PER_WINDOW writes would wait a real
+ * minute on the next one — such a test passes its own `starts` (PaceOptions).
+ */
+const writeStarts: number[] = [];
+
+type RateError = Parameters<typeof isRateLimited>[0];
+
+export interface PacedWrite<R> {
+  send: () => Promise<R>;
+  /** The write's answer — or null when it was never sent: refused for rate after every wait. */
+  done: (res: R | null) => void;
+}
+
+export interface PaceOptions {
+  /** Told, as a wait of more than a moment begins, how many writes are still to go. */
+  onWait?: (remaining: number) => void;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+  /** The start log; tests pass their own. */
+  starts?: number[];
+}
+
+/** A wait shorter than this is not worth telling anyone about. */
+const QUIET_WAIT_MS = 5_000;
+
+/**
+ * Sends `writes` in order, paced (above), and answers each through its `done`.
+ *
+ * A write refused for rate anyway — another tab, another app of the same person — stops the
+ * sending: the refused write and the rest wait out the window and carry on, at most
+ * RATE_LIMIT_RETRIES times. Still refused after that, the rest are answered `null`, unsent, for the
+ * caller to keep unsaved and name. Never throws: a failed write is an answer like any other.
+ */
+export async function pacedWrites<R extends { error?: RateError }>(writes: PacedWrite<R>[], opts: PaceOptions = {}): Promise<void> {
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const now = opts.now ?? Date.now;
+  const starts = opts.starts ?? writeStarts;
+  const queue = [...writes];
+  let inFlight = 0;
+  // One wait that every worker honours; a refusal during a wait for room in the window replaces it
+  // with the longer wait for the window itself.
+  let hold: { until: Promise<void>; rate: boolean } | null = null;
+  // Read through a function: the other worker sets it while this one awaits its write.
+  const waitingOnRate = () => hold?.rate === true;
+  let waits = 0;
+  let gaveUp = false;
+  const pause = (ms: number, rate: boolean) => {
+    if (ms >= QUIET_WAIT_MS) opts.onWait?.(queue.length + inFlight);
+    const h = { until: Promise.resolve(), rate };
+    h.until = sleep(ms).then(() => {
+      if (hold === h) hold = null;
+    });
+    hold = h;
+  };
+  const worker = async () => {
+    for (;;) {
+      while (hold) await hold.until;
+      if (gaveUp || !queue.length) return;
+      const t = now();
+      while (starts.length && t - starts[0] >= RATE_LIMIT_WAIT_MS) starts.shift();
+      if (starts.length >= WRITES_PER_WINDOW) {
+        pause(starts[0] + RATE_LIMIT_WAIT_MS - t, false);
+        continue;
+      }
+      const w = queue.shift()!;
+      starts.push(t);
+      inFlight++;
+      const res = await w.send();
+      inFlight--;
+      if (!isRateLimited(res?.error)) {
+        w.done(res);
+        continue;
+      }
+      queue.unshift(w);
+      if (waitingOnRate()) continue; // the other write's refusal already started the wait
+      if (waits === RATE_LIMIT_RETRIES) {
+        gaveUp = true;
+        return;
+      }
+      waits++;
+      pause(rateLimitWait(), true);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(WRITES_AT_ONCE, writes.length) }, worker));
+  for (const w of queue) w.done(null);
+}
+
+/**
+ * Who hears that Facilio refused a read for rate — the app's toast (FloorplanContext). The data
+ * layer has no screen of its own, so it says so here and whoever is listening tells the user.
+ */
+const busyListeners = new Set<() => void>();
+export function onFacilioBusy(listener: () => void): () => void {
+  busyListeners.add(listener);
+  return () => void busyListeners.delete(listener);
+}
+export function sayFacilioBusy(): void {
+  for (const listener of busyListeners) listener();
+}
+
+/**
+ * Whether an answer or a thrown error is a refusal for rate, in any of the shapes it arrives in: a
+ * body (`{ code: 6, message }`), an SDK result (`{ error }`), or a dev-mode axios error carrying the
+ * response.
+ */
+export function refusedForRate(x: unknown): boolean {
+  const o = x as { error?: RateError; response?: { status?: number; data?: RateError } } | null | undefined;
+  if (!o || typeof o !== 'object') return false;
+  return isRateLimited(o as RateError) || isRateLimited(o.error) || o.response?.status === 429 || isRateLimited(o.response?.data);
+}
+
+/**
+ * A read that, refused for rate, waits out the window and asks again — at most RATE_LIMIT_RETRIES
+ * times, saying "busy" each time it waits. Anything else (a permission or validation error, a
+ * missing record) comes back at once, as it came; and so does the last refusal, for the caller's own
+ * failure path. For reads only: a write refused for rate is the pacer's to hold (pacedWrites), and
+ * a list read that keeps its pages (fetchAllPaged) does its own waiting.
+ */
+export async function readPatiently<T>(read: () => Promise<T>, sleep: (ms: number) => Promise<void> = (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))): Promise<T> {
+  for (let waits = 0; ; waits++) {
+    let refused = false;
+    let out: T | undefined;
+    try {
+      out = await read();
+      refused = refusedForRate(out);
+    } catch (err) {
+      if (waits === RATE_LIMIT_RETRIES || !refusedForRate(err)) throw err;
+      refused = true;
+    }
+    if (!refused || waits === RATE_LIMIT_RETRIES) return out as T;
+    sayFacilioBusy();
+    await sleep(rateLimitWait());
   }
 }

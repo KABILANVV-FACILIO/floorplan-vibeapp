@@ -30,7 +30,9 @@ export default defineConfig(({ mode }) => {
     // `npm test` — jsdom so DOM behaviour (the tooltip layer, components, hooks) can be asserted.
     test: {
       environment: 'jsdom',
-      include: ['src/**/*.test.{ts,tsx}'],
+      include: ['src/**/*.test.{ts,tsx}', 'functions/**/*.test.ts'],
+      // The functions' runtime package is not installed here; their tests mock it (see the stub).
+      alias: { '@facilio/studio-functions': new URL('./functions/studioFunctionsStub.ts', import.meta.url).pathname },
     },
     server: {
       port: 9090,

@@ -202,6 +202,13 @@ server.addHandler({
   },
 });
 
+server.addHandler({
+  name: 'list-roles',
+  description: "The org's roles, as facilio-user-management.list-roles answers — for the Roles & access grid. Run here, not from the browser, where connection calls are deprecated.",
+  parameters: {},
+  execute: async () => action('facilio-user-management', 'list-roles', {}),
+});
+
 // Kept for a deployed build that still asks for it.
 server.addHandler({
   name: 'get-responders',

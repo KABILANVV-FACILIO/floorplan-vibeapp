@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
  *
  * The connector goes through the platform rather than the Facilio page, so it answers however the
  * app was opened; the V3 route needs the host bridge, which was exactly what was missing when the
- * grid came up with "could not be loaded". The fixture is ENEC's real answer, trimmed.
+ * grid came up with "could not be loaded". The app's function runs the connector call (`list-roles`
+ * on floorplanResponders), never the browser. The fixture is ENEC's real answer, trimmed.
  */
 
 // What `facilio-user-management.list-roles` returned for ENEC CAFM.
@@ -19,17 +20,17 @@ const ENEC_ROLES = {
 
 async function load({ isVibeApp, apiConfigured, connector, v3 }: { isVibeApp: boolean; apiConfigured: boolean; connector: () => Promise<unknown>; v3: () => Promise<unknown> }) {
   vi.resetModules();
-  const executeAction = vi.fn(connector);
+  const executeFunction = vi.fn(connector);
   const customGet = vi.fn(v3);
   vi.doMock('./pdfPreview', () => ({ renderPdfToDataUrl: vi.fn() }));
   vi.doMock('./cadPreview', () => ({ renderCadToDataUrl: vi.fn() }));
-  vi.doMock('./vibe', () => ({ isVibeApp, vibe: { executeAction }, CMMS_CONNECTION: 'facilio-cmms' }));
+  vi.doMock('./vibe', () => ({ isVibeApp, vibe: { executeFunction }, CMMS_CONNECTION: 'facilio-cmms', RESPONDERS_FN: 'floorplanResponders' }));
   vi.doMock('./facilioApi', async () => {
     const real = await vi.importActual<typeof import('./facilioApi')>('./facilioApi');
     return { ...real, isFacilioApiConfigured: apiConfigured, customGet };
   });
   const { fetchOrgRoles } = await import('./facilioApiDataSource');
-  return { fetchOrgRoles, executeAction, customGet };
+  return { fetchOrgRoles, executeFunction, customGet };
 }
 
 afterEach(() => {
@@ -38,14 +39,14 @@ afterEach(() => {
 
 describe("the org's roles", () => {
   it('come from the connector, which works however the app was opened', async () => {
-    const { fetchOrgRoles, executeAction, customGet } = await load({
+    const { fetchOrgRoles, executeFunction, customGet } = await load({
       isVibeApp: true,
       apiConfigured: false, // no host bridge — the case that left the grid empty
       connector: async () => ENEC_ROLES,
       v3: async () => null,
     });
     const roles = await fetchOrgRoles();
-    expect(executeAction).toHaveBeenCalledWith('facilio-user-management', 'list-roles', {});
+    expect(executeFunction).toHaveBeenCalledWith('floorplanResponders', 'list-roles', {});
     expect(customGet).not.toHaveBeenCalled();
     expect(roles.map((r) => r.name)).toEqual(['CAFM Administrator', 'CAFM Super Administrator', 'ENEC Executive']);
   });

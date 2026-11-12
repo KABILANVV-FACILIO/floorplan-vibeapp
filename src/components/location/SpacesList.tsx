@@ -1,7 +1,7 @@
 import type { DragEvent as ReactDragEvent } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { activateOnKey } from '../../lib/keyboard';
-import { contactName, floorDepartments, moduleEnabled, unitDepartment } from '../../state/selectors';
+import { contactName, floorDepartments, moduleEnabled, unitDepartment, unitPlanLabel } from '../../state/selectors';
 import { departmentDisplayName } from '../../lib/displayNames';
 import { unitSortCompare } from '../../lib/geometry';
 import { unitStatus } from '../../lib/unitStatus';
@@ -88,7 +88,9 @@ export function SpacesList() {
   const filtered = units
     .filter(inDept)
     .filter((u) => state.spaceFilter === 'all' || u.type === state.spaceFilter)
-    .filter((u) => !q || u.label.toLowerCase().includes(q) || (u.room ?? '').toLowerCase().includes(q) || (u.secondary ?? '').toLowerCase().includes(q))
+    // By the label the plan shows too (a Desk Code, a stall number — see unitPlanLabel), so what you
+    // read on the plan is what you can search for.
+    .filter((u) => !q || u.label.toLowerCase().includes(q) || unitPlanLabel(state, u).toLowerCase().includes(q) || (u.room ?? '').toLowerCase().includes(q) || (u.secondary ?? '').toLowerCase().includes(q))
     .sort(unitSortCompare);
 
   return (

@@ -2,14 +2,15 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
-import { DEFAULT_ACCESS, STATE_DEFS, STATE_SWATCHES, SURFACE_ORDER, SURFACES, TOGGLEABLE_MODULES, TYPE_META } from '../../lib/types';
-import type { ModuleKey, OrgRole, ParkingLabel, Surface, SurfaceAccess, UnitType } from '../../lib/types';
+import { DEFAULT_ACCESS, labelledType, STATE_DEFS, STATE_SWATCHES, SURFACE_ORDER, SURFACES, TOGGLEABLE_MODULES, TYPE_META } from '../../lib/types';
+import type { LabelledType, ModuleKey, OrgRole, PlanLabel, Surface, SurfaceAccess, Unit, UnitType } from '../../lib/types';
 import { Modal, ModalFooter, ModalHeader } from '../primitives/Modal';
 import { computePlacement, Select } from '../primitives/Select';
 
 type Placement = ReturnType<typeof computePlacement>;
-import { contactName, moduleEnabled, unitPlanLabel } from '../../state/selectors';
-import { useParkingFields } from '../../hooks/useParkingFields';
+import { markerSubTexts, moduleEnabled, unitPlanLabel } from '../../state/selectors';
+import type { AppState } from '../../state/types';
+import { useRecordFields } from '../../hooks/useRecordFields';
 import { Button } from '../primitives/Button';
 import { moduleColor } from '../../lib/unitStatus';
 import { DEFAULT_LABEL_STYLE, HALO_TEXT, typographyOf } from '../../lib/labelLayout';
@@ -799,106 +800,201 @@ function ModuleTab({ type }: { type: UnitType }) {
 
       {editing && <StateColorsModal type={type} onClose={() => setEditing(false)} />}
 
-      {type === 'workstation' && <DeskLabelStyle />}
+      {/* Ahead of the department list, which runs as long as the org has departments. For desks it
+          is the one Desk labels card: what the label says and the type it is drawn in. */}
+      {labelledType(type) && <PlanLabelSettings kind={labelledType(type)!} />}
       {type === 'workstation' && <DepartmentColors />}
-      {type === 'parking' && <ParkingLabelSettings />}
     </div>
   );
 }
 
+/** The Settings tab each labelled type sits on. */
+const LABEL_TAB: Record<LabelledType, string> = { workstation: 'Desks', parking: 'Parking', room: 'Rooms' };
+
+/** How each labelled type is named in its settings card. */
+const LABEL_COPY: Record<LabelledType, { one: string; many: string; label: string; module: string; example: string }> = {
+  workstation: { one: 'desk', many: 'desks', label: 'Desk label', module: 'Desks', example: 'its Desk Code' },
+  parking: { one: 'parking stall', many: 'stalls', label: 'Stall label', module: 'Parking Stall', example: 'a short stall number' },
+  room: { one: 'room', many: 'rooms', label: 'Room label', module: 'Space', example: 'its Code' },
+};
+
 /**
- * What a parking stall says on the plan, on screen and in print: one of the stall record's text
- * fields (its Name unless another is picked — a short "Stall Number" the org adds, say), and
- * whether the assigned person shows under it.
+ * A unit of `kind` on this floor to show a label on — a held one with the field filled where there
+ * is one — and what the plan draws for it under `planLabel`: the label, then the holder and their
+ * department when the setting shows them. Null on a floor with none.
  */
-function ParkingLabelSettings() {
+function labelSample(state: AppState, kind: LabelledType, planLabel: PlanLabel): { unit: Unit; name: string; holder: string | null; dept: string | null } | null {
+  const ofKind = (u: Unit) => labelledType(u.type) === kind;
+  const unit =
+    state.units.find((u) => ofKind(u) && state.assignments[u.id] && u.record?.[planLabel.field]) ??
+    state.units.find((u) => ofKind(u) && u.record?.[planLabel.field]) ??
+    state.units.find(ofKind);
+  if (!unit) return null;
+  // As the plan's Assignment view draws it — the view that names holders.
+  const drafted: AppState = { ...state, mode: 'assign', planLabels: { ...state.planLabels, [kind]: planLabel } };
+  const sub = kind === 'room' ? { holder: null, dept: null } : markerSubTexts(drafted, unit);
+  return { unit, name: unitPlanLabel(drafted, unit), ...sub };
+}
+
+/** A desk label as the plan draws it, in `style`: outlined, with no box, beside its chip. */
+function DeskLabelSample({ style, name, holder, dept, label }: { style: LabelStyle; name: string; holder: string | null; dept: string | null; label: string }) {
+  const t = typographyOf(style);
+  return (
+    <div className={styles.labelSample} aria-label={label}>
+      <div className={styles.labelSampleChip} />
+      <div style={{ textAlign: 'center', ...HALO_TEXT }}>
+        <div style={{ font: `${t.nameWeight} ${t.nameFont}px/${t.nameLine}px var(--font-sans)`, color: 'var(--ink-900)' }}>{name}</div>
+        {holder && <div style={{ font: `${t.subWeight} ${t.subFont}px/${t.subLine}px var(--font-sans)`, color: 'var(--ink-800)' }}>{holder}</div>}
+        {dept && <div style={{ font: `${t.deptWeight} ${t.deptFont}px/${t.deptLine}px var(--font-sans)`, color: 'var(--ink-600)' }}>{dept}</div>}
+      </div>
+    </div>
+  );
+}
+
+/** What a desk sample reads on a floor with no desks: a made-up desk, holder and department. */
+const DESK_SAMPLE = { name: 'WS-05', holder: 'Amrithya Nair', dept: 'Project Implementation' };
+
+/**
+ * What a desk, parking stall or room says on the plan, on screen and in print: one of its
+ * record's text fields (its Name unless another is picked — a desk's Desk Code, a short "Stall
+ * Number" the org adds, a room's Code), and, for desks and stalls, whether the assigned person
+ * shows under it. For desks the same card is Desk labels: the type the labels are drawn in, with a
+ * sample (Settings does not show the plan), set in the same window.
+ */
+function PlanLabelSettings({ kind }: { kind: LabelledType }) {
   const { state } = useFloorplanData();
   const [editing, setEditing] = useState(false);
-  const fields = useParkingFields(state.units);
-  const label = state.parkingLabel;
+  const fields = useRecordFields(kind, state.units);
+  const label = state.planLabels[kind];
+  const copy = LABEL_COPY[kind];
+  const desks = kind === 'workstation';
   const fieldName = fields.text.find((f) => f.name === label.field)?.label ?? (label.field === 'name' ? 'Name' : label.field);
+  const sample = desks ? (labelSample(state, kind, label) ?? { name: DESK_SAMPLE.name, holder: label.showHolder ? DESK_SAMPLE.holder : null, dept: label.showHolder ? DESK_SAMPLE.dept : null }) : null;
 
   return (
     <div className={styles.card}>
-      <CardHead title="Label on the plan" desc="What each parking stall says on the floor plan, on screen and in print." onConfigure={() => setEditing(true)} />
-      <SummaryRow name="Stall label" desc="A text field on the parking stall record. A stall with that field empty shows its name.">
+      <CardHead
+        title={desks ? 'Desk labels' : 'Label on the plan'}
+        desc={
+          desks
+            ? 'What each desk says on the floor plan, on screen and in print, and the type it is drawn in. Outlined, with no box, so the drawing shows through.'
+            : `What each ${copy.one} says on the floor plan, on screen and in print.`
+        }
+        onConfigure={() => setEditing(true)}
+      />
+      {sample && <DeskLabelSample style={state.labelStyle} name={sample.name} holder={sample.holder} dept={sample.dept} label="How desk labels read now" />}
+      <SummaryRow name={copy.label} desc={`A text field on the ${copy.one} record. A ${copy.one} with that field empty shows its name.`}>
         <span className={[styles.pill, styles.pillOn].join(' ')}>{fieldName}</span>
       </SummaryRow>
-      <SummaryRow name="Assigned person" desc="Their name under the label, and their initials in the stall’s marker.">
-        <span className={[styles.pill, label.showHolder ? styles.pillOn : styles.pillMuted].join(' ')}>{label.showHolder ? 'Shown' : 'Hidden'}</span>
-      </SummaryRow>
+      {kind !== 'room' && (
+        <SummaryRow name="Assigned person" desc={`Their name${desks ? ' and department' : ''} under the label, and their initials in the ${copy.one}’s marker.`}>
+          <span className={[styles.pill, label.showHolder ? styles.pillOn : styles.pillMuted].join(' ')}>{label.showHolder ? 'Shown' : 'Hidden'}</span>
+        </SummaryRow>
+      )}
       <p className={styles.footNote}>
-        To label stalls with something new, such as a short stall number, add a text field to the Parking Stall module in Facilio. It appears here once it exists.
+        To label {copy.many} with something new, add a text field to the {copy.module} module in Facilio. It appears here once it exists.
       </p>
-      {editing && <ParkingLabelModal fields={fields.text} onClose={() => setEditing(false)} />}
+      {editing && <PlanLabelModal kind={kind} fields={fields.text} onClose={() => setEditing(false)} />}
     </div>
   );
 }
 
-function ParkingLabelModal({ fields, onClose }: { fields: { name: string; label: string }[]; onClose: () => void }) {
+function PlanLabelModal({ kind, fields, onClose }: { kind: LabelledType; fields: { name: string; label: string }[]; onClose: () => void }) {
   const { state, actions } = useFloorplanData();
-  const [draft, setDraft] = useState<ParkingLabel>(() => ({ ...state.parkingLabel }));
-  const changed = (draft.field !== state.parkingLabel.field ? 1 : 0) + (draft.showHolder !== state.parkingLabel.showHolder ? 1 : 0);
+  const current = state.planLabels[kind];
+  const copy = LABEL_COPY[kind];
+  const desks = kind === 'workstation';
+  const [draft, setDraft] = useState<PlanLabel>(() => ({ ...current }));
+  // Desks only: the type the labels are drawn in, staged with the rest.
+  const [style, setStyle] = useState<LabelStyle>(state.labelStyle);
+  const styleChanged = desks && JSON.stringify(style) !== JSON.stringify(state.labelStyle);
+  const changed = (draft.field !== current.field ? 1 : 0) + (draft.showHolder !== current.showHolder ? 1 : 0) + (styleChanged ? 1 : 0);
+  const updateStyle = (part: keyof LabelStyle, patch: Partial<LabelStyle['name']>) => setStyle({ ...style, [part]: { ...style[part], ...patch } });
   // A field saved earlier and since removed from the org stays listed, so the choice is visible.
   const options = fields.some((f) => f.name === draft.field) ? fields : [...fields, { name: draft.field, label: `${draft.field} (not found)` }];
-  // A stall on this floor, drawn as the draft would draw it.
-  const sample = state.units.find((u) => u.type === 'parking' && state.assignments[u.id]) ?? state.units.find((u) => u.type === 'parking');
-  const sampleLabel = sample ? unitPlanLabel({ ...state, parkingLabel: draft }, sample) : null;
-  const sampleHolder = sample && draft.showHolder && state.assignments[sample.id] ? contactName(state, state.assignments[sample.id]) : null;
+  // One on this floor, drawn as the draft would draw it — a held one where there is one.
+  const sample = labelSample(state, kind, draft);
 
   return (
     <StagedModal
-      title="Parking — label on the plan"
-      subtitle="What each stall says on the floor plan, on screen and in print."
+      title={desks ? 'Desk labels' : `${LABEL_TAB[kind]} — label on the plan`}
+      subtitle={
+        desks
+          ? 'What each desk says on the plan, and the type it is drawn in. The sample shows the change before you save it.'
+          : `What each ${copy.one} says on the floor plan, on screen and in print.`
+      }
       changed={changed}
       unit="setting"
       onCancel={onClose}
       onSave={() => {
-        actions.setParkingLabel(draft);
+        actions.setPlanLabel(kind, draft);
+        if (styleChanged) actions.setLabelStyle(style);
         onClose();
       }}
     >
       <div className={styles.editRow}>
         <div className={styles.editLabel}>
-          <div className={styles.sumName}>Stall label</div>
-          <div className={styles.sumDesc}>A text field on the parking stall record</div>
+          <div className={styles.sumName}>{copy.label}</div>
+          <div className={styles.sumDesc}>A text field on the {copy.one} record</div>
         </div>
         <Select
           value={draft.field}
           options={options.map((f) => ({ value: f.name, label: f.label }))}
           onChange={(v) => setDraft({ ...draft, field: v })}
           fullWidth
-          aria-label="Stall label"
+          aria-label={copy.label}
         />
       </div>
-      <div className={styles.moduleRow}>
-        <div className={styles.sumText} style={{ flex: 1 }}>
-          <div className={styles.rowName}>Show the assigned person</div>
-          <div className={styles.rowDesc}>Their name under the label, and their initials in the marker. Off, an assigned stall keeps its colour and shows the parking sign.</div>
-        </div>
-        <button
-          className={[styles.switch, draft.showHolder ? styles.switchOn : ''].join(' ')}
-          onClick={() => setDraft({ ...draft, showHolder: !draft.showHolder })}
-          aria-pressed={draft.showHolder}
-          aria-label="Show the assigned person"
-        >
-          <span className={styles.knob} style={{ left: draft.showHolder ? 18 : 2 }} />
-        </button>
-      </div>
-      {sample && (
+      {kind !== 'room' && (
         <div className={styles.moduleRow}>
           <div className={styles.sumText} style={{ flex: 1 }}>
-            <div className={styles.rowName}>On the plan</div>
+            <div className={styles.rowName}>Show the assigned person</div>
             <div className={styles.rowDesc}>
-              {sample.label}
-              {sampleLabel !== sample.label ? ' reads' : ' keeps its name'}
+              Their name under the label, and their initials in the marker. Off, an assigned {copy.one} keeps its colour and shows its usual sign.
             </div>
           </div>
-          <div style={{ textAlign: 'center', ...HALO_TEXT }}>
-            <div style={{ font: '600 13px/1.3 var(--font-sans)', color: 'var(--ink-900)' }}>{sampleLabel}</div>
-            {sampleHolder && <div style={{ font: '400 12px/1.3 var(--font-sans)', color: 'var(--ink-700)' }}>{sampleHolder}</div>}
-          </div>
+          <button
+            className={[styles.switch, draft.showHolder ? styles.switchOn : ''].join(' ')}
+            onClick={() => setDraft({ ...draft, showHolder: !draft.showHolder })}
+            aria-pressed={draft.showHolder}
+            aria-label="Show the assigned person"
+          >
+            <span className={styles.knob} style={{ left: draft.showHolder ? 18 : 2 }} />
+          </button>
         </div>
+      )}
+      {desks ? (
+        <>
+          <LabelTypeRow label={copy.label} sizes={NAME_SIZES} value={style.name} onChange={(patch) => updateStyle('name', patch)} />
+          {draft.showHolder && <LabelTypeRow label="Holder & department" sizes={DETAIL_SIZES} value={style.detail} onChange={(patch) => updateStyle('detail', patch)} />}
+          {/* Settings does not show the plan, so the sample is the only place the choice is visible. */}
+          <DeskLabelSample
+            style={style}
+            label="Sample"
+            {...(sample ?? { name: DESK_SAMPLE.name, holder: draft.showHolder ? DESK_SAMPLE.holder : null, dept: draft.showHolder ? DESK_SAMPLE.dept : null })}
+          />
+          <div className={styles.footNote} style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Button variant="secondary" onClick={() => setStyle(DEFAULT_LABEL_STYLE)}>
+              Reset type to default
+            </Button>
+          </div>
+        </>
+      ) : (
+        sample && (
+          <div className={styles.moduleRow}>
+            <div className={styles.sumText} style={{ flex: 1 }}>
+              <div className={styles.rowName}>On the plan</div>
+              <div className={styles.rowDesc}>
+                {sample.unit.label}
+                {sample.name !== sample.unit.label ? ' reads' : ' keeps its name'}
+              </div>
+            </div>
+            <div style={{ textAlign: 'center', ...HALO_TEXT }}>
+              <div style={{ font: '600 13px/1.3 var(--font-sans)', color: 'var(--ink-900)' }}>{sample.name}</div>
+              {sample.holder && <div style={{ font: '400 12px/1.3 var(--font-sans)', color: 'var(--ink-700)' }}>{sample.holder}</div>}
+            </div>
+          </div>
+        )
       )}
     </StagedModal>
   );
@@ -1086,76 +1182,6 @@ const WEIGHTS = [
   { v: 600, l: 'Semibold' },
   { v: 700, l: 'Bold' },
 ];
-
-/**
- * The type the desk labels are drawn in: the desk's name (the primary line) and the holder and
- * department under it (the details), each a size and a weight. The defaults are what the plan
- * ships with; the choice is saved with the workspace's other settings, so it follows the user to
- * every device. Settings does not show the plan, so a sample shows what the choice looks like.
- */
-function DeskLabelStyle() {
-  const { state } = useFloorplanData();
-  const [editing, setEditing] = useState(false);
-  const t = typographyOf(state.labelStyle);
-
-  return (
-    <div className={styles.card}>
-      <CardHead
-        title="Desk labels"
-        desc="The text beside each desk — its name, then who holds it and their department. Outlined, with no box, so the drawing shows through."
-        onConfigure={() => setEditing(true)}
-      />
-      <div className={styles.labelSample} aria-label="How desk labels read now">
-        <div className={styles.labelSampleChip} />
-        <div style={{ textAlign: 'center', ...HALO_TEXT }}>
-          <div style={{ font: `${t.nameWeight} ${t.nameFont}px/${t.nameLine}px var(--font-sans)`, color: 'var(--ink-900)' }}>WS-05</div>
-          <div style={{ font: `${t.subWeight} ${t.subFont}px/${t.subLine}px var(--font-sans)`, color: 'var(--ink-800)' }}>Amrithya Nair</div>
-          <div style={{ font: `${t.deptWeight} ${t.deptFont}px/${t.deptLine}px var(--font-sans)`, color: 'var(--ink-600)' }}>Project Implementation</div>
-        </div>
-      </div>
-      {editing && <DeskLabelModal onClose={() => setEditing(false)} />}
-    </div>
-  );
-}
-
-function DeskLabelModal({ onClose }: { onClose: () => void }) {
-  const { state, actions } = useFloorplanData();
-  const [draft, setDraft] = useState<LabelStyle>(state.labelStyle);
-  const t = typographyOf(draft);
-  const changed = JSON.stringify(draft) === JSON.stringify(state.labelStyle) ? 0 : 1;
-  const update = (part: keyof LabelStyle, patch: Partial<LabelStyle['name']>) => setDraft({ ...draft, [part]: { ...draft[part], ...patch } });
-
-  return (
-    <StagedModal
-      title="Desk labels"
-      subtitle="Set the type the labels are drawn in. The sample shows the change before you save it."
-      changed={changed}
-      onCancel={onClose}
-      onSave={() => {
-        actions.setLabelStyle(draft);
-        onClose();
-      }}
-    >
-      <LabelTypeRow label="Desk name" sizes={NAME_SIZES} value={draft.name} onChange={(patch) => update('name', patch)} />
-      <LabelTypeRow label="Holder & department" sizes={DETAIL_SIZES} value={draft.detail} onChange={(patch) => update('detail', patch)} />
-      {/* Settings does not show the plan, so the sample is the only place the choice is visible. */}
-      <div className={styles.labelSample} aria-label="Sample">
-        <div className={styles.labelSampleChip} />
-        <div style={{ textAlign: 'center', ...HALO_TEXT }}>
-          <div style={{ font: `${t.nameWeight} ${t.nameFont}px/${t.nameLine}px var(--font-sans)`, color: 'var(--ink-900)' }}>WS-05</div>
-          <div style={{ font: `${t.subWeight} ${t.subFont}px/${t.subLine}px var(--font-sans)`, color: 'var(--ink-800)' }}>Amrithya Nair</div>
-          <div style={{ font: `${t.deptWeight} ${t.deptFont}px/${t.deptLine}px var(--font-sans)`, color: 'var(--ink-600)' }}>Project Implementation</div>
-        </div>
-      </div>
-      <div className={styles.footNote} style={{ display: 'flex', justifyContent: 'flex-end' }}>
-        <Button variant="secondary" onClick={() => setDraft(DEFAULT_LABEL_STYLE)}>
-          Reset to default
-        </Button>
-      </div>
-    </StagedModal>
-  );
-}
-
 
 function LabelTypeRow({ label, sizes, value, onChange }: { label: string; sizes: { v: number; l: string }[]; value: { size: number; weight: number }; onChange: (patch: { size?: number; weight?: number }) => void }) {
   return (

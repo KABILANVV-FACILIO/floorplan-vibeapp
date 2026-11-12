@@ -2,6 +2,7 @@ import { dataSource } from '../lib/dataSource';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
 import { isVibeApp } from '../lib/vibe';
 import { isOrgZoneUnit, roomOutlineChanges, saveFloorplanMarkers, saveFloorplanZones } from '../lib/facilioApiDataSource';
+import type { SaveOptions } from '../lib/facilioApiDataSource';
 import { ROOM_OUTLINE_WRITES } from '../lib/featureFlags';
 import type { Unit } from '../lib/types';
 
@@ -66,8 +67,11 @@ export interface PersistOutcome {
  * `floorplanmarkedzone` or `space`. The rooms whose outline the user changed anyway are handed back
  * in `roomsNotWritten` — never in `toRetry`, which would keep them unsaved and have every
  * later Save report them again — so the toast can say their changes did not reach Facilio.
+ *
+ * The writes are paced under Facilio's rate limit (lib/rateLimit pacedWrites), so a big save can
+ * wait part-way; `opts.onWait` is told when it does, and how many writes are still to go.
  */
-export async function persistUnits(floorId: string, units: Unit[], baseline?: Unit[]): Promise<PersistOutcome> {
+export async function persistUnits(floorId: string, units: Unit[], baseline?: Unit[], opts: SaveOptions = {}): Promise<PersistOutcome> {
   await dataSource.saveUnits(floorId, units);
   if (!isFacilioApiConfigured) {
     // Deployed, but with no host to write through: the browser copy is all that happened, and the
@@ -76,7 +80,7 @@ export async function persistUnits(floorId: string, units: Unit[], baseline?: Un
     if (isVibeApp) throw new NotSavedToOrgError();
     return { roomsNotWritten: [], unitsNotWritten: [], toRetry: [] };
   }
-  const result = await saveFloorplanMarkers(floorId, units);
+  const result = await saveFloorplanMarkers(floorId, units, opts);
   const hasPointUnits = units.some((u) => u.geom.kind === 'point' && u.type !== 'amenity');
   if (hasPointUnits && result.plansSynced === 0 && result.skipped.length) {
     // eslint-disable-next-line no-console
@@ -93,7 +97,7 @@ export async function persistUnits(floorId: string, units: Unit[], baseline?: Un
   // Run when the markers were skipped for want of any to write — a floor can have its rooms' plan
   // georeferenced and nothing else — and reported the same way, so a room that did not reach the
   // org is never called saved.
-  const zones = await saveFloorplanZones(floorId, units, baseline);
+  const zones = await saveFloorplanZones(floorId, units, baseline, opts);
   if (zones.skipped.length) {
     // eslint-disable-next-line no-console
     console.warn(`[facilio-api] Save changes skipped some room outlines — ${zones.skipped.join('; ')}.`);
@@ -162,6 +166,12 @@ export function savedNotice(outcome: Pick<PersistOutcome, 'roomsNotWritten'> & P
  * relabelled or deleted: said BEFORE the work is done, not only in the toast after a Save.
  */
 export const ROOM_READ_ONLY_HINT = "Room changes can't be saved to Facilio yet — they stay on screen until you reload, then the org's rooms come back";
+
+/** The toast while a big save waits on Facilio's rate limit part-way. */
+export const savingMoreNotice = (remaining: number) => `Facilio is busy — saving ${remaining} more in a minute. Keep this open.`;
+
+/** The toast for a floor some of whose spaces could not be read (see takeFloorReadFailure). */
+export const FLOOR_PARTLY_LOADED_NOTICE = "Part of this floor couldn't be loaded — Refresh to try again";
 
 /** The toast for a floor whose room outlines could not all be read (see takeRoomOutlineReadFailure). */
 export const ROOM_OUTLINES_FAILED_NOTICE = 'Room outlines could not be loaded — rooms show as Unplaced; try Refresh';

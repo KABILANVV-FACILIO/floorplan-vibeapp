@@ -76,7 +76,7 @@ describe('persistUnits and room outlines', () => {
     sync.markers = { plansSynced: 0, skipped: ['locker: no georeference'], unitsNotWritten: [], retryIds: [] };
     const baseline = [orgRoom, desk];
     await expect(persistUnits('5150', [orgRoom], baseline)).resolves.toEqual({ roomsNotWritten: [], unitsNotWritten: [], toRetry: [] });
-    expect(saveFloorplanZones).toHaveBeenCalledWith('5150', [orgRoom], baseline);
+    expect(saveFloorplanZones).toHaveBeenCalledWith('5150', [orgRoom], baseline, {});
   });
 
   it('hands back the rooms whose outline write failed, to keep them unsaved', async () => {

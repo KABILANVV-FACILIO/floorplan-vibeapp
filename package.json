@@ -8,8 +8,6 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b",
-    "fn:create": "facilio vibe fn create floorplanApi --code functions/floorplanApi/code.ts --description \"Floorplan Manager app data (units, assignments, bookings, settings, files)\" && facilio vibe fn build floorplanApi",
-    "fn:push": "facilio vibe fn update floorplanApi --code functions/floorplanApi/code.ts && facilio vibe fn build floorplanApi",
     "deploy": "npm run build && facilio vibe deploy",
     "test": "vitest run"
   },

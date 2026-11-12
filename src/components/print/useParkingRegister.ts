@@ -4,7 +4,7 @@ import { contactById, contactName, floorMeta, unitPlanLabel, visibleUnits } from
 import { unitOnPlan } from '../../lib/types';
 import type { Unit } from '../../lib/types';
 import type { RegisterContext } from '../../lib/parkingRegister';
-import { parkingFieldTitle, useParkingFields } from '../../hooks/useParkingFields';
+import { fieldTitle, useRecordFields } from '../../hooks/useRecordFields';
 
 /**
  * What the print sheet counts and draws: the plan's own units with a position, less amenities —
@@ -21,13 +21,17 @@ export function printableUnits(state: AppState): Unit[] {
  * one (the plan's label, the holder, picklist labels, the location), and the field the plan labels
  * stalls with when it is not the name. Shared by the print sheet and its Details window, so the
  * counts the window shows are the rows the pages print.
+ *
+ * The stall's field list (for picklist labels and the label field's name) is read only on a parking
+ * plan: the print sheet is always mounted, and on any other plan there is no register to print.
  */
 export function useParkingRegister(state: AppState): { stalls: Unit[]; ctx: RegisterContext; labelField: { name: string; label: string } | null } {
-  const fields = useParkingFields(state.units);
+  const fields = useRecordFields('parking', state.units, state.planId === 'parking');
+  const { units, planId, enabledModules, planLabels, assignments, employees, portfolio, floorId } = state;
   return useMemo(() => {
     const stalls = printableUnits(state).filter((u) => u.type === 'parking');
-    const field = state.parkingLabel.field;
-    const labelField = field && field !== 'name' ? { name: field, label: parkingFieldTitle(field, fields.text) } : null;
+    const field = state.planLabels.parking.field;
+    const labelField = field && field !== 'name' ? { name: field, label: fieldTitle(field, fields.text) } : null;
     const meta = floorMeta(state, state.floorId);
     const ctx: RegisterContext = {
       planLabel: (u) => unitPlanLabel(state, u),
@@ -43,5 +47,7 @@ export function useParkingRegister(state: AppState): { stalls: Unit[]; ctx: Regi
       options: fields.options,
     };
     return { stalls, ctx, labelField };
-  }, [state, fields]);
+    // Rebuilt only when what it reads changes — every one of these, and nothing else of `state`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [units, planId, enabledModules, planLabels, assignments, employees, portfolio, floorId, fields]);
 }

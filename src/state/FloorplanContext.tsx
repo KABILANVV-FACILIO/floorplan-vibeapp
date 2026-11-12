@@ -4,13 +4,13 @@ import { dataSource, clearLocalData } from '../lib/dataSource';
 import type { CreateSpaceLoc } from '../lib/dataSource';
 import { PORTFOLIO as MOCK_PORTFOLIO, EMPLOYEES as MOCK_EMPLOYEES, seedBookings, seedUnits, seedAssignments } from '../lib/mockData';
 import { floorImageKey, isRoomLike, planForPlacement, resolveMarkerDef, TYPE_META, unitOnPlan } from '../lib/types';
-import type { AmenityIcon, Booking, Employee, FirstResponder, FloorSearchHit, MarkerDef, ModuleKey, OrgRole, ParkingLabel, ParkingPrint, PlanId, ResponderRoleDef, Site, Surface, SurfaceAccess, Unit, UnitType } from '../lib/types';
+import type { AmenityIcon, Booking, Employee, FirstResponder, FloorSearchHit, MarkerDef, LabelledType, ModuleKey, OrgRole, ParkingPrint, PlanId, PlanLabel, ResponderRoleDef, Site, Surface, SurfaceAccess, Unit, UnitType } from '../lib/types';
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
-import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchCurrentPeopleId, fetchCurrentRole, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, fetchOrgBookingsForRange, fetchOrgRoles, cancelRealBooking, fetchOrgTimezone, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, takeRoomOutlineReadFailure, vacateUnitReal } from '../lib/facilioApiDataSource';
+import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchCurrentPeopleId, fetchCurrentRole, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, fetchOrgBookingsForRange, fetchOrgRoles, cancelRealBooking, fetchOrgTimezone, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, takeFloorReadFailure, takeRoomOutlineReadFailure, vacateUnitReal } from '../lib/facilioApiDataSource';
 import { DEMO_DATA, ROOM_OUTLINE_WRITES } from '../lib/featureFlags';
-import { IncompleteListError } from '../lib/rateLimit';
+import { IncompleteListError, onFacilioBusy } from '../lib/rateLimit';
 import { personDisplayName } from '../lib/displayNames';
 import { measureImageDataUrl } from '../lib/geoReference';
 import { listFloorplanFloorIds, loadFloorplanFile, persistFloorplanFile } from '../lib/floorplanFileStore';
@@ -21,7 +21,7 @@ import { loadDepartmentColors, saveDepartmentColor } from '../lib/departmentColo
 import { pathForView, viewFromLocation } from '../lib/routes';
 import { bootFloorCandidates, readUrlFloorId, writeUrlFloorId } from '../lib/urlFloor';
 import { refuseOrgWrite } from '../lib/orgWrites';
-import { NotSavedToOrgError, persistUnits, ROOM_NOTICE_MS, ROOM_OUTLINES_FAILED_NOTICE, ROOM_READ_ONLY_HINT, savedNotice } from './persistUnits';
+import { FLOOR_PARTLY_LOADED_NOTICE, NotSavedToOrgError, persistUnits, ROOM_NOTICE_MS, ROOM_OUTLINES_FAILED_NOTICE, ROOM_READ_ONLY_HINT, savedNotice, savingMoreNotice } from './persistUnits';
 import { buildInitialState, reducer } from './reducer';
 import { useDataState } from './useDataState';
 import type { Action } from './reducer';
@@ -64,6 +64,8 @@ function postToast(dispatch: Dispatch<Action>, message: string, ms: number = 320
 
 export const ROSTER_FAILED = 'Couldn’t load people from Facilio — names may be missing. Refresh to try again.';
 export const ROSTER_BUSY = 'Facilio is busy — some names are missing. Trying again in a minute.';
+/** Any other read Facilio refused for rate, while it waits to ask again (lib/rateLimit readPatiently). */
+export const FACILIO_BUSY = 'Facilio is busy — trying again in a minute.';
 
 /**
  * The org's roster, as much of it as Facilio gives, and never a silent empty one.
@@ -90,6 +92,13 @@ export async function readRoster(dispatch: Dispatch<Action>, { refresh = false }
   }
 }
 
+/**
+ * The roster's background finish while one is waiting out Facilio's window. A second refusal in the
+ * meantime — Refresh pressed during the wait — leaves it to that one, rather than starting another
+ * that would ask for the same pages again a minute later.
+ */
+let rosterFinishing = false;
+
 /** Waits out a refused roster read and finishes it in the background, or says it gave up. */
 function finishRoster(dispatch: Dispatch<Action>, stop: IncompleteListError<Employee>) {
   if (!stop.resume) {
@@ -97,9 +106,15 @@ function finishRoster(dispatch: Dispatch<Action>, stop: IncompleteListError<Empl
     return;
   }
   postToast(dispatch, ROSTER_BUSY, 6000);
+  if (rosterFinishing) return;
+  rosterFinishing = true;
   stop.resume().then(
-    (employees) => dispatch({ type: 'EMPLOYEES_LOADED', employees }),
+    (employees) => {
+      rosterFinishing = false;
+      dispatch({ type: 'EMPLOYEES_LOADED', employees });
+    },
     (next) => {
+      rosterFinishing = false;
       if (!(next instanceof IncompleteListError)) {
         postToast(dispatch, ROSTER_FAILED, 8000);
         return;
@@ -267,11 +282,10 @@ async function toStorableDataUrl(url: string): Promise<string | null> {
 }
 
 /**
- * Floor-plan image load, with the Vibe DB as a read-through cache of the floorplan image (per the
- * product ask): (1) serve the cached copy immediately if we have one, (2) refresh from the
- * connector/@facilio when available, and (3) write that fetch back to the cache so the next load
- * is instant and works offline. The cache write is deployed-only (persistFloorplanFile no-ops in
- * dev), and only real (@facilio/connector) fetches populate it — so it stays equal to the source.
+ * Floor-plan image load, with this browser's copy as a read-through cache of the floorplan image
+ * (lib/floorplanFileStore): (1) serve the cached copy immediately if there is one, (2) refresh from
+ * the org when available, and (3) write that fetch back to the cache so the next load is instant.
+ * Only real org fetches populate it — so it stays equal to the source.
  */
 /**
  * The pages of a big floor that arrive after it is drawn (see getUnits' `onMore`). They can land
@@ -306,11 +320,11 @@ async function loadFloorPlanTypesAndImage(dispatch: Dispatch<Action>, floorId: s
       }
     }
 
-    // 1) Vibe-DB cache first — instant display of the stored image if present.
+    // 1) This browser's copy first — instant display of the stored image if present.
     const cached = await loadFloorplanFile(floorId, resolvedPlanId).catch(() => null);
     if (cached?.dataUrl) dispatch({ type: 'SET_FLOOR_IMAGE', floorId, planId: resolvedPlanId, dataUrl: cached.dataUrl });
 
-    // 2) Refresh from the source (connector/@facilio), and 3) cache the fetch back to the Vibe DB.
+    // 2) Refresh from the org, and 3) keep the fetch as this browser's copy.
     if (isFacilioApiConfigured) {
       const imageUrl = await fetchFloorplanImage(floorId, resolvedPlanId).catch(() => null);
       if (imageUrl) {
@@ -445,9 +459,16 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     showToast(ROOM_READ_ONLY_HINT, ROOM_NOTICE_MS);
     return true;
   };
-  /** After a floor load (or its later pages): say so if some of its room outlines could not be read. */
-  const noteRoomOutlineFailure = (floorId: string) => {
-    if (isFacilioApiConfigured && takeRoomOutlineReadFailure(floorId)) showToast(ROOM_OUTLINES_FAILED_NOTICE, ROOM_NOTICE_MS);
+  /**
+   * After a floor load (or its later pages): say so if some of its spaces, or of its room outlines,
+   * could not be read. Spaces first — missing desks matter more than outlines, and one toast at a time.
+   */
+  const noteFloorReadFailure = (floorId: string) => {
+    if (!isFacilioApiConfigured) return;
+    const spaces = takeFloorReadFailure(floorId);
+    const outlines = takeRoomOutlineReadFailure(floorId);
+    if (spaces) showToast(FLOOR_PARTLY_LOADED_NOTICE, ROOM_NOTICE_MS);
+    else if (outlines) showToast(ROOM_OUTLINES_FAILED_NOTICE, ROOM_NOTICE_MS);
   };
 
   async function loadFloor(floorId: string): Promise<Unit[]> {
@@ -457,12 +478,11 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     // a blank canvas before the skeleton appears. Its finally-block still clears the flag.
     dispatch({ type: 'SET_FLOOR_IMAGE_LOADING', value: true });
 
-    // Fast path (deployed, slug floors = demo/RCU data on the vibe-db tier): every
-    // floorplanApi invocation costs ~1.5-2s regardless of payload, so the four
-    // per-call round-trips (units/assignments/bookings/floorplan file) dominated
-    // the loader time — getFloorData bundles them into ONE. Real numeric org
-    // floors keep the per-call path so the connector tier's spaces still win,
-    // and dev keeps the real backend tier's precedence.
+    // Fast path (no org, a demo floor): getFloorData bundles the four per-call reads
+    // (units/assignments/bookings/floorplan file) into ONE — written for the app-database
+    // tier, since removed, whose every call cost ~1.5-2s; the local tier answers it too.
+    // Real numeric org floors keep the per-call path so the connector tier's spaces still
+    // win, and dev keeps the real backend tier's precedence.
     if (!isFacilioApiConfigured && !/^\d+$/.test(floorId)) {
       try {
         const bundle = await dataSource.getFloorData!(floorId, state.date, state.planId);
@@ -491,7 +511,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     const [units, assignments, bookings] = await Promise.all([
       dataSource.getUnits(floorId, (rest) => {
         more.units(rest);
-        noteRoomOutlineFailure(floorId);
+        noteFloorReadFailure(floorId);
       }),
       dataSource.getAssignments(floorId, more.assignments),
       dataSource.getBookings(floorId, state.date),
@@ -500,7 +520,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     more.release();
     // The floor loads without outlines a zone list failed to give; the user is told, once, rather
     // than left to take a floor of "Unplaced" rooms for rooms never onboarded (see loadPlanZones).
-    noteRoomOutlineFailure(floorId);
+    noteFloorReadFailure(floorId);
     loadFloorPlanTypesAndImage(dispatch, floorId, state.planId);
     return units;
   }
@@ -537,7 +557,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       // What is sent is what is marked saved — see MARK_SAVED.
       const { floorId, units, savedUnits } = state;
       try {
-        const outcome = await persistUnits(floorId, units, savedUnits);
+        const outcome = await persistUnits(floorId, units, savedUnits, { onWait: (n) => showToast(savingMoreNotice(n), ROOM_NOTICE_MS) });
         dispatch({ type: 'MARK_SAVED', floorId, units, baseline: savedUnits, retry: outcome.toRetry });
         if (outcome.roomsNotWritten.length || outcome.unitsNotWritten.length) showSavedNotice(outcome);
       } catch (err) {
@@ -1490,7 +1510,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       });
     },
     setModuleEnabled: (module: ModuleKey, enabled: boolean) => dispatch({ type: 'SET_MODULE_ENABLED', module, enabled }),
-    setParkingLabel: (value: ParkingLabel) => dispatch({ type: 'SET_PARKING_LABEL', value }),
+    setPlanLabel: (kind: LabelledType, value: PlanLabel) => dispatch({ type: 'SET_PLAN_LABEL', kind, value }),
     /** The parking register, for everyone who prints parking (the settings blob). */
     setParkingPrint: (value: ParkingPrint) => dispatch({ type: 'SET_PARKING_PRINT', value }),
     /**
@@ -1578,7 +1598,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       dispatch({ type: 'SET_SAVING', value: true });
       const { floorId, units, savedUnits } = state;
       try {
-        const outcome = await persistUnits(floorId, units, savedUnits);
+        const outcome = await persistUnits(floorId, units, savedUnits, { onWait: (n) => showToast(savingMoreNotice(n), ROOM_NOTICE_MS) });
         dispatch({ type: 'MARK_SAVED', floorId, units, baseline: savedUnits, retry: outcome.toRetry });
         showSavedNotice(outcome);
       } catch (err) {
@@ -1632,6 +1652,9 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
   }, [state.busyUnitId]);
 
 
+  // A read Facilio refused for rate waits a minute before asking again; the user hears why.
+  useEffect(() => onFacilioBusy(() => postToast(dispatch, FACILIO_BUSY, 6000)), []);
+
   // The floor on screen, mirrored to the url as ?floorId= (the host page's url when embedded —
   // see lib/urlFloor). Only once boot has settled which floor to open: before that, floorId is the
   // demo default, and writing it would overwrite the very link boot is about to read.
@@ -1658,8 +1681,8 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
-  // Which floors have a stored floorplan (vibe-db, deployed only) — flags the portfolio tree
-  // so an uploaded floor stops reading "no plan" after a refresh, without fetching any blobs.
+  // Which floors have a stored floorplan in this browser — flags the portfolio tree so an uploaded
+  // floor stops reading "no plan" after a refresh, without reading any images.
   useEffect(() => {
     listFloorplanFloorIds().then((floorIds) => {
       if (floorIds.length) dispatch({ type: 'SET_FLOORS_WITH_PLANS', floorIds });
@@ -1727,7 +1750,7 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
     state.bookingModule,
     state.customMarkers,
     state.enabledModules,
-    state.parkingLabel,
+    state.planLabels,
     state.parkingPrint,
   ]);
 

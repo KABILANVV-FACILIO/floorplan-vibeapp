@@ -40,6 +40,22 @@ describe('a roster refused for rate', () => {
     expect(toasts(dispatch)).toEqual([ROSTER_BUSY, ROSTER_FAILED]);
   });
 
+  it('finishes once when Refresh is refused too while the first finish waits', async () => {
+    let land!: (rows: Employee[]) => void;
+    const first = vi.fn(() => new Promise<Employee[]>((r) => (land = r)));
+    const second = vi.fn(async () => [omar, priya]);
+    ds.getEmployees.mockRejectedValueOnce(new IncompleteListError([omar], true, 'refused', first));
+    ds.getEmployees.mockRejectedValueOnce(new IncompleteListError([omar], true, 'refused again', second));
+    const dispatch = vi.fn();
+    await readRoster(dispatch);
+    await readRoster(dispatch, { refresh: true });
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).not.toHaveBeenCalled();
+    land([omar, priya]);
+    await settle();
+    expect(dispatch).toHaveBeenCalledWith({ type: 'EMPLOYEES_LOADED', employees: [omar, priya] });
+  });
+
   it('keeps the roster on screen on Refresh, rather than a shorter one', async () => {
     ds.getEmployees.mockRejectedValueOnce(new IncompleteListError([omar], true, 'refused', async () => [omar, priya]));
     expect(await readRoster(vi.fn(), { refresh: true })).toBeNull();

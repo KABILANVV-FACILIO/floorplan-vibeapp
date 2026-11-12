@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
-import { DEFAULT_PARKING_LABEL, DEFAULT_PARKING_PRINT } from '../../lib/types';
+import { DEFAULT_PARKING_PRINT, DEFAULT_PLAN_LABELS } from '../../lib/types';
 
 /** The print window's Details is the parking register's — offered on a parking plan only. */
 
@@ -8,7 +8,7 @@ const ctx = vi.hoisted(() => ({ planId: 'parking' as string }));
 
 vi.mock('../../state/FloorplanContext', () => ({
   useFloorplanData: () => ({
-    state: { planId: ctx.planId, floorId: 'f1', portfolio: [], printScope: 'floor', parkingPrint: DEFAULT_PARKING_PRINT, parkingLabel: DEFAULT_PARKING_LABEL },
+    state: { planId: ctx.planId, floorId: 'f1', portfolio: [], printScope: 'floor', parkingPrint: DEFAULT_PARKING_PRINT, planLabels: DEFAULT_PLAN_LABELS },
     actions: { setPrintScope: vi.fn(), setParkingPrint: vi.fn() },
   }),
 }));

@@ -1,25 +1,23 @@
-import type { Access, EnabledModules, FirstResponder, MarkerDef, ParkingLabel, ParkingPrint, ResponderRoleDef } from './types';
+import type { Access, EnabledModules, FirstResponder, MarkerDef, ParkingPrint, PlanLabel, PlanLabels, ResponderRoleDef } from './types';
 import type { AppState } from '../state/types';
 import type { LabelStyle } from './labelLayout';
 import { isVibeApp, vibe } from './vibe';
-import { fetchVibeSettings, storeVibeSettings } from './vibeDbDataSource';
 
 /**
  * The app's persisted settings, stored server-side so a permission change or a recolored module
  * follows the user to every device instead of being stranded in one browser.
  *
- * Three tiers, in order:
+ * Two tiers, in order:
  *
- * 1. the app's DATABASE, via the `floorplanApi` function — one row, the natural home for this;
- * 2. the app's FILE STORE, as a single JSON blob — the database addon cannot be provisioned in
- *    every region (Azure AE answers 500 to `vibe db create`), and the file store is a separate
- *    addon that works there. Uploads are never overwritten, so the newest copy of the settings
- *    file wins and older ones are pruned behind it;
- * 3. localStorage — offline `npm run dev`, and the last resort when both server tiers fail.
+ * 1. the app's FILE STORE, as a single JSON blob. Uploads are never overwritten, so the newest copy
+ *    of the settings file wins and older ones are pruned behind it;
+ * 2. localStorage — offline `npm run dev`, and the last resort when the file store fails.
  *
- * Every tier reports whether it actually wrote. That matters more than it sounds: the DB helpers
- * RESOLVE rather than throw once their circuit breaker trips, so a "success" that wrote nothing
- * used to stop the chain dead and leave the settings saved nowhere at all.
+ * The file store reports whether it actually wrote, so a write that went nowhere falls through to
+ * the browser instead of being taken for a save. (An app-database tier once sat ahead of it, behind
+ * the `floorplanApi` function; that function could never be deployed and was removed. The settings
+ * a browser must not write — the access grid, the first responders — live behind floorplanResponders
+ * instead; see lib/sharedSettings.)
  */
 export interface SettingsConfig {
   /**
@@ -42,8 +40,10 @@ export interface SettingsConfig {
   customMarkers?: MarkerDef[];
   /** Which modules the org runs. A disabled one is hidden app-wide (Settings › Modules). */
   enabledModules?: EnabledModules;
-  /** What a parking stall says on the plan (Settings › Parking › Label on the plan). */
-  parkingLabel?: ParkingLabel;
+  /** What desks, stalls and rooms say on the plan (Settings › Desks / Parking / Rooms › Label on the plan). */
+  planLabels?: Partial<PlanLabels>;
+  /** The parking label alone, as v68–v69 stored it: read when `planLabels` has none; no longer written. */
+  parkingLabel?: PlanLabel;
   /** The parking register printed after a parking plan (print window › Details), for everyone. */
   parkingPrint?: ParkingPrint;
   /** The type the desk labels are drawn in (Settings › Desks › Desk labels). */
@@ -70,7 +70,7 @@ export function settingsFromState(state: AppState): SettingsConfig {
     bookingModule: state.bookingModule,
     customMarkers: state.customMarkers,
     enabledModules: state.enabledModules,
-    parkingLabel: state.parkingLabel,
+    planLabels: state.planLabels,
     parkingPrint: state.parkingPrint,
     labelStyle: state.labelStyle,
     // Not when the app database holds them: one source, never two (see lib/sharedSettings).
@@ -85,12 +85,6 @@ export function serializeSettings(cfg: SettingsConfig): string {
 
 export async function loadSettings(): Promise<SettingsConfig | null> {
   if (isVibeApp) {
-    const fromDb = await fetchVibeSettings<SettingsConfig>().catch(() => null);
-    if (fromDb) {
-      // eslint-disable-next-line no-console
-      console.info('[settings] loaded from the app database');
-      return fromDb;
-    }
     const fromFile = await loadSettingsFile().catch(() => null);
     if (fromFile) {
       // eslint-disable-next-line no-console
@@ -103,11 +97,6 @@ export async function loadSettings(): Promise<SettingsConfig | null> {
 
 export async function saveSettings(cfg: SettingsConfig): Promise<void> {
   if (isVibeApp) {
-    // `storeVibeSettings` resolves false when the function isn't deployed in this region — that is
-    // a no-op, not a save, so the chain has to continue rather than return here.
-    const toDb = await storeVibeSettings(cfg).catch(() => false);
-    if (toDb) return;
-
     if (await saveSettingsFile(cfg).catch(() => false)) return;
     // eslint-disable-next-line no-console
     console.warn('[settings] no server tier accepted the write; keeping a copy in this browser only');

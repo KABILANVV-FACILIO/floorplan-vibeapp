@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { callHostInterface } from './hostInterface';
 import { bridgeApiPath, currentHostKind } from './hostKind';
+import { readPatiently, refusedForRate, sayFacilioBusy } from './rateLimit';
 
 const devMode = import.meta.env.VITE_DEV_MODE === 'true';
 const envBaseURL = import.meta.env.VITE_FACILIO_API_BASE_URL;
@@ -380,12 +381,15 @@ export interface FacilioApiListResult<T = any> extends FacilioApiResult<T[]> {
   list: T[] | null;
 }
 
+/**
+ * A module's list, a page at a time. Not read patiently (lib/rateLimit readPatiently): the paged
+ * reads built on it keep the pages they have and do their own waiting (fetchAllPaged). A refusal
+ * for rate is still said, so whoever asked is not left with a bare failure.
+ */
 async function crudFetchAll(moduleName: string, params: Record<string, unknown> = {}): Promise<FacilioApiListResult> {
-  if (isConnectedApp) {
-    const app = await facilioAppReady();
-    return app.api.fetchAll(moduleName, params);
-  }
-  return devFetchAll(moduleName, params);
+  const res: FacilioApiListResult = isConnectedApp ? await (await facilioAppReady()).api.fetchAll(moduleName, params) : await devFetchAll(moduleName, params);
+  if (refusedForRate(res)) sayFacilioBusy();
+  return res;
 }
 
 /**
@@ -403,7 +407,7 @@ async function crudFetchRecord<T = any>(moduleName: string, params: { id: string
     const env = v3Envelope(await customGet(`v3/modules/${moduleName}/${id}`, rest));
     return env as FacilioApiResult<T>;
   }
-  return devFetchRecord<T>(moduleName, params);
+  return readPatiently(() => devFetchRecord<T>(moduleName, params));
 }
 
 async function crudCreateRecord<T = any>(moduleName: string, params: { data: Record<string, unknown> }): Promise<FacilioApiResult<T>> {
@@ -449,7 +453,7 @@ async function crudFetchAllRelatedList<T = any>(
     const list = (env[opts.relatedModuleName] ?? env.data?.[opts.relatedModuleName] ?? null) as T[] | null;
     return { ...env, error: null, list };
   }
-  return devFetchAllRelatedList<T>(opts, params);
+  return readPatiently(() => devFetchAllRelatedList<T>(opts, params));
 }
 
 async function connectedUploadSingleFile(file: File): Promise<{ fileId: number } | { error: Error }> {
@@ -512,13 +516,19 @@ async function bridgeInvoke(path: string, options: { method: 'GET' | 'POST' | 'P
   return typeof raw === 'string' ? JSON.parse(raw) : raw;
 }
 
-export async function customGet(path: string, params?: Record<string, unknown>, opts?: { devAbsoluteUrl?: string }): Promise<any> {
-  if (isConnectedApp) {
-    const query = params && Object.keys(params).length ? `?${new URLSearchParams(params as Record<string, string>).toString()}` : '';
-    return bridgeInvoke(`${path}${query}`, { method: 'GET' });
-  }
-  const res = await devInstance!.get(opts?.devAbsoluteUrl ?? path, { params });
-  return res.data;
+export async function customGet(path: string, params?: Record<string, unknown>, opts?: { devAbsoluteUrl?: string; once?: boolean }): Promise<any> {
+  // Every GET over the bridge — record reads and related lists included — waits out a refusal for
+  // rate and asks again, saying "busy" meanwhile, rather than failing (lib/rateLimit readPatiently).
+  // `once`: a read with a fallback of its own, which should take it rather than wait.
+  const read = async () => {
+    if (isConnectedApp) {
+      const query = params && Object.keys(params).length ? `?${new URLSearchParams(params as Record<string, string>).toString()}` : '';
+      return bridgeInvoke(`${path}${query}`, { method: 'GET' });
+    }
+    const res = await devInstance!.get(opts?.devAbsoluteUrl ?? path, { params });
+    return res.data;
+  };
+  return opts?.once ? read() : readPatiently(read);
 }
 
 /**

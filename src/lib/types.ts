@@ -38,17 +38,32 @@ export interface PlanViews {
 export const DEFAULT_PLAN_VIEWS: PlanViews = { assign: false, book: false };
 
 /**
- * What a parking stall says on the plan, on screen and on paper (Settings › Parking): the value of
- * one of the stall record's text fields — its Name unless the org picks another, such as a short
- * "Stall Number" field of its own — and whether the assigned person shows under it (and as
- * initials in the chip).
+ * What a desk, a parking stall or a room says on the plan, on screen and on paper (Settings ›
+ * Desks / Parking / Rooms › Label on the plan): the value of one of its record's text fields — its
+ * Name unless the org picks another, such as a desk's Desk Code or a short "Stall Number" of the
+ * org's own — and, for desks and stalls, whether the assigned person shows under it (and as
+ * initials in the chip). A room's label never names a holder.
  */
-export interface ParkingLabel {
-  /** A field name on the parking stall record; 'name' is the record's Name. */
+export interface PlanLabel {
+  /** A field name on the unit's record; 'name' is the record's Name. */
   field: string;
   showHolder: boolean;
 }
-export const DEFAULT_PARKING_LABEL: ParkingLabel = { field: 'name', showHolder: true };
+export const DEFAULT_PLAN_LABEL: PlanLabel = { field: 'name', showHolder: true };
+
+/** The unit types whose plan label is a setting. */
+export type LabelledType = 'workstation' | 'parking' | 'room';
+export const LABELLED_TYPES: LabelledType[] = ['workstation', 'parking', 'room'];
+export type PlanLabels = Record<LabelledType, PlanLabel>;
+export const DEFAULT_PLAN_LABELS: PlanLabels = { workstation: DEFAULT_PLAN_LABEL, parking: DEFAULT_PLAN_LABEL, room: DEFAULT_PLAN_LABEL };
+
+/** Which label setting a unit type follows, or null for one that keeps its name (lockers, deliveries, markers). */
+export function labelledType(type: UnitType): LabelledType | null {
+  return type === 'workstation' || type === 'parking' || type === 'room' ? type : null;
+}
+
+/** The org module a labelled type's records live in — where its fields are listed. */
+export const LABEL_MODULE: Record<LabelledType, string> = { workstation: 'desks', parking: 'parkingstall', room: 'space' };
 
 /**
  * The parking register printed after a parking plan (print window › Details): one row per stall,
@@ -276,9 +291,9 @@ export interface Unit {
    */
   departmentId?: string;
   /**
-   * Parking stalls only — the stall record's own values as text, keyed by the org's field names
-   * (custom text fields included, e.g. a "Stall Number" ENEC adds): what Settings › Parking can
-   * label a stall with, and what the print's parking register lists. Picklists hold the option as
+   * Desks, parking stalls and rooms — the record's own values as text, keyed by the org's field
+   * names (custom text fields included, e.g. a "Stall Number" ENEC adds): what Label on the plan
+   * can label it with, and what the print's parking register lists. Picklists hold the option as
    * the API sent it (a label, or a raw id the register resolves); times hold epoch ms.
    */
   record?: Record<string, string>;
@@ -500,7 +515,7 @@ export type Tab = 'map' | 'bookings' | 'people' | 'settings';
 /**
  * Everything the grid governs: the four tabs, plus the rights within them — the plan's three, and
  * booking from the Bookings calendar. A right is a capability, not a place, so it is kept out of
- * `Tab`. Keyed `<tab>.<right>` (the floorplanApi function already names the plan's so); the UI
+ * `Tab`. Keyed `<tab>.<right>`, as floorplanResponders' SURFACE_IDS name them; the UI
  * shows only their names.
  */
 export type Surface = Tab | Right;

@@ -115,7 +115,7 @@ vi.mock('./facilioApi', () => ({
       return { error: null };
     }),
     deleteRecord: vi.fn(async (module: string, id: number) => {
-      if (org.failWrites.delete) return { error: { code: 429, message: 'slow down' } };
+      if (org.failWrites.delete) return { error: { code: 500, message: 'delete down' } };
       org.remove.push({ module, id });
       return { error: null };
     }),
