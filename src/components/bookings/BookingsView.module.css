@@ -450,6 +450,20 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* A short block (30 minutes is 26px): one line, centred in it, instead of two that overflow. */
+.blockOneLine {
+  display: flex;
+  align-items: center;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.blockOneLine .blockTime {
+  min-width: 0;
+}
+/* Without Bookings › Book the grid selects nothing, so it does not offer to. */
+.dayColReadOnly {
+  cursor: default;
+}
 .selBlock {
   position: absolute;
   left: 3px;

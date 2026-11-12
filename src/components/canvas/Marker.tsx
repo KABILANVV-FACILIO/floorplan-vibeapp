@@ -1,10 +1,12 @@
 import { memo } from 'react';
-import type { CSSProperties, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from 'react';
+import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react';
 import type { Unit, PointGeom } from '../../lib/types';
 import type { MarkerModel } from '../../lib/markerModel';
 import type { LabelPlacement, LabelPos, LabelTypography } from '../../lib/labelLayout';
 import { CARD_GAP, CARD_PAD_X, CARD_PAD_Y, DEFAULT_LABEL_TYPOGRAPHY, HALO_TEXT, cardOffset } from '../../lib/labelLayout';
 import { MARKER_ICONS as ICONS } from './markerIcons';
+import { activateOnKey } from '../../lib/keyboard';
+import { ResponderBadges } from './ResponderBadge';
 import styles from './Marker.module.css';
 
 /**
@@ -13,7 +15,8 @@ import styles from './Marker.module.css';
  * decides. One stable object for every marker, so a change of mode never re-renders them for it.
  */
 export interface MarkerHandlers {
-  onClick(unit: Unit, e: ReactMouseEvent): void;
+  /** A click, or Enter / Space on a marker that has the keyboard focus. */
+  onClick(unit: Unit, e: ReactMouseEvent | ReactKeyboardEvent): void;
   onMouseDown(unit: Unit, e: ReactMouseEvent): void;
   onDragOver(unit: Unit, e: ReactDragEvent): void;
   onDragLeave(unit: Unit): void;
@@ -60,7 +63,7 @@ export const Marker = memo(function Marker({
   /** The type the card is drawn in — the one the labels were laid out for (Settings › Desks). */
   typography?: LabelTypography;
 }) {
-  const { unit, style, title, holder, dept, isMine, isHighlighted, isBusy, draggable } = model;
+  const { unit, style, label, title, holder, dept, isMine, pinText, isHighlighted, isDimmed, isBusy, draggable, responderRoles } = model;
   const geom = previewGeom ?? model.geom;
   const t = typography;
 
@@ -81,14 +84,21 @@ export const Marker = memo(function Marker({
               <path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0z" />
               <circle cx="12" cy="10" r="3" />
             </svg>
-            Your desk
+            {pinText ?? 'Your desk'}
           </div>
           <div className={styles.myDeskTail} />
         </div>
       )}
       <div
         data-tip={title}
+        // A keyboard reaches a desk the way a mouse does: Tab to it, Enter or Space to select it.
+        role={handlers ? 'button' : undefined}
+        tabIndex={handlers ? 0 : undefined}
+        aria-label={title}
+        data-unit-id={unit.id}
+        className={styles.chip}
         onClick={handlers ? (e) => handlers.onClick(unit, e) : undefined}
+        onKeyDown={handlers ? activateOnKey((e) => handlers.onClick(unit, e)) : undefined}
         onMouseDown={handlers && draggable ? (e) => handlers.onMouseDown(unit, e) : undefined}
         onDragOver={handlers ? (e) => handlers.onDragOver(unit, e) : undefined}
         onDragLeave={handlers ? () => handlers.onDragLeave(unit) : undefined}
@@ -112,7 +122,7 @@ export const Marker = memo(function Marker({
           color: style.fg,
           borderRadius: style.radius,
           boxShadow: style.shadow,
-          opacity: style.opacity,
+          opacity: isDimmed ? Math.min(style.opacity ?? 1, 0.22) : style.opacity,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -121,6 +131,9 @@ export const Marker = memo(function Marker({
         }}
       >
         {isHighlighted && <div className={styles.wave} />}
+        {/* Inside the chip, so the badge scales with it. Shown in every mode: an emergency doesn't
+            wait for someone to switch to Assignment view. */}
+        <ResponderBadges roles={responderRoles} chip={style.size} />
         {isBusy && <span className={styles.busy} aria-label="Working" />}
         {!isBusy &&
           (style.img ? (
@@ -163,7 +176,7 @@ export const Marker = memo(function Marker({
               ...HALO_TEXT,
             }}
           >
-            <div style={{ ...LINE, font: `${t.nameWeight} ${t.nameFont}px/${t.nameLine}px var(--font-sans)`, color: 'var(--ink-900)' }}>{unit.label}</div>
+            <div style={{ ...LINE, font: `${t.nameWeight} ${t.nameFont}px/${t.nameLine}px var(--font-sans)`, color: 'var(--ink-900)' }}>{label}</div>
             {labels.sub && holder && <div style={{ ...LINE, font: `${t.subWeight} ${t.subFont}px/${t.subLine}px var(--font-sans)`, color: 'var(--ink-800)' }}>{holder}</div>}
             {labels.dept && dept && (
               <div

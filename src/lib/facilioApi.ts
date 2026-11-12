@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { callHostInterface } from './hostInterface';
 import { bridgeApiPath, currentHostKind } from './hostKind';
+import { readPatiently, refusedForRate, sayFacilioBusy } from './rateLimit';
 
 const devMode = import.meta.env.VITE_DEV_MODE === 'true';
 const envBaseURL = import.meta.env.VITE_FACILIO_API_BASE_URL;
@@ -61,6 +62,20 @@ const absoluteBaseURL = isConnectedApp ? envBaseURL || `${hostParam('origin') ??
 
 /** True in connected-app mode (SDK bridge), or in dev mode with base URL + token set. */
 export const isFacilioApiConfigured = isConnectedApp || (devMode && !!envBaseURL && !!token);
+
+/*
+ * One line, once, saying how this page was opened and what that allows. Whether desk positions
+ * can be saved turns entirely on it — inside Facilio or the mobile app they can, from a page with no
+ * host they cannot — and without this line a "Save did nothing" report could only be guessed at.
+ */
+if (typeof window !== 'undefined') {
+  // eslint-disable-next-line no-console
+  console.info(
+    `[host] connected app: ${isConnectedApp ? 'YES' : 'NO'} ` +
+      `(in a frame: ${isEmbedded}, mobile app: ${isMobileHost}, capp_id: ${hostParam('capp_id') ?? '—'}) — ` +
+      `Facilio API ${isFacilioApiConfigured ? 'ON: desk positions save to Facilio' : 'OFF: desk positions save to this browser only'}`
+  );
+}
 
 if (!isFacilioApiConfigured && devMode) {
   // eslint-disable-next-line no-console
@@ -366,12 +381,15 @@ export interface FacilioApiListResult<T = any> extends FacilioApiResult<T[]> {
   list: T[] | null;
 }
 
+/**
+ * A module's list, a page at a time. Not read patiently (lib/rateLimit readPatiently): the paged
+ * reads built on it keep the pages they have and do their own waiting (fetchAllPaged). A refusal
+ * for rate is still said, so whoever asked is not left with a bare failure.
+ */
 async function crudFetchAll(moduleName: string, params: Record<string, unknown> = {}): Promise<FacilioApiListResult> {
-  if (isConnectedApp) {
-    const app = await facilioAppReady();
-    return app.api.fetchAll(moduleName, params);
-  }
-  return devFetchAll(moduleName, params);
+  const res: FacilioApiListResult = isConnectedApp ? await (await facilioAppReady()).api.fetchAll(moduleName, params) : await devFetchAll(moduleName, params);
+  if (refusedForRate(res)) sayFacilioBusy();
+  return res;
 }
 
 /**
@@ -389,7 +407,7 @@ async function crudFetchRecord<T = any>(moduleName: string, params: { id: string
     const env = v3Envelope(await customGet(`v3/modules/${moduleName}/${id}`, rest));
     return env as FacilioApiResult<T>;
   }
-  return devFetchRecord<T>(moduleName, params);
+  return readPatiently(() => devFetchRecord<T>(moduleName, params));
 }
 
 async function crudCreateRecord<T = any>(moduleName: string, params: { data: Record<string, unknown> }): Promise<FacilioApiResult<T>> {
@@ -435,7 +453,7 @@ async function crudFetchAllRelatedList<T = any>(
     const list = (env[opts.relatedModuleName] ?? env.data?.[opts.relatedModuleName] ?? null) as T[] | null;
     return { ...env, error: null, list };
   }
-  return devFetchAllRelatedList<T>(opts, params);
+  return readPatiently(() => devFetchAllRelatedList<T>(opts, params));
 }
 
 async function connectedUploadSingleFile(file: File): Promise<{ fileId: number } | { error: Error }> {
@@ -498,13 +516,19 @@ async function bridgeInvoke(path: string, options: { method: 'GET' | 'POST' | 'P
   return typeof raw === 'string' ? JSON.parse(raw) : raw;
 }
 
-export async function customGet(path: string, params?: Record<string, unknown>, opts?: { devAbsoluteUrl?: string }): Promise<any> {
-  if (isConnectedApp) {
-    const query = params && Object.keys(params).length ? `?${new URLSearchParams(params as Record<string, string>).toString()}` : '';
-    return bridgeInvoke(`${path}${query}`, { method: 'GET' });
-  }
-  const res = await devInstance!.get(opts?.devAbsoluteUrl ?? path, { params });
-  return res.data;
+export async function customGet(path: string, params?: Record<string, unknown>, opts?: { devAbsoluteUrl?: string; once?: boolean }): Promise<any> {
+  // Every GET over the bridge — record reads and related lists included — waits out a refusal for
+  // rate and asks again, saying "busy" meanwhile, rather than failing (lib/rateLimit readPatiently).
+  // `once`: a read with a fallback of its own, which should take it rather than wait.
+  const read = async () => {
+    if (isConnectedApp) {
+      const query = params && Object.keys(params).length ? `?${new URLSearchParams(params as Record<string, string>).toString()}` : '';
+      return bridgeInvoke(`${path}${query}`, { method: 'GET' });
+    }
+    const res = await devInstance!.get(opts?.devAbsoluteUrl ?? path, { params });
+    return res.data;
+  };
+  return opts?.once ? read() : readPatiently(read);
 }
 
 /**

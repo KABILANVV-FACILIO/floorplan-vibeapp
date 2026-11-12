@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildEmployeeFilters, DEMO_FILTER_FIELDS, mapFilterFields, matchesLocally } from './employeeFilters';
+import { buildEmployeeFilters, DEMO_FILTER_FIELDS, employeeIdField, isLineManager, mapFilterFields, matchesLocally, searchClause, searchFirst } from './employeeFilters';
 import type { FilterFieldDef } from './employeeFilters';
 
 /**
@@ -46,11 +46,11 @@ describe('which fields the panel offers', () => {
     expect(names).toEqual(['department', 'designation', 'hrmsEmployeeId', 'email', 'employeeType']);
   });
 
-  it("uses the org's own operators, minus the special ones it has no editor for", () => {
+  it("uses the type's operators and the field's own, minus the special ones it has no editor for", () => {
     const dept = fields.find((f) => f.name === 'department')!;
     expect(dept.kind).toBe('lookup');
     expect(dept.lookupModule).toBe('department');
-    expect(dept.operators.map((o) => o.operatorId)).toEqual([36, 37, 1]);
+    expect(dept.operators.map((o) => o.operatorId)).toEqual([36, 37, 1, 2]);
     expect(dept.operators.find((o) => o.operatorId === 1)!.valueNeeded).toBe(false);
   });
 
@@ -138,5 +138,134 @@ describe('the demo tier, filtered in the browser', () => {
     expect(matchesLocally(amr, [{ field: 'email', operatorId: 5, values: ['@enec'] }], DEMO_FILTER_FIELDS)).toBe(true);
     expect(matchesLocally(amr, [{ field: 'hrmsEmployeeId', operatorId: 3, values: ['enec-10231'] }], DEMO_FILTER_FIELDS)).toBe(true);
     expect(matchesLocally(amr, [{ field: 'hrmsEmployeeId', operatorId: 3, values: ['ENEC-1'] }], DEMO_FILTER_FIELDS)).toBe(false);
+  });
+});
+
+/**
+ * ENEC CAFM's own employee filter fields, as its metadata answered on 2026-11-08 (field
+ * definitions only). Its fields list carries a field's EXTRA operators and nothing else, so read
+ * alone it dropped Department, Designation and HRMS Employee ID and left Line Manager with only
+ * "Logged In User". Its HRMS field is `hrms_employee_id_employee`; asking for `hrmsEmployeeId`
+ * failed every search with "Field 'hrmsEmployeeId' does not exist".
+ */
+const ENEC_FIELDS = [
+  { name: 'name', displayName: 'Name', dataType: 'STRING', mainField: true },
+  { name: 'address', displayName: 'Address', dataType: 'LOOKUP', isSpecialType: false, lookupModule: { name: 'location' } },
+  { name: 'active', displayName: 'Is Active', dataType: 'BOOLEAN', options: [{ label: 'Yes', value: 'true' }, { label: 'No', value: 'false' }] },
+  { name: 'avatarColor', displayName: 'Avatar Color', dataType: 'STRING' },
+  { name: 'company', displayName: 'Company', dataType: 'STRING' },
+  { name: 'sysCreatedBy', displayName: 'Created By', dataType: 'LOOKUP', isSpecialType: true, lookupModule: { name: 'users' }, operators: [{ operatorId: 35, displayName: 'is', valueNeeded: true }] },
+  { name: 'department', displayName: 'Department', dataType: 'LOOKUP', isSpecialType: false, lookupModule: { name: 'department', displayName: 'Department' } },
+  { name: 'designation', displayName: 'Designation', dataType: 'STRING' },
+  { name: 'desk_employee', displayName: 'Desk', dataType: 'LOOKUP', isSpecialType: false, lookupModule: { name: 'desks' } },
+  { name: 'email', displayName: 'Email', dataType: 'STRING' },
+  { name: 'hrms_employee_id_employee', displayName: 'HRMS Employee ID', dataType: 'STRING' },
+  {
+    name: 'line_manager_employee',
+    displayName: 'Line Manager',
+    dataType: 'LOOKUP',
+    isSpecialType: false,
+    lookupModule: { name: 'people', displayName: 'People' },
+    operators: [{ defaultSelection: true, displayName: 'Logged In User', operatorId: 128, specialOperator: false, valueNeeded: false }],
+  },
+  { name: 'linemanagerhrmsid', displayName: 'Line Manager HRMS Id', dataType: 'STRING' },
+  {
+    name: 'locatedSpace',
+    displayName: 'Located Space',
+    dataType: 'LOOKUP',
+    isSpecialType: false,
+    lookupModule: { name: 'basespace' },
+    operators: [{ displayName: 'within', operatorId: 38, specialOperator: false, valueNeeded: true }],
+  },
+  { name: 'peopleType', displayName: 'People Type', dataType: 'SYSTEM_ENUM', options: [{ label: 'Employee', value: 3 }] },
+  { name: 'site_employee', displayName: 'Site', dataType: 'LOOKUP', isSpecialType: false, lookupModule: { name: 'site' } },
+];
+
+describe("ENEC's employee fields", () => {
+  const fields = mapFilterFields(ENEC_FIELDS);
+  const byName = (n: string) => fields.find((f) => f.name === n);
+
+  it('offers Department with the lookup operators, though the org lists none for it', () => {
+    expect(byName('department')!.operators.map((o) => o.label)).toEqual(['is', "isn't", 'is empty', 'is not empty']);
+  });
+
+  it('offers Line Manager as a pickable lookup, with "Logged In User" added after is / isn\'t', () => {
+    const lm = byName('line_manager_employee')!;
+    expect(isLineManager(lm)).toBe(true);
+    expect(lm.lookupModule).toBe('people');
+    expect(lm.operators.map((o) => o.operatorId)).toEqual([36, 37, 1, 2, 128]);
+    expect(lm.operators.find((o) => o.operatorId === 128)!.valueNeeded).toBe(false);
+    expect(searchFirst(lm)).toBe(true);
+  });
+
+  it('offers the text fields with the text operators, contains first', () => {
+    expect(byName('designation')!.operators.map((o) => o.operatorId)).toEqual([5, 3, 4, 7, 1, 2]);
+    expect(byName('hrms_employee_id_employee')!.kind).toBe('text');
+  });
+
+  it('offers a yes/no field with its own "is"', () => {
+    expect(byName('active')!.operators.map((o) => o.operatorId)).toEqual([15]);
+    expect(byName('active')!.options).toEqual([{ value: 'true', label: 'Yes' }, { value: 'false', label: 'No' }]);
+  });
+
+  it('leaves out lookups that cannot be listed and the field-service and system fields', () => {
+    for (const n of ['address', 'sysCreatedBy', 'locatedSpace', 'avatarColor', 'peopleType', 'name']) expect(byName(n)).toBeUndefined();
+  });
+
+  it('pins Department, Line Manager, Designation, HRMS ID, Site and Desk, then the rest by label', () => {
+    expect(fields.map((f) => f.name)).toEqual([
+      'department',
+      'line_manager_employee',
+      'designation',
+      'hrms_employee_id_employee',
+      'site_employee',
+      'desk_employee',
+      'company',
+      'email',
+      'active',
+      'linemanagerhrmsid',
+    ]);
+  });
+
+  it("finds the HRMS field by its label, not the manager's HRMS field", () => {
+    expect(employeeIdField(fields)).toBe('hrms_employee_id_employee');
+    expect(employeeIdField([])).toBeNull();
+  });
+
+  it("searches on the org's own HRMS field, and never on a name it doesn't have", () => {
+    const f = buildEmployeeFilters('omar', [], fields);
+    expect(f).toEqual({
+      name: {
+        operatorId: 5,
+        value: ['omar'],
+        orFilters: [
+          { field: 'email', operatorId: 5, value: ['omar'] },
+          { field: 'hrms_employee_id_employee', operatorId: 5, value: ['omar'] },
+        ],
+      },
+    });
+    expect(JSON.stringify(f)).not.toContain('hrmsEmployeeId');
+  });
+
+  it('searches name OR email when the HRMS field is unknown', () => {
+    expect(searchClause('omar', null)).toEqual({ name: { operatorId: 5, value: ['omar'], orFilters: [{ field: 'email', operatorId: 5, value: ['omar'] }] } });
+  });
+
+  it('sends department AND line manager by record id, as checked against ENEC (19 people)', () => {
+    // Through the CMMS connector on 2026-11-08: department 10 → 36 people, line manager 28725 → 26,
+    // both → 19. These are the same fields and ids, in the V3 payload the app sends.
+    const f = buildEmployeeFilters(
+      '',
+      [
+        { field: 'department', operatorId: 36, values: ['10'], labels: { '10': 'Facilities' } },
+        { field: 'line_manager_employee', operatorId: 36, values: ['28725'], labels: { '28725': 'A Manager' } },
+      ],
+      fields,
+    );
+    expect(f).toEqual({ department: { operatorId: 36, value: ['10'] }, line_manager_employee: { operatorId: 36, value: ['28725'] } });
+  });
+
+  it('sends "my direct reports" (Line Manager is the logged-in user) without a value', () => {
+    expect(buildEmployeeFilters('', [{ field: 'line_manager_employee', operatorId: 128, values: [] }], fields)).toEqual({ line_manager_employee: { operatorId: 128 } });
   });
 });

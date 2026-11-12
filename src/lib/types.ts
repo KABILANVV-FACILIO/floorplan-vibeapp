@@ -23,6 +23,65 @@ export const DEFAULT_ENABLED_MODULES: EnabledModules = {
   delivery: true,
 };
 
+/**
+ * The plan's two working views, as THIS viewer has them: Assignment and Booking are rights in
+ * Roles & access (Floorplans › Assignment / Booking), and these are their answers for the role
+ * signed in (see selectors.canAssign / canBook). A view the role lacks goes entirely — its switch
+ * and its actions — and with neither the plan is a map: the floor, its markers and a read-only
+ * People list, plus Edit (its own right), My desk, print and refresh.
+ */
+export interface PlanViews {
+  assign: boolean;
+  book: boolean;
+}
+
+export const DEFAULT_PLAN_VIEWS: PlanViews = { assign: false, book: false };
+
+/**
+ * What a desk, a parking stall or a room says on the plan, on screen and on paper (Settings ›
+ * Desks / Parking / Rooms › Label on the plan): the value of one of its record's text fields — its
+ * Name unless the org picks another, such as a desk's Desk Code or a short "Stall Number" of the
+ * org's own — and, for desks and stalls, whether the assigned person shows under it (and as
+ * initials in the chip). A room's label never names a holder.
+ */
+export interface PlanLabel {
+  /** A field name on the unit's record; 'name' is the record's Name. */
+  field: string;
+  showHolder: boolean;
+}
+export const DEFAULT_PLAN_LABEL: PlanLabel = { field: 'name', showHolder: true };
+
+/** The unit types whose plan label is a setting. */
+export type LabelledType = 'workstation' | 'parking' | 'room';
+export const LABELLED_TYPES: LabelledType[] = ['workstation', 'parking', 'room'];
+export type PlanLabels = Record<LabelledType, PlanLabel>;
+export const DEFAULT_PLAN_LABELS: PlanLabels = { workstation: DEFAULT_PLAN_LABEL, parking: DEFAULT_PLAN_LABEL, room: DEFAULT_PLAN_LABEL };
+
+/** Which label setting a unit type follows, or null for one that keeps its name (lockers, deliveries, markers). */
+export function labelledType(type: UnitType): LabelledType | null {
+  return type === 'workstation' || type === 'parking' || type === 'room' ? type : null;
+}
+
+/** The org module a labelled type's records live in — where its fields are listed. */
+export const LABEL_MODULE: Record<LabelledType, string> = { workstation: 'desks', parking: 'parkingstall', room: 'space' };
+
+/**
+ * The parking register printed after a parking plan (print window › Details): one row per stall,
+ * a column per detail. Columns are register column keys (see lib/parkingRegister).
+ */
+export interface ParkingPrint {
+  register: boolean;
+  cols: string[];
+  rows: 'all' | 'assigned' | 'vacant';
+  sort: 'name' | 'status' | 'dept' | 'emp';
+}
+export const DEFAULT_PARKING_PRINT: ParkingPrint = {
+  register: true,
+  cols: ['name', 'id', 'type', 'mode', 'status', 'emp', 'hrms', 'dept', 'since'],
+  rows: 'all',
+  sort: 'name',
+};
+
 /** Whether a unit's module is switched on. Amenity markers are never gated. */
 export function isModuleEnabled(enabled: EnabledModules, type: UnitType): boolean {
   if (type === 'amenity') return true;
@@ -150,7 +209,7 @@ export const ALL_PLAN_TYPES: { id: PlanId; name: string }[] = [
 ];
 export type AppMode = 'assign' | 'book' | 'edit';
 export type EditTool = 'select' | 'room' | 'delivery' | 'workstation' | 'locker' | 'parking' | 'amenity' | 'asset' | 'calibrate';
-export type Role = 'admin' | 'manager' | 'employee';
+
 
 /** Each plan type on a floor can have its own background image — key floorImages by both. */
 export function floorImageKey(floorId: string, planId: PlanId): string {
@@ -231,6 +290,13 @@ export interface Unit {
    * department without identifying it.
    */
   departmentId?: string;
+  /**
+   * Desks, parking stalls and rooms — the record's own values as text, keyed by the org's field
+   * names (custom text fields included, e.g. a "Stall Number" ENEC adds): what Label on the plan
+   * can label it with, and what the print's parking register lists. Picklists hold the option as
+   * the API sent it (a label, or a raw id the register resolves); times hold epoch ms.
+   */
+  record?: Record<string, string>;
 }
 
 export interface Employee {
@@ -244,6 +310,81 @@ export interface Employee {
   email?: string;
   /** The person's department, distinct from the desk's — a desk can be lent to another team. */
   department?: string;
+  /** The person record's own `mobile` (falling back to `phone`) — the number a first responder is listed with. */
+  mobile?: string;
+  designation?: string;
+  grade?: string;
+  /** The org's Line Manager lookup — a people id; ENEC's managers are employee records of the same id. */
+  lineManagerId?: string;
+}
+
+/**
+ * The people a floor turns to in an emergency — the lists on the notice by the lifts. The roles
+ * are the org's own: first aider and floor warden come built in, and Settings › First responders
+ * adds more (fire marshal, AED trained, radiation protection…), each with its own badge.
+ */
+export type ResponderRole = string;
+
+/** The white symbol on a badge. `text` draws the role's own one or two letters instead. */
+export type ResponderIcon = 'cross' | 'warden' | 'flame' | 'aed' | 'shield' | 'megaphone' | 'radiation' | 'drop' | 'star' | 'phone' | 'bell' | 'text';
+
+export const RESPONDER_ICONS: { id: ResponderIcon; name: string }[] = [
+  { id: 'cross', name: 'First aid cross' },
+  { id: 'warden', name: 'Warden W' },
+  { id: 'flame', name: 'Flame' },
+  { id: 'aed', name: 'Defibrillator' },
+  { id: 'shield', name: 'Shield' },
+  { id: 'megaphone', name: 'Megaphone' },
+  { id: 'radiation', name: 'Radiation' },
+  { id: 'drop', name: 'Spill' },
+  { id: 'star', name: 'Star' },
+  { id: 'phone', name: 'Phone' },
+  { id: 'bell', name: 'Alarm bell' },
+  { id: 'text', name: 'Letters' },
+];
+
+/** The badge's outline. A second cue besides colour, so roles stay apart for colour-blind readers. */
+export type ResponderShape = 'square' | 'circle' | 'diamond';
+
+export interface ResponderRoleDef {
+  id: ResponderRole;
+  /** One person: "First aider". */
+  name: string;
+  /** The list heading: "First aiders". */
+  plural: string;
+  color: string;
+  icon: ResponderIcon;
+  /** One or two letters, when `icon` is `text`. */
+  text?: string;
+  shape: ResponderShape;
+  /** First aider and floor warden: always present, and not deletable. */
+  builtIn?: boolean;
+}
+
+export const BUILTIN_RESPONDER_ROLES: ResponderRoleDef[] = [
+  // ISO 7010 "safe condition" green — the first-aid sign's own.
+  { id: 'firstAider', name: 'First aider', plural: 'First aiders', color: '#00843D', icon: 'cross', shape: 'square', builtIn: true },
+  // Fire-safety red, as on a warden's helmet and vest.
+  { id: 'floorWarden', name: 'Floor warden', plural: 'Floor wardens', color: '#C8102E', icon: 'warden', shape: 'circle', builtIn: true },
+];
+
+/** The colours a role can take: dark enough for a white symbol on top, and apart from each other. */
+export const RESPONDER_COLORS = ['#00843D', '#C8102E', '#D9480F', '#B7791F', '#0059D6', '#1F3A93', '#6D28D9', '#B5179E', '#0E7C86', '#4B5563'] as const;
+
+/**
+ * A responder is a LINK to an employee record and nothing more: who they are — name, department,
+ * mobile — is read off the record (state.employees), so the list never drifts from the directory.
+ */
+export interface FirstResponder {
+  /** The person's employee id — the id a desk's `employee` field holds. */
+  employeeId: string;
+  /**
+   * Their name, from the employee record whenever the directory has it (see withRecordNames); the
+   * stored copy only stands in before the directory has loaded.
+   */
+  name: string;
+  /** One person can be both, as on most notices. Never empty. */
+  roles: ResponderRole[];
 }
 
 export interface Booking {
@@ -360,26 +501,91 @@ export const TYPE_META: Record<UnitType, { name: string; prefix: string }> = {
   amenity: { name: 'Amenity', prefix: 'AM' },
 };
 
-export const ROLES: { id: Role; name: string }[] = [
-  { id: 'admin', name: 'Admin' },
-  { id: 'manager', name: 'Manager' },
-  { id: 'employee', name: 'Employee' },
+/**
+ * ACCESS — which of the org's roles reach which TAB, and what each may do on the plan.
+ *
+ * A tab is somewhere to land. The plan's three rights — assign, book, edit — sit under Floorplans
+ * as sub-permissions: they are never somewhere the app sends anyone, only what the plan offers
+ * once someone is on it. The org's own stateflow still decides which buttons a record shows; these
+ * decide whether the plan offers that kind of work to this role at all.
+ */
+/** A tab someone can navigate to. The bottom nav, the view clamp and the last-tab rule use only these. */
+export type Tab = 'map' | 'bookings' | 'people' | 'settings';
+
+/**
+ * Everything the grid governs: the four tabs, plus the rights within them — the plan's three, and
+ * booking from the Bookings calendar. A right is a capability, not a place, so it is kept out of
+ * `Tab`. Keyed `<tab>.<right>`, as floorplanResponders' SURFACE_IDS name them; the UI
+ * shows only their names.
+ */
+export type Surface = Tab | Right;
+export type Right = 'map.assign' | 'map.book' | 'map.edit' | 'bookings.book';
+
+/** The rights closed until granted: a viewer whose role is unknown never holds them (see canSee). */
+export const CLOSED_RIGHTS: ReadonlySet<Surface> = new Set<Surface>(['map.assign', 'map.book', 'bookings.book']);
+
+/** The grid's rows, in order. A right names its tab as `parent` and is drawn under it. */
+export const SURFACES: { id: Surface; name: string; desc: string; parent?: Tab }[] = [
+  { id: 'map', name: 'Floorplans', desc: 'The plan itself, and everything on it' },
+  { id: 'map.assign', parent: 'map', name: 'Assignment', desc: 'Assign desks, lockers and parking stalls to people, and vacate them. Without it the People list is read-only' },
+  { id: 'map.book', parent: 'map', name: 'Booking', desc: 'Book desks, rooms and stalls from the plan' },
+  { id: 'map.edit', parent: 'map', name: 'Edit', desc: 'Upload plans, auto-map and place units. Web only — the mobile app has no edit mode' },
+  { id: 'bookings', name: 'Bookings', desc: 'The org-wide booking calendar' },
+  { id: 'bookings.book', parent: 'bookings', name: 'Book', desc: 'Book a desk or room by selecting a time slot in the calendar. Without it the calendar is for looking' },
+  { id: 'people', name: 'People', desc: 'The employee directory' },
+  { id: 'settings', name: 'Settings', desc: 'This screen and every other configuration' },
 ];
 
-export type PermsAction = 'edit' | 'assign' | 'book';
-export type Perms = Record<PermsAction, Role[]>;
+/**
+ * Who reaches one surface. `all` is a state rather than a list of every role id: an org has dozens
+ * of roles and adds more, and a tab open to everyone must stay open to a role created next month.
+ * Held as a list, every new role would silently arrive denied.
+ */
+export interface SurfaceAccess {
+  all: boolean;
+  /** Role record ids, as strings. Ids, never names — a role can be renamed. */
+  roles: string[];
+}
 
-export const DEFAULT_PERMS: Perms = {
-  edit: ['admin'],
-  assign: ['admin', 'manager'],
-  book: ['admin', 'manager', 'employee'],
+/** One of the org's roles, as the picker lists them. */
+export interface OrgRole {
+  id: string;
+  name: string;
+  /**
+   * An admin role in the org's own terms — Facilio flags these on the role record (`isSuperAdmin`,
+   * `isPrevileged`) rather than by name. Such a role always keeps Settings.
+   */
+  isAdmin?: boolean;
+}
+
+export type Access = Partial<Record<Surface, SurfaceAccess>>;
+
+/**
+ * Everything open. A surface absent from the stored blob falls back to its entry here, so an org
+ * that never opens the grid behaves exactly as it did before this existed.
+ *
+ * Settings included: the roles that may configure the app are the org's own admin roles, whose
+ * record ids this app does not know until someone picks them. Defaulting it closed would lock
+ * every org out of its own settings on upgrade.
+ */
+export const DEFAULT_ACCESS: Record<Surface, SurfaceAccess> = {
+  map: { all: true, roles: [] },
+  // Closed until granted: ENEC asked for assigning and booking to be taken away and given back
+  // role by role. With both closed the plan is a map — the floor, its markers, the People list.
+  'map.assign': { all: false, roles: [] },
+  'map.book': { all: false, roles: [] },
+  // Booking from the calendar, closed until granted like booking from the plan.
+  'bookings.book': { all: false, roles: [] },
+  // Open, as editing was before this grid existed: restricting it is a decision an admin makes,
+  // not one an upgrade should make for them by quietly taking the Edit button away.
+  'map.edit': { all: true, roles: [] },
+  bookings: { all: true, roles: [] },
+  people: { all: true, roles: [] },
+  settings: { all: true, roles: [] },
 };
 
-export const ACTIONS: { id: PermsAction; name: string; desc: string }[] = [
-  { id: 'edit', name: 'Edit floorplan', desc: 'Draw rooms, place units, calibrate scale' },
-  { id: 'assign', name: 'Assign desks & lockers', desc: 'Give a permanent desk or locker to a person' },
-  { id: 'book', name: 'Book spaces', desc: 'Reserve hot desks, rooms, parking' },
-];
+/** The order a hidden tab falls back through — the plan first, settings last. Tabs only. */
+export const SURFACE_ORDER: Tab[] = ['map', 'bookings', 'people', 'settings'];
 
 export interface StateDef {
   key: string;

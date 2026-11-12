@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
+import { canSee } from '../../state/selectors';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { BottomNav } from './BottomNav';
 import { MapStage } from './MapStage';
@@ -44,7 +45,7 @@ export function AppShell() {
       <div className={[styles.root, 'fp-screen'].join(' ')}>
       {state.activeView === 'settings' ? (
         <SettingsScreen />
-      ) : state.activeView === 'bookings' ? (
+      ) : state.activeView === 'bookings' && canSee(state, 'bookings') ? (
         <BookingsView />
       ) : state.activeView === 'people' ? (
         <PeopleView />

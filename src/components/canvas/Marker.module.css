@@ -1,3 +1,12 @@
+/* The chip itself. Focusable (Tab), so a keyboard user sees where they are on the plan. */
+.chip:focus {
+  outline: none;
+}
+.chip:focus-visible {
+  outline: 2px solid var(--blue-500, #2563eb);
+  outline-offset: 3px;
+}
+
 .wave {
   position: absolute;
   inset: 0;

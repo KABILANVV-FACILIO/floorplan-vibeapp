@@ -149,3 +149,12 @@
   font: 400 12px/1.4 var(--font-sans);
   color: var(--ink-500);
 }
+
+/* Rows are reachable with Tab; show where the keyboard is. */
+.row:focus {
+  outline: none;
+}
+.row:focus-visible {
+  outline: 2px solid var(--blue-500);
+  outline-offset: -2px;
+}

@@ -232,3 +232,97 @@
   color: var(--ink-600);
   white-space: nowrap;
 }
+
+/* ───────────────────── Parking register (parking plans only) ─────────────────────
+ * A table that fills the page's width: fixed layout so the column widths are the register's own
+ * (lib/parkingRegister), one line per cell — a value too long for its column ends in "…" rather
+ * than doubling the row and pushing stalls off the page.
+ */
+.regFilters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: none;
+  font: 400 11.5px/1 var(--font-sans);
+  color: var(--ink-600);
+}
+.regFilters span {
+  padding: 4px 9px;
+  border: 1px solid var(--ink-200);
+  border-radius: 999px;
+}
+.reg {
+  width: 100%;
+  flex: none;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-900);
+}
+.reg th,
+.reg td {
+  padding: 0 7px;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--ink-100);
+}
+.regGroups th {
+  height: 18px;
+  border-bottom: none;
+  font: 600 9px/1 var(--font-sans);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-500);
+}
+.regGroups th + th {
+  border-left: 6px solid #fff;
+}
+.regGroups th span {
+  display: block;
+  padding-bottom: 4px;
+  border-bottom: 1.5px solid var(--ink-200);
+}
+.regCols th {
+  height: 26px;
+  font-weight: 600;
+  color: var(--ink-700);
+  border-bottom: 1.5px solid var(--ink-700);
+}
+.reg tbody tr:nth-child(even) td {
+  background: #f7f9fc;
+}
+.regKey {
+  font-weight: 600;
+}
+/* The register's footer sits at the foot of the page, however few rows its last page has. */
+.regFoot {
+  margin-top: auto;
+}
+.reg td {
+  line-height: 1.2;
+}
+.regEmpty {
+  color: var(--ink-400);
+}
+.regStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-600);
+}
+.regStatus::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.regOccupied {
+  color: var(--blue-600);
+}
+.regVacant {
+  color: var(--success-700);
+}

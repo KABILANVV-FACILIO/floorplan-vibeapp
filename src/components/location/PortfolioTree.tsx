@@ -1,4 +1,5 @@
 import { useFloorplanData } from '../../state/FloorplanContext';
+import { activateOnKey } from '../../lib/keyboard';
 import type { FloorSearchHit } from '../../lib/types';
 import styles from './PortfolioTree.module.css';
 import search from './SpacesList.module.css';
@@ -119,7 +120,19 @@ export function PortfolioTree() {
             <div className={styles.row} style={{ color: 'var(--ink-500)' }}>No floors match “{query.trim()}”.</div>
           )}
           {state.portfolioSearchResults.map((hit) => (
-            <div key={hit.floorId} className={[styles.row, state.floorId === hit.floorId ? styles.rowActive : ''].join(' ')} style={{ paddingLeft: 8 }} onClick={() => void openHit(hit)}>
+            <div
+              key={hit.floorId}
+              className={[styles.row, state.floorId === hit.floorId ? styles.rowActive : ''].join(' ')}
+              style={{ paddingLeft: 8 }}
+              role="button"
+              tabIndex={0}
+              aria-current={state.floorId === hit.floorId ? 'true' : undefined}
+              onClick={() => void openHit(hit)}
+              onKeyDown={activateOnKey(() => void openHit(hit))}
+              // The whole path: two floors can share a name, and the site and building line is the
+              // first thing cut off in a narrow panel.
+              data-tip={[hit.siteName, hit.buildingName, hit.floorName].filter(Boolean).join(' › ')}
+            >
               <FloorGlyph />
               <span className={styles.name}>
                 {hit.floorName}
@@ -133,7 +146,20 @@ export function PortfolioTree() {
       ) : (
         <div className={styles.list}>
           {items.map((n) => (
-            <div key={n.id} className={[styles.row, n.active ? styles.rowActive : ''].join(' ')} style={{ paddingLeft: n.pad }} onClick={n.onClick}>
+            <div
+              key={n.id}
+              className={[styles.row, n.active ? styles.rowActive : ''].join(' ')}
+              style={{ paddingLeft: n.pad }}
+              // Tab to a row, Enter or Space to open it — a site or building expands, a floor loads.
+              role="button"
+              tabIndex={0}
+              aria-expanded={n.hasChildren ? n.expanded : undefined}
+              aria-current={n.active ? 'true' : undefined}
+              onClick={n.onClick}
+              onKeyDown={activateOnKey(n.onClick)}
+              data-tip={n.name}
+              data-tip-overflow=""
+            >
               {n.hasChildren && (
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={styles.chevron} style={{ transform: `rotate(${n.expanded ? 90 : 0}deg)` }}>
                   <path d="M9 18l6-6-6-6" />
@@ -152,7 +178,7 @@ export function PortfolioTree() {
                 </svg>
               )}
               {n.kind === 'floor' && <FloorGlyph />}
-              <span className={styles.name}>{n.name}</span>
+              <span className={styles.name} data-tip-measure="">{n.name}</span>
               {n.badge && <span className={styles.badge}>{n.badge}</span>}
               {n.drillIn && (
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--ink-400)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

@@ -1,19 +1,35 @@
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { moduleColor } from '../../lib/unitStatus';
 import { AMENITY_META, isRoomLike, TYPE_META } from '../../lib/types';
-import { enabledTypes } from '../../state/selectors';
+import { activeDepartment, enabledTypes } from '../../state/selectors';
 import { departmentColor, departmentsIn } from '../../lib/departmentColors';
 import { departmentDisplayName } from '../../lib/displayNames';
-import type { AmenityIcon } from '../../lib/types';
+import type { AmenityIcon, ResponderRoleDef } from '../../lib/types';
 import type { AppState } from '../../state/types';
+import { respondersOnFloor, rolesOnFloor } from '../../lib/firstResponders';
+import { ResponderGlyph } from './ResponderBadge';
+import { FloorResponders } from './FloorResponders';
+
+/** One key entry: a colour swatch, or — for a first responder — the badge the plan draws. */
+export interface LegendItem {
+  label: string;
+  color: string;
+  glyph?: ResponderRoleDef;
+}
+
+/** The swatch beside a legend entry: the badge itself for a responder, a colour square otherwise. */
+export function LegendSwatch({ item, size = 8 }: { item: LegendItem; size?: number }) {
+  if (item.glyph) return <ResponderGlyph role={item.glyph} size={size + 4} />;
+  return <span style={{ width: size, height: size, borderRadius: 2, background: item.color, flexShrink: 0 }} />;
+}
 
 /**
  * What the marker colours on the plan MEAN right now — shared with the print sheet, so the key on
  * paper describes the markers on paper. A printed "Occupied / Available" beside markers drawn in
  * Free/Assigned, department or booking colours would be a key to a different drawing.
  */
-export function legendItems(state: AppState): { label: string; color: string }[] {
-  let items: { label: string; color: string }[];
+export function legendItems(state: AppState): LegendItem[] {
+  let items: LegendItem[];
   if (state.mode === 'edit') {
     // Derived from the enabled modules rather than a fixed list, so the legend never advertises
     // a module the plan can't show.
@@ -53,15 +69,54 @@ export function legendItems(state: AppState): { label: string; color: string }[]
     items.push({ label: AMENITY_META[icon].name, color: AMENITY_META[icon].color });
   }
 
+  // The responder badges, in every mode, but only for a role someone on this floor holds — a key
+  // to a badge the plan doesn't draw would send people looking for it.
+  for (const role of rolesOnFloor(respondersOnFloor(state), state.responderRoles)) {
+    items.push({ label: role.name, color: role.color, glyph: role });
+  }
+
   return items;
 }
 
 export function Legend() {
-  const { state } = useFloorplanData();
+  const { state, actions } = useFloorplanData();
   const items = legendItems(state);
+  // The department filter dims the rest of the plan; this says why, and undoes it in one click.
+  const department = activeDepartment(state);
 
   return (
-    <div style={{ position: 'absolute', left: 12, bottom: 12, display: 'flex', gap: 6, flexWrap: 'wrap', maxWidth: '70%' }}>
+    <div style={{ position: 'absolute', left: 12, bottom: 12, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', maxWidth: '70%' }}>
+      {department && (
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            height: 24,
+            padding: '0 4px 0 10px',
+            background: 'var(--blue-025)',
+            border: '1px solid var(--blue-100)',
+            borderRadius: 999,
+            font: '500 11px/1 var(--font-sans)',
+            color: 'var(--blue-600)',
+            boxShadow: 'var(--shadow-xs)',
+          }}
+        >
+          Department: {departmentDisplayName(department) || department}
+          <button
+            type="button"
+            aria-label="Show all departments"
+            data-tip="Show all departments"
+            onClick={() => actions.setSpaceDepartment(null)}
+            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18, border: 'none', borderRadius: 999, background: 'transparent', color: 'inherit', cursor: 'pointer', padding: 0 }}
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden>
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </span>
+      )}
+      <FloorResponders />
       {items.map((it) => (
         <span
           key={it.label}
@@ -79,7 +134,7 @@ export function Legend() {
             boxShadow: 'var(--shadow-xs)',
           }}
         >
-          <span style={{ width: 8, height: 8, borderRadius: 2, background: it.color }} />
+          <LegendSwatch item={it} />
           {it.label}
         </span>
       ))}

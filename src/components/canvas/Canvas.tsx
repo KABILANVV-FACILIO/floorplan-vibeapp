@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from 'react';
+import type { DragEvent as ReactDragEvent, FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { clamp, polyAreaM2, polygonCentroid, toNorm, unitCenter } from '../../lib/geometry';
 import { IMG_H, IMG_W } from '../../lib/mockData';
@@ -10,8 +10,10 @@ import { DraftOverlay } from './DraftOverlay';
 import { Legend } from './Legend';
 import { ZoomControls } from './ZoomControls';
 import { Tooltip } from './Tooltip';
+import { DeleteConfirmModal } from './DeleteConfirmModal';
+import { planShortcutAllowed } from '../../lib/keyboard';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
-import { isBookable, markerLabelInputs, planMarkers, planRooms, roomLabelInputs, visibleUnits } from '../../state/selectors';
+import { activeDepartment, isBookable, markerLabelInputs, planMarkers, planRooms, roomLabelInputs, unitPlanLabel, visibleUnits } from '../../state/selectors';
 import { CHIP_FOOTPRINT_OF_PITCH, CHIP_PX, chipScreenSize, HALO_TEXT, LABEL_MAX_SCALE, planMarkerLabels, planRoomLabels, ROOM_FONT, ROOM_LINE_PX, scaleTypography, typographyOf } from '../../lib/labelLayout';
 import type { LabelPlacement, RoomLabelPlacement } from '../../lib/labelLayout';
 import { markerModel } from '../../lib/markerModel';
@@ -83,6 +85,8 @@ export function Canvas() {
   const [dragPreview, setDragPreview] = useState<{ id: string; x: number; y: number } | null>(null);
   const [editPreview, setEditPreview] = useState<EditPreview>(null);
   const [marquee, setMarquee] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
+  /** Units the Delete key asked to remove, waiting on the confirm (see DeleteConfirmModal). */
+  const [pendingDelete, setPendingDelete] = useState<string[] | null>(null);
   // Write-through mirrors of the gesture-preview state, updated in the SAME tick as the
   // mousemove (not on render): the mouseup handlers read these and dispatch to the store
   // AFTER clearing the local preview. Dispatching from inside a setState updater is a
@@ -187,15 +191,20 @@ export function Canvas() {
           actions.setTool('select');
         }
       } else if (e.key === 'Enter') {
+        // Enter on a button (a dialog's Delete, say) is that button's, not "close the outline".
+        if (!planShortcutAllowed(e.target, wrapRef.current)) return;
         if (state.mode === 'edit' && isZoneTool(state.tool) && state.draft.length >= 3) actions.closeDraft();
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (state.mode !== 'edit') return;
-        if (multiSel.size > 0) {
-          actions.deleteUnits([...multiSel]);
-        } else if (state.selected) {
-          actions.deleteUnit(state.selected);
-        }
+        // Only a key aimed at the plan: not a held-down key's repeats, and not one that landed on a
+        // button, inside a dialog, or anywhere else the focus happened to be. And never straight
+        // away — the confirm comes first (see DeleteConfirmModal).
+        if (state.mode !== 'edit' || e.repeat || !planShortcutAllowed(e.target, wrapRef.current)) return;
+        const ids = multiSel.size > 0 ? [...multiSel] : state.selected ? [state.selected] : [];
+        if (ids.length === 0) return;
+        e.preventDefault();
+        setPendingDelete(ids);
       } else if ((e.key === 'v' || e.key === 'V') && state.mode === 'edit') {
+        if (!planShortcutAllowed(e.target, wrapRef.current)) return;
         actions.setTool('select');
       }
     }
@@ -555,7 +564,9 @@ export function Canvas() {
   const markers = useMemo(() => planMarkers(data).map((u) => ({ ...u, geom: previewedGeom(u) })), [data, editPreview]);
   // What each marker shows (chip colours, holder, title) — once per data change, not per marker
   // per render (see lib/markerModel).
-  const models = useMemo(() => new Map(markers.map((m) => [m.id, markerModel(data, m)])), [data, markers]);
+  // The Spaces panel's department filter: the other departments' desks go faint and lose their cards.
+  const department = useMemo(() => activeDepartment(data), [data]);
+  const models = useMemo(() => new Map(markers.map((m) => [m.id, markerModel(data, m, { department })])), [data, markers, department]);
   // The chip's footprint on the plan, in plan px: a share of the median distance between the
   // floor's desks (lockers and stalls count, amenities do not). Null with fewer than two.
   const chipFootprint = useMemo(() => {
@@ -600,7 +611,7 @@ export function Canvas() {
   const labelPlan = useStablePlacements(
     useMemo(
       () =>
-        planMarkerLabels(markerLabelInputs(data, markers, { measure: sharedLabelTextMeasurer(), chipSize, typography }), {
+        planMarkerLabels(markerLabelInputs(data, markers, { department, measure: sharedLabelTextMeasurer(), chipSize, typography }), {
           planW: IMG_W,
           planH: IMG_H,
           zoom: state.view.z,
@@ -608,7 +619,7 @@ export function Canvas() {
           typography,
           reserved: roomLabelBoxes,
         }),
-      [data, markers, state.view.z, chipSize, typography, roomLabelBoxes],
+      [data, markers, department, state.view.z, chipSize, typography, roomLabelBoxes],
     ),
   );
   prevPlanRef.current = labelPlan;
@@ -683,6 +694,40 @@ export function Canvas() {
     [],
   );
 
+  /**
+   * A marker reached with Tab. The plan clips its content, and the browser scrolls a clipping box to
+   * bring a focused child into view — which would slide the drawing out from under every pointer
+   * calculation. So the box never scrolls; a desk focused off-screen is panned to instead, at the
+   * same zoom, without selecting it.
+   */
+  function keepPlanUnscrolled() {
+    const wrap = wrapRef.current;
+    if (wrap && (wrap.scrollTop || wrap.scrollLeft)) {
+      wrap.scrollTop = 0;
+      wrap.scrollLeft = 0;
+    }
+  }
+  function onFocusIn(e: ReactFocusEvent) {
+    keepPlanUnscrolled();
+    const el = e.target as HTMLElement;
+    const wrap = wrapRef.current;
+    if (!wrap || !el.dataset.unitId) return;
+    // Keyboard focus only. A click focuses the marker too, and a desk clicked near the edge must
+    // not slide away from the pointer — least of all under a drag that has just begun.
+    try {
+      if (!el.matches(':focus-visible')) return;
+    } catch {
+      return; // an engine without :focus-visible — leave the plan where it is
+    }
+    const r = el.getBoundingClientRect();
+    const w = wrap.getBoundingClientRect();
+    const pad = 32;
+    if (r.left >= w.left + pad && r.right <= w.right - pad && r.top >= w.top + pad && r.bottom <= w.bottom - pad) return;
+    const cx = (r.left + r.right) / 2 - w.left;
+    const cy = (r.top + r.bottom) / 2 - w.top;
+    actions.setView({ ...state.view, tx: state.view.tx + (w.width / 2 - cx), ty: state.view.ty + (w.height / 2 - cy) });
+  }
+
   const selectedRoom = isEditSelect && multiSel.size === 0 ? rooms.find((r) => r.id === state.selected) : undefined;
 
   const armedRecordLabel = state.placingUnitId ? state.unplacedUnits.find((u) => u.id === state.placingUnitId)?.label : undefined;
@@ -707,6 +752,7 @@ export function Canvas() {
   }
 
   return (
+    <>
     <div
       ref={wrapRef}
       onMouseDown={onMouseDown}
@@ -714,6 +760,8 @@ export function Canvas() {
       onDoubleClick={onDblClick}
       onDragOver={onDragOver}
       onDrop={onDrop}
+      onFocus={onFocusIn}
+      onScroll={keepPlanUnscrolled}
       className={styles.wrap}
       style={{ cursor: isDrawTool || (state.mode === 'edit' && state.placingUnitId) ? 'crosshair' : 'grab' }}
     >
@@ -834,6 +882,22 @@ export function Canvas() {
       <Legend />
       <ZoomControls rectW={rect.w} rectH={rect.h} />
     </div>
+    {/* Outside the plan's element: the dialog is portaled, but React still bubbles its clicks and
+        presses through this tree, and the plan would read them as a pan or a deselect. */}
+    {pendingDelete && (
+      <DeleteConfirmModal
+        labels={pendingDelete.map((id) => state.units.find((u) => u.id === id)?.label ?? id)}
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={() => {
+          const ids = pendingDelete.filter((id) => state.units.some((u) => u.id === id));
+          setPendingDelete(null);
+          if (ids.length === 1) actions.deleteUnit(ids[0]);
+          else if (ids.length > 1) actions.deleteUnits(ids);
+          if (multiSel.size > 0) setMultiSel(new Set());
+        }}
+      />
+    )}
+    </>
   );
 }
 
@@ -897,7 +961,7 @@ export function RoomLabel({ unit, placement }: { unit: Unit; placement: RoomLabe
           ...(placement.lines === 2 ? { whiteSpace: 'normal', overflowWrap: 'break-word', display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2, overflow: 'hidden' } : { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }),
         }}
       >
-        {unit.label}
+        {unitPlanLabel(state, unit)}
       </span>
       {busy ? (
         <span style={{ display: 'flex', alignItems: 'center', color: 'var(--ink-600)', font: `500 ${subPx}px/1 var(--font-sans)`, whiteSpace: 'nowrap' }}>

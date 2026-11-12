@@ -33,6 +33,8 @@ export interface MarkerLabelInput {
   dept?: string | null;
   /** The "Your desk" pill stands above the chip as well as the card. */
   pill?: boolean;
+  /** What the pill says — "Your desk", or "Your parking" over a stall (see selectors.myPinText). */
+  pillText?: string;
   /**
    * Placement order — lower goes first and therefore wins a collision. The selected record and
    * the user's own desk come first; everything else shares the last rank and is ordered by
@@ -397,7 +399,7 @@ export function planMarkerLabels(inputs: MarkerLabelInput[], opts: LabelLayoutOp
 
     // The "Your desk" pill draws whatever it lands on — it is the answer to "where do I sit".
     if (i.pill) {
-      const w = estimateLabelWidth(PILL_TEXT, t.nameFont) + PILL_EXTRA;
+      const w = estimateLabelWidth(i.pillText ?? PILL_TEXT, t.nameFont) + PILL_EXTRA;
       const box = { x: cx - w / 2, y: cy - half - GAP - PILL_HEIGHT, w, h: PILL_HEIGHT };
       if (i.must || !grid.hits(box)) {
         grid.add(box);

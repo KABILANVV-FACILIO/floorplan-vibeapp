@@ -28,8 +28,9 @@ const MANY_PAGES = 12;
  */
 export async function sheetToImages(pages: HTMLElement[], onProgress?: (done: number, total: number) => void): Promise<string[]> {
   const { toPng } = await import('html-to-image');
-  // Roboto comes from Google Fonts. Until it has loaded, the raster would be drawn in the
-  // fallback face, so wait for it rather than capture a page that differs from the screen.
+  // Roboto is the app's own (see main.tsx), so html-to-image can read its stylesheet and embed it.
+  // Until it has loaded the raster would be drawn in the fallback face, so wait for it rather
+  // than capture a page that differs from the screen.
   await document.fonts?.ready;
   const pixelRatio = pages.length > MANY_PAGES ? PIXEL_RATIO_MANY : PIXEL_RATIO;
   const out: string[] = [];
