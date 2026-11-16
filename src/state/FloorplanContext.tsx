@@ -11,6 +11,7 @@ import { isFacilioApiConfigured } from '../lib/facilioApi';
 import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchCurrentPeopleId, fetchCurrentRole, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, fetchOrgBookingsForRange, fetchOrgRoles, cancelRealBooking, fetchOrgTimezone, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, takeFloorReadFailure, takeRoomOutlineReadFailure, vacateUnitReal } from '../lib/facilioApiDataSource';
 import { DEMO_DATA, ROOM_OUTLINE_WRITES } from '../lib/featureFlags';
 import { IncompleteListError, onFacilioBusy } from '../lib/rateLimit';
+import { orgNow } from '../lib/orgTime';
 import { personDisplayName } from '../lib/displayNames';
 import { measureImageDataUrl } from '../lib/geoReference';
 import { listFloorplanFloorIds, loadFloorplanFile, persistFloorplanFile } from '../lib/floorplanFileStore';
@@ -1778,8 +1779,13 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
         },
       );
 
-      // The org's clock, for every booking read and write, resolved before the first of them.
-      if (isFacilioApiConfigured) void fetchOrgTimezone().catch(() => null);
+      // The org's clock, for every booking read and write, resolved before the first of them — and
+      // the booking window then set on now by it (it opened on now by this device's clock).
+      if (isFacilioApiConfigured) {
+        void fetchOrgTimezone()
+          .catch(() => null)
+          .then(() => dispatch({ type: 'SET_WINDOW_NOW', minutes: orgNow().minutes }));
+      }
       const [portfolio, employees, myDesk, urlFloorId, peopleId] = await Promise.all([
         // The demo seed stands in only under the dev server (featureFlags.DEMO_DATA). Deployed, an
         // org list that fails or comes back empty stays empty — never made-up sites or people.

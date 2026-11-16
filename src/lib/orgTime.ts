@@ -104,3 +104,18 @@ export function orgTimezone(): string | null {
 export function orgNow(): { dateISO: string; minutes: number } {
   return wallClockInTz(Date.now(), resolvedTz);
 }
+
+/** The bookable day the time pickers offer (BookPanel), in their 30-minute steps. */
+export const BOOK_DAY_START = 7 * 60;
+export const BOOK_DAY_END = 20 * 60;
+
+/**
+ * The booking window the app opens on: the slot NOW falls in — on the pickers' 30-minute steps, one
+ * booking slot long (Settings › Bookings) — so "booked" means booked now, not at a fixed 10:00.
+ * Before the bookable day, its first slot; after its last, that last slot.
+ */
+export function slotNow(minutes: number, granularity: number): { start: number; end: number } {
+  const len = Math.max(30, Math.ceil(granularity / 30) * 30);
+  const start = Math.min(Math.max(Math.floor(minutes / 30) * 30, BOOK_DAY_START), BOOK_DAY_END - len);
+  return { start, end: start + len };
+}

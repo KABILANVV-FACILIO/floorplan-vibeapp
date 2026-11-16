@@ -3,6 +3,7 @@ import { DEFAULT_LABEL_STYLE } from '../lib/labelLayout';
 import type { LabelStyle } from '../lib/labelLayout';
 import type { AppMode, Booking, Building, Floor, FloorSearchHit, LabelledType, MarkerDef, ModuleKey, OrgRole, PlanId, PlanLabel, PlanLabels, PlanViews, RegisterKind, RegisterPrint, Site, Surface, SurfaceAccess, Unit } from '../lib/types';
 import { clamp, fitView } from '../lib/geometry';
+import { slotNow } from '../lib/orgTime';
 import { seedBookings } from '../lib/mockData';
 import { viewFromLocation } from '../lib/routes';
 import type { AppState } from './types';
@@ -45,6 +46,9 @@ function countUnsavedChanges(units: Unit[], savedUnits: Unit[]): number {
 
 export function buildInitialState(): AppState {
   const iso = todayIso();
+  // The window opens on now (by this device's clock, until the org's is known — see SET_WINDOW_NOW).
+  const clock = new Date();
+  const opening = slotNow(clock.getHours() * 60 + clock.getMinutes(), 30);
   return {
     mode: 'assign',
     tool: 'select',
@@ -106,8 +110,8 @@ export function buildInitialState(): AppState {
     dragOverId: null,
 
     date: iso,
-    start: 600,
-    end: 660,
+    start: opening.start,
+    end: opening.end,
     // Nobody until Facilio says who is signed in (boot sets it from the account's people id). It
     // used to start as the demo seed's first person, so that person's desk wore "Your desk" for
     // anyone the account read could not identify.
@@ -232,6 +236,8 @@ export type Action =
   | { type: 'CLEAR_HOLDER'; unitId: string }
   | { type: 'SET_DATE'; value: string; bookings: Booking[] }
   | { type: 'SET_TIME_RANGE'; start: number; end: number }
+  /** The window on now, by the org's clock, one booking slot long (lib/orgTime slotNow). */
+  | { type: 'SET_WINDOW_NOW'; minutes: number }
   | { type: 'SET_BOOK_MODAL'; open: boolean }
   | { type: 'SET_BOOK_FIELD'; field: 'bookBy' | 'bookPurpose' | 'bookNotes'; value: string }
   | { type: 'SET_BOOK_FORM'; form: AppState['bookForm'] }
@@ -712,6 +718,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, date: action.value, bookings: action.bookings };
     case 'SET_TIME_RANGE':
       return { ...state, start: action.start, end: action.end };
+    case 'SET_WINDOW_NOW':
+      return { ...state, ...slotNow(action.minutes, state.slotGranularity) };
     case 'SET_BOOK_MODAL':
       // Every way into the booking form — the plan, the sidebar, the calendar, a scanned QR code —
       // passes through here or SET_BOOK_FORM, so the Booking right is asked once, here.
