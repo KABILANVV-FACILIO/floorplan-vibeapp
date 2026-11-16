@@ -1,7 +1,8 @@
+import { useState } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { moduleColor } from '../../lib/unitStatus';
 import { AMENITY_META, isRoomLike, TYPE_META } from '../../lib/types';
-import { activeDepartment, enabledTypes } from '../../state/selectors';
+import { activeDepartments, colorByOf, enabledTypes } from '../../state/selectors';
 import { departmentColor, departmentsIn } from '../../lib/departmentColors';
 import { departmentDisplayName } from '../../lib/displayNames';
 import type { AmenityIcon, ResponderRoleDef } from '../../lib/types';
@@ -9,6 +10,17 @@ import type { AppState } from '../../state/types';
 import { respondersOnFloor, rolesOnFloor } from '../../lib/firstResponders';
 import { ResponderGlyph } from './ResponderBadge';
 import { FloorResponders } from './FloorResponders';
+
+/** The ticked departments by name, all of them — for paper, where "3 departments" would say too little. */
+export function departmentNames(departments: string[]): string {
+  return departments.map((d) => departmentDisplayName(d) || d).join(', ');
+}
+
+/** How the ticked departments are named on the plan's chips: one by name, two by both, more by how many. */
+export function departmentsLabel(departments: string[]): string {
+  const named = departments.map((d) => departmentDisplayName(d) || d);
+  return named.length === 1 ? `Department: ${named[0]}` : named.length === 2 ? `Departments: ${named.join(', ')}` : `${named.length} departments`;
+}
 
 /** One key entry: a colour swatch, or — for a first responder — the badge the plan draws. */
 export interface LegendItem {
@@ -37,14 +49,18 @@ export function legendItems(state: AppState): LegendItem[] {
       label: TYPE_META[t].name,
       color: isRoomLike(t) ? 'rgba(60,34,157,0.62)' : moduleColor(state, t, 'free'),
     }));
-  } else if (state.mode === 'assign' && state.colorBy === 'department') {
+  } else if (state.mode === 'assign' && colorByOf(state) === 'department') {
     // The legend has to name what the colours MEAN, and in this mode they mean departments — a
     // "Free / Assigned" key beside department-coloured desks would be a straight lie.
     const present = departmentsIn(state.units);
     const ids = present.map((d) => d.id);
-    items = present.map((d) => ({ label: departmentDisplayName(d.name), color: departmentColor(d.id, state.departmentColors, ids) }));
+    // With departments ticked the rest are faded, so the key names the ticked ones only.
+    const ticked = activeDepartments(state);
+    items = present
+      .filter((d) => !ticked.length || ticked.includes(d.name))
+      .map((d) => ({ label: departmentDisplayName(d.name), color: departmentColor(d.id, state.departmentColors, ids) }));
     // Desks with no department on their record keep the state colours, so the key says so.
-    if (state.units.some((u) => u.type === 'workstation' && !u.department)) {
+    if (!ticked.length && state.units.some((u) => u.type === 'workstation' && !u.department)) {
       items.push({ label: 'No department', color: moduleColor(state, 'workstation', 'free') });
     }
   } else if (state.mode === 'assign') {
@@ -78,15 +94,23 @@ export function legendItems(state: AppState): LegendItem[] {
   return items;
 }
 
+/** How many key entries the plan shows before "+N more" — a floor of fifteen departments ran across the screen. */
+const LEGEND_SHOWN = 6;
+
 export function Legend() {
   const { state, actions } = useFloorplanData();
-  const items = legendItems(state);
+  const [allItems, setAllItems] = useState(false);
+  const every = legendItems(state);
+  // One more than the cap shows whole: "+1 more" would take the room the entry needs.
+  const items = allItems || every.length <= LEGEND_SHOWN + 1 ? every : every.slice(0, LEGEND_SHOWN);
   // The department filter dims the rest of the plan; this says why, and undoes it in one click.
-  const department = activeDepartment(state);
+  const departments = activeDepartments(state);
 
   return (
-    <div style={{ position: 'absolute', left: 12, bottom: 12, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', maxWidth: '70%' }}>
-      {department && (
+    // Kept to the left of the bottom navigation, which sits centred over the same edge: wider, a wrapped
+    // key ran behind it.
+    <div style={{ position: 'absolute', left: 12, bottom: 12, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', maxWidth: 'max(220px, calc(50% - 250px))' }}>
+      {departments.length > 0 && (
         <span
           style={{
             display: 'inline-flex',
@@ -102,12 +126,12 @@ export function Legend() {
             boxShadow: 'var(--shadow-xs)',
           }}
         >
-          Department: {departmentDisplayName(department) || department}
+          {departmentsLabel(departments)}
           <button
             type="button"
             aria-label="Show all departments"
             data-tip="Show all departments"
-            onClick={() => actions.setSpaceDepartment(null)}
+            onClick={() => actions.setSpaceDepartments([])}
             style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18, border: 'none', borderRadius: 999, background: 'transparent', color: 'inherit', cursor: 'pointer', padding: 0 }}
           >
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden>
@@ -138,6 +162,16 @@ export function Legend() {
           {it.label}
         </span>
       ))}
+      {every.length > LEGEND_SHOWN + 1 && (
+        <button
+          type="button"
+          aria-expanded={allItems}
+          onClick={() => setAllItems((v) => !v)}
+          style={{ height: 24, padding: '0 10px', background: '#fff', border: '1px solid var(--ink-200)', borderRadius: 999, font: '500 11px/1 var(--font-sans)', color: 'var(--blue-600)', boxShadow: 'var(--shadow-xs)', cursor: 'pointer' }}
+        >
+          {allItems ? 'Show less' : `+${every.length - LEGEND_SHOWN} more`}
+        </button>
+      )}
     </div>
   );
 }

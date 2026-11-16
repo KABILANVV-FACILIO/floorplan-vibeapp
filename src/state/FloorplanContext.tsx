@@ -4,7 +4,7 @@ import { dataSource, clearLocalData } from '../lib/dataSource';
 import type { CreateSpaceLoc } from '../lib/dataSource';
 import { PORTFOLIO as MOCK_PORTFOLIO, EMPLOYEES as MOCK_EMPLOYEES, seedBookings, seedUnits, seedAssignments } from '../lib/mockData';
 import { floorImageKey, isRoomLike, planForPlacement, resolveMarkerDef, TYPE_META, unitOnPlan } from '../lib/types';
-import type { AmenityIcon, Booking, Employee, FirstResponder, FloorSearchHit, MarkerDef, LabelledType, ModuleKey, OrgRole, ParkingPrint, PlanId, PlanLabel, ResponderRoleDef, Site, Surface, SurfaceAccess, Unit, UnitType } from '../lib/types';
+import type { AmenityIcon, Booking, Employee, FirstResponder, FloorSearchHit, MarkerDef, LabelledType, ModuleKey, OrgRole, PlanId, PlanLabel, RegisterKind, RegisterPrint, ResponderRoleDef, Site, Surface, SurfaceAccess, Unit, UnitType } from '../lib/types';
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
@@ -793,7 +793,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     },
 
     setSpaceFilter: (filter: AppState['spaceFilter']) => dispatch({ type: 'SET_SPACE_FILTER', filter }),
-    setSpaceDepartment: (department: string | null) => dispatch({ type: 'SET_SPACE_DEPARTMENT', department }),
+    setSpaceDepartments: (departments: string[]) => dispatch({ type: 'SET_SPACE_DEPARTMENTS', departments }),
     setSpaceSearch: (value: string) => dispatch({ type: 'SET_SPACE_SEARCH', value }),
 
     selectUnit: (id: string | null) => dispatch({ type: 'SELECT_UNIT', id }),
@@ -1487,6 +1487,8 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     setModuleColor: (key: string, hex: string) => dispatch({ type: 'SET_MODULE_COLOR', key, hex }),
     /** Colour the desks by availability, or by the department on their record. */
     setColorBy: (value: AppState['colorBy']) => dispatch({ type: 'SET_COLOR_BY', value }),
+    /** This viewer's colouring, from the counts card; not saved (selectors.colorByOf). */
+    setColorByView: (value: AppState['colorByView']) => dispatch({ type: 'SET_COLOR_BY_VIEW', value }),
     setPrintScope: (value: AppState['printScope']) => dispatch({ type: 'SET_PRINT_SCOPE', value }),
     /**
      * A department's colour is org data, not a browser preference: it goes to the app's own
@@ -1512,7 +1514,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     setModuleEnabled: (module: ModuleKey, enabled: boolean) => dispatch({ type: 'SET_MODULE_ENABLED', module, enabled }),
     setPlanLabel: (kind: LabelledType, value: PlanLabel) => dispatch({ type: 'SET_PLAN_LABEL', kind, value }),
     /** The parking register, for everyone who prints parking (the settings blob). */
-    setParkingPrint: (value: ParkingPrint) => dispatch({ type: 'SET_PARKING_PRINT', value }),
+    setPrintRegister: (kind: RegisterKind, value: RegisterPrint) => dispatch({ type: 'SET_PRINT_REGISTER', kind, value }),
     /**
      * Fetches the asset catalog on first use of the Edit-mode asset picker. Idempotent: the guard
      * is checked before the await, so mounting the picker twice in quick succession still issues
@@ -1751,7 +1753,7 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
     state.customMarkers,
     state.enabledModules,
     state.planLabels,
-    state.parkingPrint,
+    state.printRegisters,
   ]);
 
   useEffect(() => {

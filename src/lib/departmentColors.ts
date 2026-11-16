@@ -68,8 +68,9 @@ export function departmentKey(name: string): string {
  * whose preference is already spoken for walks to the next free slot. Deterministic for a given
  * set, so the answer is stable across renders, devices and sessions.
  *
- * Only past the wheel's length must colours repeat, and then in a defined order rather than by
- * accident.
+ * Past the wheel's length a floor still gets a colour per department — a floor of fifteen teams
+ * coloured with ten would draw some of them alike — so further colours are made (extraColor),
+ * spread round the hue circle and each new to the set.
  */
 export function departmentColorMap(ids: DepartmentId[], overrides: Record<string, string> = {}): Record<string, string> {
   const out: Record<string, string> = {};
@@ -89,7 +90,7 @@ export function departmentColorMap(ids: DepartmentId[], overrides: Record<string
   for (const key of keys) {
     if (out[key]) continue;
     const start = hash(key) % DEPARTMENT_PALETTE.length;
-    let pick = DEPARTMENT_PALETTE[start];
+    let pick: string | null = null;
     for (let i = 0; i < DEPARTMENT_PALETTE.length; i++) {
       const candidate = DEPARTMENT_PALETTE[(start + i) % DEPARTMENT_PALETTE.length];
       if (!taken.has(candidate)) {
@@ -97,11 +98,29 @@ export function departmentColorMap(ids: DepartmentId[], overrides: Record<string
         break;
       }
     }
+    for (let n = 0; !pick; n++) if (!taken.has(extraColor(n))) pick = extraColor(n);
     out[key] = pick;
     taken.add(pick);
   }
 
   return out;
+}
+
+/**
+ * The n-th colour past the wheel: hues stepped by the golden angle, so each new one lands far from
+ * the ones before, at a saturation and lightness that reads on the plan and carries white initials.
+ */
+export function extraColor(n: number): string {
+  const h = (n * 137.508 + 18) % 360;
+  const s = 0.62;
+  const l = 0.42;
+  const a = s * Math.min(l, 1 - l);
+  const channel = (k: number) => {
+    const x = (k + h / 30) % 12;
+    const c = l - a * Math.max(-1, Math.min(x - 3, 9 - x, 1));
+    return Math.round(c * 255).toString(16).padStart(2, '0');
+  };
+  return `#${channel(0)}${channel(8)}${channel(4)}`;
 }
 
 /** Cheap memo: the same set and overrides must not be re-solved once per marker per render. */

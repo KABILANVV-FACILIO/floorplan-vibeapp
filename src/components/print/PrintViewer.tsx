@@ -7,8 +7,8 @@ import { Button } from '../primitives/Button';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
 import { PrintSheet, printFileName } from './PrintSheet';
 import { downloadBlob, printImages, sheetToImages, sheetToPdfBlob } from './sheetPdf';
-import { ParkingPrintDetails } from './ParkingPrintDetails';
-import { useParkingRegister } from './useParkingRegister';
+import { PrintDetails } from './PrintDetails';
+import { useRegister } from './useRegister';
 import styles from './PrintViewer.module.css';
 
 /** The page's layout size in CSS px — letter landscape at 96px per inch. */
@@ -26,7 +26,7 @@ const GUTTER = 24;
  * drawn at its physical size and scaled to fit. Both buttons work from pictures of the pages shown
  * here: Download puts one on each PDF page, Print puts one on each sheet, fitted to the paper.
  *
- * The whole floor comes first; in "Floor + details" a zoomed page for every area of desks follows
+ * The whole floor comes first; in "Floor + details" a zoomed page for every area of desks (stalls on a parking plan, lockers on a locker one) follows
  * it. The grey area scrolls through them, one page fitting in view.
  */
 export function PrintViewer({ onClose, printRequest = 0 }: { onClose: () => void; /** Bumped to print straight away (Cmd+P). */ printRequest?: number }) {
@@ -48,10 +48,15 @@ export function PrintViewer({ onClose, printRequest = 0 }: { onClose: () => void
   const onProgress = (done: number, total: number) => setProgress(total > 1 ? { done, total } : null);
   const progressText = progress ? ` page ${Math.min(progress.done + 1, progress.total)} of ${progress.total}` : '';
   const [error, setError] = useState<string | null>(null);
-  // A parking plan prints a register after it; Details chooses what it lists.
-  const isParking = state.planId === 'parking';
+  // Every plan prints registers after it — desks and rooms, stalls, lockers — and Details chooses
+  // what each lists. The labels the plan reads them by, per kind, for the window's columns.
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const parking = useParkingRegister(state);
+  const labelFields = {
+    workstation: useRegister(state, 'workstation').labelField,
+    room: useRegister(state, 'room').labelField,
+    parking: useRegister(state, 'parking').labelField,
+    locker: useRegister(state, 'locker').labelField,
+  };
 
   // Fit the whole page in the preview area, never larger than life.
   useLayoutEffect(() => {
@@ -141,7 +146,7 @@ export function PrintViewer({ onClose, printRequest = 0 }: { onClose: () => void
       </div>
       <ModalFooter>
         {/* What the pages show. Floor + details: the whole floor, then a zoomed page for every area
-            of desks, each desk labelled in full. Current view: the screen as it is. Whole floor:
+            of desks (or stalls, or lockers), each labelled in full. Current view: the screen as it is. Whole floor:
             the floor alone. */}
         <div className={styles.scope} role="group" aria-label="Plan on page 1">
           <span className={styles.scopeLabel}>Plan</span>
@@ -155,11 +160,9 @@ export function PrintViewer({ onClose, printRequest = 0 }: { onClose: () => void
             Whole floor
           </button>
         </div>
-        {isParking && (
-          <Button variant="secondary" onClick={() => setDetailsOpen(true)} disabled={!!busy} icon={<DetailsIcon />}>
-            Details
-          </Button>
-        )}
+        <Button variant="secondary" onClick={() => setDetailsOpen(true)} disabled={!!busy} icon={<DetailsIcon />}>
+          Details
+        </Button>
         {error && <span className={styles.error}>{error}</span>}
         <Button variant="secondary" onClick={() => void onDownload()} disabled={!!busy} icon={busy === 'pdf' ? <ButtonSpinner /> : <DownloadIcon />}>
           {busy === 'pdf' ? `Preparing PDF…${progressText}` : 'Download PDF'}
@@ -168,7 +171,7 @@ export function PrintViewer({ onClose, printRequest = 0 }: { onClose: () => void
           {busy === 'print' ? `Preparing…${progressText}` : 'Print'}
         </Button>
       </ModalFooter>
-      {detailsOpen && <ParkingPrintDetails labelField={parking.labelField} onClose={() => setDetailsOpen(false)} />}
+      {detailsOpen && <PrintDetails labelFields={labelFields} onClose={() => setDetailsOpen(false)} />}
     </Modal>
   );
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { registerCell, registerColumns, registerDate, registerPages, registerRows, rowsPerPage, columnsNote } from './parkingRegister';
-import type { RegisterContext } from './parkingRegister';
-import { DEFAULT_PARKING_PRINT } from './types';
+import { REGISTERS, registerCell, registerColumns, registerDate, registerKindsFor, registerPages, registerRows, rowsPerPage, columnsNote } from './register';
+import type { RegisterContext } from './register';
+import { DEFAULT_PARKING_PRINT, DEFAULT_REGISTER_PRINTS } from './types';
 import type { Employee, ParkingPrint, Unit } from './types';
 
 /**
@@ -109,5 +109,62 @@ describe('the register rows', () => {
     expect(rowsPerPage(14)).toBeGreaterThan(rowsPerPage(9)); // smaller type, more rows
     expect(registerPages([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
     expect(registerPages([], 20)).toEqual([[]]);
+  });
+});
+
+describe('registers for desks, rooms and lockers, each its own', () => {
+  const desk = (n: number, over: Partial<Unit> = {}): Unit =>
+    ({ id: `d${n}`, type: 'workstation', label: `ABU/EHQ/3F/B/N-${String(n).padStart(3, '0')}`, geom: { kind: 'point', x: 0.1, y: 0.5 }, floor: 'f1', plan: 'workstation', room: 'Open office', record: { id: String(9000 + n), deskCode: `N-${n}` }, ...over }) as Unit;
+  const room = (n: number, over: Partial<Unit> = {}): Unit =>
+    ({ id: `r${n}`, type: 'room', label: `HQ-BKB-3F-Meeting Room ${n}`, geom: { kind: 'poly', pts: [[0, 0], [1, 0], [1, 1]] }, floor: 'f1', plan: 'workstation', room: null, record: { id: String(7000 + n), code_space: `MR-${n}` }, ...over }) as Unit;
+  const deskHolders: Record<string, string> = { d1: 'e1' };
+  const deskCtx = ctx({ kind: 'workstation', holderOf: (u) => people.find((p) => p.id === deskHolders[u.id]) ?? null });
+  const booking = { id: 'b1', unitId: 'r1', date: '2026-11-16', start: 600, end: 660, by: 'e2', purpose: 'Quarterly review' } as never;
+  const roomCtx = ctx({ kind: 'room', bookingOf: (u) => (u.id === 'r1' ? booking : null) });
+
+  it('know which registers a plan prints: desks and rooms after a desk plan, its own kind after another', () => {
+    expect(registerKindsFor('workstation')).toEqual(['workstation', 'room']);
+    expect(registerKindsFor('custom')).toEqual(['workstation', 'room']);
+    expect(registerKindsFor('parking')).toEqual(['parking']);
+    expect(registerKindsFor('locker')).toEqual(['locker']);
+  });
+
+  it('read a desk from its record and its holder: code, type, its own department, its room', () => {
+    const d = desk(1, { deskType: 'HOT', department: 'Finance' });
+    expect(registerCell(d, 'code', deskCtx)).toBe('N-1');
+    expect(registerCell(d, 'dtype', deskCtx)).toBe('Hot desk');
+    expect(registerCell(d, 'ddept', deskCtx)).toBe('Finance');
+    expect(registerCell(d, 'room', deskCtx)).toBe('Open office');
+    expect(registerCell(d, 'status', deskCtx)).toBe('Occupied');
+    expect(registerCell(d, 'emp', deskCtx)).toBe('Omar Al Marri');
+    expect(registerCell(desk(2), 'status', deskCtx)).toBe('Vacant');
+    // A desk label field (Settings › Desks) prints beside the name, as a stall's does.
+    expect(registerColumns({ ...DEFAULT_REGISTER_PRINTS.workstation }, { name: 'deskCode', label: 'Desk Code' }, 'workstation').map((c) => c.key).slice(0, 2)).toEqual(['name', 'label']);
+  });
+
+  it('read a room by its booking in the window printed — booked or free, by whom, when, what for', () => {
+    expect(registerCell(room(1), 'status', roomCtx)).toBe('Booked');
+    expect(registerCell(room(1), 'by', roomCtx)).toBe('Priya Nair');
+    expect(registerCell(room(1), 'time', roomCtx)).toBe('10:00–11:00');
+    expect(registerCell(room(1), 'purpose', roomCtx)).toBe('Quarterly review');
+    expect(registerCell(room(1), 'code', roomCtx)).toBe('MR-1');
+    expect(registerCell(room(2), 'status', roomCtx)).toBe('Free');
+    expect(registerCell(room(2, { isReservable: false }), 'bookable', roomCtx)).toBe('No');
+  });
+
+  it('take "booked only" for a room the way they take "assigned only" for a desk', () => {
+    const rooms = [room(1), room(2), room(3)];
+    expect(registerRows(rooms, { ...DEFAULT_REGISTER_PRINTS.room, rows: 'assigned' }, roomCtx).map((u) => u.id)).toEqual(['r1']);
+    expect(registerRows(rooms, { ...DEFAULT_REGISTER_PRINTS.room, rows: 'vacant' }, roomCtx).map((u) => u.id)).toEqual(['r2', 'r3']);
+    const desks = [desk(1), desk(2)];
+    expect(registerRows(desks, { ...DEFAULT_REGISTER_PRINTS.workstation, rows: 'assigned' }, deskCtx).map((u) => u.id)).toEqual(['d1']);
+  });
+
+  it('name each register and its rows as the kind it lists', () => {
+    expect(REGISTERS.workstation.title).toBe('Desk register');
+    expect(REGISTERS.room.rowChoices.assigned).toBe('Booked only');
+    expect(REGISTERS.locker.columns.map((c) => c.group)).not.toContain('dates');
+    // Parking reads exactly as it did.
+    expect(REGISTERS.parking.columns.map((c) => c.key)).toEqual(['name', 'id', 'qr', 'type', 'mode', 'status', 'area', 'loc', 'emp', 'hrms', 'dept', 'desig', 'grade', 'mobile', 'email', 'lm', 'since', 'released']);
   });
 });

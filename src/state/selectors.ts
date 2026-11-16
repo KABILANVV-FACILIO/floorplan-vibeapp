@@ -7,6 +7,7 @@ import { polygonCentroid } from '../lib/geometry';
 import type { Booking, Employee, Surface, Tab, Unit, UnitType } from '../lib/types';
 import type { AppState } from './types';
 import { departmentDisplayName, personDisplayName, personInitials, shortPersonName } from '../lib/displayNames';
+import { departmentColor, departmentKey, departmentsIn } from '../lib/departmentColors';
 
 /*
  * Lookups by id, indexed once per array and cached on the array itself (a WeakMap, so a replaced
@@ -95,14 +96,107 @@ export function floorDepartments(state: AppState): string[] {
   return [...names].sort((a, b) => a.localeCompare(b));
 }
 
+const NO_DEPARTMENTS: string[] = [];
+
 /**
- * The department the plan is filtered to, when it names one on this floor. One that has gone
- * (its last holder vacated, a module switched off) filters nothing rather than dimming the floor.
+ * The departments the plan is filtered to: those ticked that name one on this floor. None — nothing
+ * ticked, or every ticked one gone (its last holder vacated, a module switched off) — filters
+ * nothing rather than dimming the whole floor.
  */
-export function activeDepartment(state: AppState): string | null {
-  const d = state.spaceDepartment;
-  if (!d) return null;
-  return visibleUnits(state).some((u) => unitDepartment(state, u) === d) ? d : null;
+export function activeDepartments(state: AppState): string[] {
+  if (!state.spaceDepartments.length) return NO_DEPARTMENTS;
+  const here = new Set(visibleUnits(state).map((u) => unitDepartment(state, u)));
+  const kept = state.spaceDepartments.filter((d) => here.has(d));
+  return kept.length ? kept : NO_DEPARTMENTS;
+}
+
+/**
+ * How desks are coloured for this viewer: their own pick on the plan's counts card, else the
+ * Settings › Desks › Colour desks by default everyone gets. Department colours apply in Assignment
+ * view only (unitStatus.markerStyle), whichever set them.
+ */
+export function colorByOf(state: AppState): AppState['colorBy'] {
+  return state.colorByView ?? state.colorBy;
+}
+
+/** The types the plan's counts card counts, in its order. */
+export const COUNTED_TYPES = ['workstation', 'parking', 'room'] as const;
+export type CountedType = (typeof COUNTED_TYPES)[number];
+
+/**
+ * The spaces of one type the counts card counts: placed on this floor — on any of its plans, not
+ * only the one on screen — with their module on, each once; a room only with an outline. With
+ * departments ticked (activeDepartments), desks and stalls are theirs only; rooms belong to no
+ * department and stay whole-floor.
+ */
+function countedUnits(state: AppState, type: CountedType): Unit[] {
+  const depts = type === 'room' ? NO_DEPARTMENTS : activeDepartments(state);
+  const seen = new Set<string>();
+  return visibleUnits(state).filter((u) => {
+    if (u.type !== type || u.unplaced || seen.has(u.id)) return false;
+    if (type === 'room' && (u.geom.kind !== 'poly' || !u.geom.pts.length)) return false;
+    if (depts.length && !depts.includes(unitDepartment(state, u) ?? '')) return false;
+    seen.add(u.id);
+    return true;
+  });
+}
+
+/** One row of the counts card: a type's spaces and how many are taken. The three parts add up to `total`. */
+export interface FloorCount {
+  type: CountedType;
+  total: number;
+  /** Held by someone. Rooms are never held, so 0 for them. */
+  occupied: number;
+  /** Booked in the date and hours picked in the toolbar, and not held. */
+  booked: number;
+  free: number;
+  /** Narrowed to the ticked departments (desks and stalls with any ticked). */
+  narrowed: boolean;
+}
+
+/**
+ * What the counts card on the plan says (FloorCounts): per type, every space placed on the floor and
+ * how many are occupied, booked in the window on screen, and free — a held space counts as occupied
+ * whatever its bookings, so the three add up. A type the floor has none of is left out.
+ */
+export function floorCounts(state: AppState): FloorCount[] {
+  const booked = bookedUnitIds(state);
+  const narrowed = activeDepartments(state).length > 0;
+  const out: FloorCount[] = [];
+  for (const type of COUNTED_TYPES) {
+    const row: FloorCount = { type, total: 0, occupied: 0, booked: 0, free: 0, narrowed: narrowed && type !== 'room' };
+    for (const u of countedUnits(state, type)) {
+      row.total++;
+      if (type !== 'room' && state.assignments[u.id]) row.occupied++;
+      else if (booked.has(u.id)) row.booked++;
+      else row.free++;
+    }
+    if (row.total) out.push(row);
+  }
+  return out;
+}
+
+/**
+ * The counted desks by department, as the plan colours them when coloured by department: by the
+ * desk record's OWN department (unitStatus), in the colour Settings gives it, keyed and coloured
+ * exactly as the Legend keys them; desks with none last, in the free colour, as "No department".
+ */
+export function deskDepartmentCounts(state: AppState, freeColor: string): { id: string; name: string; color: string; total: number; occupied: number }[] {
+  const ids = departmentsIn(state.units).map((d) => d.id);
+  const rows = new Map<string, { id: string; name: string; color: string; total: number; occupied: number }>();
+  for (const u of countedUnits(state, 'workstation')) {
+    const name = u.department?.trim();
+    // The same key departmentsIn gives it, so the colour is the one the plan and the legend use.
+    const id = name ? u.departmentId || 'name:' + departmentKey(name) : '';
+    let row = rows.get(id);
+    if (!row) {
+      row = { id, name: name ? departmentDisplayName(name) || name : 'No department', color: name ? departmentColor(id, state.departmentColors, ids) : freeColor, total: 0, occupied: 0 };
+      rows.set(id, row);
+    }
+    row.total++;
+    if (state.assignments[u.id]) row.occupied++;
+  }
+  return [...rows.values()].sort((a, b) => (!a.id ? 1 : !b.id ? -1 : a.name.localeCompare(b.name)));
 }
 
 /** Unit types that are switched on, in the given order — for filter chips, tabs and legends. */
@@ -332,16 +426,16 @@ export function showsHolder(state: AppState, unit: Unit): boolean {
  * (or the "Your desk" pill in its place), and the holder with their department below. Shared with
  * the print sheet so a label reads the same on paper as on screen.
  */
-export function markerLabelInputs(state: AppState, markers: Unit[], opts: { personal?: boolean; /** The department filter: other departments' desks are dimmed and lose their cards. */ department?: string | null; measure?: LabelTextMeasure; /** The chip's screen size at the current zoom (see chipScreenSize); 24 when unsaid. */ chipSize?: number; /** The type the cards are drawn in at this zoom (see scaleTypography); the setting's own size when unsaid. */ typography?: LabelTypography } = {}): MarkerLabelInput[] {
+export function markerLabelInputs(state: AppState, markers: Unit[], opts: { personal?: boolean; /** The department filter (activeDepartments): other departments' desks are dimmed and lose their cards. */ departments?: readonly string[]; /** Whether the selected desk keeps its card under the filter, as it does on screen; the print says no. */ keepSelected?: boolean; measure?: LabelTextMeasure; /** The chip's screen size at the current zoom (see chipScreenSize); 24 when unsaid. */ chipSize?: number; /** The type the cards are drawn in at this zoom (see scaleTypography); the setting's own size when unsaid. */ typography?: LabelTypography } = {}): MarkerLabelInput[] {
   // `personal: false` (the print sheet): no "Your desk" pill — a sheet on a wall is read by everyone.
   const personal = opts.personal !== false;
   const labelsOn = state.mode === 'assign' || state.mode === 'book';
   const measure = opts.measure;
   const t = opts.typography ?? typographyOf(state.labelStyle);
-  const dept = opts.department ?? null;
+  const depts = opts.departments ?? NO_DEPARTMENTS;
   return markers
     .filter((m) => labelsOn || m.type === 'amenity')
-    .filter((m) => !dept || m.type === 'amenity' || m.id === state.selected || unitDepartment(state, m) === dept)
+    .filter((m) => !depts.length || m.type === 'amenity' || (opts.keepSelected !== false && m.id === state.selected) || depts.includes(unitDepartment(state, m) ?? ''))
     .map((m) => {
       const g = m.geom as { x?: number; y?: number };
       const pillText = personal ? myPinText(state, m) : null;

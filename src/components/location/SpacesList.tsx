@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { DragEvent as ReactDragEvent } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { activateOnKey } from '../../lib/keyboard';
@@ -6,9 +7,9 @@ import { departmentDisplayName } from '../../lib/displayNames';
 import { unitSortCompare } from '../../lib/geometry';
 import { unitStatus } from '../../lib/unitStatus';
 import { Chip } from '../primitives/Chip';
-import { Select } from '../primitives/Select';
 import { SkeletonRows } from '../primitives/Skeleton';
 import { StatusPill } from '../primitives/StatusPill';
+import { FloorCounts } from '../canvas/FloorCounts';
 import type { SpaceFilter } from '../../state/types';
 import { isRoomLike } from '../../lib/types';
 import type { Unit } from '../../lib/types';
@@ -70,14 +71,17 @@ export function SpacesList() {
 
   /**
    * Departments present on THIS floor: a desk's own `department`, else its holder's (see
-   * unitDepartment). The same choice filters this list and dims the rest of the plan; a floor
-   * with no department anywhere shows the type chips alone.
+   * unitDepartment). The ones ticked filter this list and dim the rest of the plan; none ticked is
+   * every department. A floor with no department anywhere shows the type chips alone.
    */
   const departments = floorDepartments(state);
-  // A department that vanished (floor switch, module toggle) must not silently narrow the list to
-  // nothing — the list reads as empty with no visible cause.
-  const dept = state.spaceDepartment && departments.includes(state.spaceDepartment) ? state.spaceDepartment : null;
-  const inDept = (u: Unit) => !dept || unitDepartment(state, u) === dept;
+  // A ticked department that vanished (floor switch, module toggle) must not silently narrow the
+  // list to nothing — the list reads as empty with no visible cause.
+  const picked = state.spaceDepartments.filter((d) => departments.includes(d));
+  const inDept = (u: Unit) => !picked.length || picked.includes(unitDepartment(state, u) ?? '');
+  const [deptOpen, setDeptOpen] = useState(false);
+  const deptName = (d: string) => departmentDisplayName(d) || d;
+  const toggleDept = (d: string) => actions.setSpaceDepartments(picked.includes(d) ? picked.filter((x) => x !== d) : [...picked, d]);
 
   // Counts follow the department, so a chip never promises rows the list won't show.
   const scoped = units.filter(inDept);
@@ -127,18 +131,58 @@ export function SpacesList() {
           ))}
         </div>
         {departments.length > 0 && (
-          <Select
-            value={dept ?? ''}
-            options={[
-              { value: '', label: 'All departments' },
-              ...departments.map((d) => ({ value: d, label: departmentDisplayName(d) || d, sublabel: `${units.filter((u) => unitDepartment(state, u) === d).length}` })),
-            ]}
-            onChange={(v) => actions.setSpaceDepartment(v || null)}
-            size="sm"
-            fullWidth
-            aria-label="Department"
-          />
+          // As the People list's Department picker: opens in place, a tick applies at once.
+          <button
+            type="button"
+            className={[styles.deptBtn, picked.length || deptOpen ? styles.deptBtnOn : ''].join(' ')}
+            aria-expanded={deptOpen}
+            onClick={() => setDeptOpen((o) => !o)}
+          >
+            <span className={styles.deptBtnLabel}>Department</span>
+            <span className={styles.deptBtnValue}>
+              {picked.length === 0 ? 'All' : picked.length === 1 ? deptName(picked[0]) : `${deptName(picked[0])} +${picked.length - 1}`}
+            </span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden style={{ transform: deptOpen ? 'rotate(180deg)' : undefined }}>
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
         )}
+        {departments.length > 0 && deptOpen && (
+          <div className={styles.deptPicker}>
+            <div className={styles.choiceList} role="group" aria-label="Departments">
+              {departments.map((d) => {
+                const on = picked.includes(d);
+                return (
+                  <button key={d} type="button" className={[styles.choice, on ? styles.choiceOn : ''].join(' ')} aria-pressed={on} onClick={() => toggleDept(d)}>
+                    <span className={[styles.check, on ? styles.checkOn : ''].join(' ')} aria-hidden>
+                      {on && (
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M5 12l5 5 9-10" />
+                        </svg>
+                      )}
+                    </span>
+                    <span className={styles.choiceLabel}>{deptName(d)}</span>
+                    <span className={styles.choiceCount}>{units.filter((u) => unitDepartment(state, u) === d).length}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className={styles.deptPickerFoot}>
+              {picked.length > 0 ? (
+                <button type="button" className={styles.linkBtn} onClick={() => actions.setSpaceDepartments([])}>
+                  Show all departments
+                </button>
+              ) : (
+                <span className={styles.deptHint}>None ticked shows every department</span>
+              )}
+              <button type="button" className={styles.linkBtn} onClick={() => setDeptOpen(false)}>
+                Done
+              </button>
+            </div>
+          </div>
+        )}
+        {/* The floor's occupancy, following the Department field above (canvas/FloorCounts). */}
+        <FloorCounts />
       </div>
       <div className={styles.list}>
         {state.loading ? (

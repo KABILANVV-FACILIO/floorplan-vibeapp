@@ -13,7 +13,7 @@ import { Tooltip } from './Tooltip';
 import { DeleteConfirmModal } from './DeleteConfirmModal';
 import { planShortcutAllowed } from '../../lib/keyboard';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
-import { activeDepartment, isBookable, markerLabelInputs, planMarkers, planRooms, roomLabelInputs, unitPlanLabel, visibleUnits } from '../../state/selectors';
+import { activeDepartments, isBookable, markerLabelInputs, planMarkers, planRooms, roomLabelInputs, unitPlanLabel, visibleUnits } from '../../state/selectors';
 import { CHIP_FOOTPRINT_OF_PITCH, CHIP_PX, chipScreenSize, HALO_TEXT, LABEL_MAX_SCALE, planMarkerLabels, planRoomLabels, ROOM_FONT, ROOM_LINE_PX, scaleTypography, typographyOf } from '../../lib/labelLayout';
 import type { LabelPlacement, RoomLabelPlacement } from '../../lib/labelLayout';
 import { markerModel } from '../../lib/markerModel';
@@ -565,8 +565,8 @@ export function Canvas() {
   // What each marker shows (chip colours, holder, title) — once per data change, not per marker
   // per render (see lib/markerModel).
   // The Spaces panel's department filter: the other departments' desks go faint and lose their cards.
-  const department = useMemo(() => activeDepartment(data), [data]);
-  const models = useMemo(() => new Map(markers.map((m) => [m.id, markerModel(data, m, { department })])), [data, markers, department]);
+  const departments = useMemo(() => activeDepartments(data), [data]);
+  const models = useMemo(() => new Map(markers.map((m) => [m.id, markerModel(data, m, { departments })])), [data, markers, departments]);
   // The chip's footprint on the plan, in plan px: a share of the median distance between the
   // floor's desks (lockers and stalls count, amenities do not). Null with fewer than two.
   const chipFootprint = useMemo(() => {
@@ -611,7 +611,7 @@ export function Canvas() {
   const labelPlan = useStablePlacements(
     useMemo(
       () =>
-        planMarkerLabels(markerLabelInputs(data, markers, { department, measure: sharedLabelTextMeasurer(), chipSize, typography }), {
+        planMarkerLabels(markerLabelInputs(data, markers, { departments, measure: sharedLabelTextMeasurer(), chipSize, typography }), {
           planW: IMG_W,
           planH: IMG_H,
           zoom: state.view.z,
@@ -619,7 +619,7 @@ export function Canvas() {
           typography,
           reserved: roomLabelBoxes,
         }),
-      [data, markers, department, state.view.z, chipSize, typography, roomLabelBoxes],
+      [data, markers, departments, state.view.z, chipSize, typography, roomLabelBoxes],
     ),
   );
   prevPlanRef.current = labelPlan;

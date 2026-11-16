@@ -42,7 +42,7 @@ export interface MarkerModel {
   responderRoles: ResponderRoleDef[];
 }
 
-export function markerModel(state: AppState, unit: Unit, opts: { personal?: boolean; /** The department filter (activeDepartment). */ department?: string | null } = {}): MarkerModel {
+export function markerModel(state: AppState, unit: Unit, opts: { personal?: boolean; /** The department filter (activeDepartments); none is every department. */ departments?: readonly string[] } = {}): MarkerModel {
   const style = markerStyle(state, unit);
   const status = unitStatus(state, unit, (id) => contactName(state, id));
   const { holder, dept } = markerSubTexts(state, unit);
@@ -71,7 +71,7 @@ export function markerModel(state: AppState, unit: Unit, opts: { personal?: bool
     pinText,
     isHighlighted: state.highlightUnitId === unit.id,
     // Landmarks (stairs, extinguishers) belong to no department and stay as they are.
-    isDimmed: !!opts.department && unit.type !== 'amenity' && unitDepartment(state, unit) !== opts.department,
+    isDimmed: !!opts.departments?.length && unit.type !== 'amenity' && !opts.departments.includes(unitDepartment(state, unit) ?? ''),
     isBusy: state.busyUnitId === unit.id,
     draggable: state.mode === 'edit' && state.tool === 'select',
     responderRoles,

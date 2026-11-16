@@ -10,7 +10,7 @@ import { markerStyle } from '../lib/unitStatus';
 import { settingsFromState } from '../lib/settingsStore';
 import { recordText } from '../lib/facilioApiDataSource';
 import { fieldTitle } from '../hooks/useRecordFields';
-import { DEFAULT_PARKING_PRINT, DEFAULT_PLAN_LABEL, DEFAULT_PLAN_LABELS } from '../lib/types';
+import { DEFAULT_PARKING_PRINT, DEFAULT_PLAN_LABEL, DEFAULT_PLAN_LABELS, DEFAULT_REGISTER_PRINTS } from '../lib/types';
 import type { PlanLabels, Unit } from '../lib/types';
 import type { AppState } from './types';
 
@@ -92,18 +92,29 @@ describe('the plan label of a desk, a stall or a room', () => {
   });
 });
 
-describe('the parking register choices', () => {
+describe('the register choices, one set per kind', () => {
   const mine = { ...DEFAULT_PARKING_PRINT, cols: ['emp', 'mobile'], sort: 'dept' as const };
 
-  it('are kept for everyone who prints parking', () => {
-    const s = reducer(floor(), { type: 'SET_PARKING_PRINT', value: mine });
-    expect(s.parkingPrint).toEqual(mine);
-    expect(settingsFromState(s).parkingPrint).toEqual(mine);
+  it('are kept for everyone who prints, each kind on its own', () => {
+    const s = reducer(floor(), { type: 'SET_PRINT_REGISTER', kind: 'parking', value: mine });
+    expect(s.printRegisters.parking).toEqual(mine);
+    expect(s.printRegisters.workstation).toEqual(DEFAULT_REGISTER_PRINTS.workstation);
+    expect(settingsFromState(s).printRegisters?.parking).toEqual(mine);
+    const desks = reducer(s, { type: 'SET_PRINT_REGISTER', kind: 'workstation', value: { ...DEFAULT_REGISTER_PRINTS.workstation, register: true } });
+    expect(desks.printRegisters.workstation.register).toBe(true);
+    expect(desks.printRegisters.parking).toEqual(mine);
   });
 
-  it('are read back over the defaults', () => {
-    expect(reducer(buildInitialState(), { type: 'APPLY_SETTINGS', config: { parkingPrint: mine } }).parkingPrint).toEqual(mine);
-    expect(reducer(buildInitialState(), { type: 'APPLY_SETTINGS', config: { parkingPrint: { rows: 'vacant' } as never } }).parkingPrint).toEqual({ ...DEFAULT_PARKING_PRINT, rows: 'vacant' });
+  it('are read back over the defaults — parking also from where v68–v71 kept it', () => {
+    expect(reducer(buildInitialState(), { type: 'APPLY_SETTINGS', config: { printRegisters: { room: { register: true } } } }).printRegisters.room).toEqual({ ...DEFAULT_REGISTER_PRINTS.room, register: true });
+    expect(reducer(buildInitialState(), { type: 'APPLY_SETTINGS', config: { parkingPrint: mine } }).printRegisters.parking).toEqual(mine);
+    expect(reducer(buildInitialState(), { type: 'APPLY_SETTINGS', config: { parkingPrint: { rows: 'vacant' } as never } }).printRegisters.parking).toEqual({ ...DEFAULT_PARKING_PRINT, rows: 'vacant' });
+  });
+
+  it('print only parking until someone turns the others on', () => {
+    const s = buildInitialState();
+    expect(s.printRegisters.parking.register).toBe(true);
+    expect([s.printRegisters.workstation.register, s.printRegisters.room.register, s.printRegisters.locker.register]).toEqual([false, false, false]);
   });
 });
 

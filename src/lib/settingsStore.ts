@@ -1,4 +1,4 @@
-import type { Access, EnabledModules, FirstResponder, MarkerDef, ParkingPrint, PlanLabel, PlanLabels, ResponderRoleDef } from './types';
+import type { Access, EnabledModules, FirstResponder, MarkerDef, ParkingPrint, PlanLabel, PlanLabels, RegisterKind, RegisterPrint, ResponderRoleDef } from './types';
 import type { AppState } from '../state/types';
 import type { LabelStyle } from './labelLayout';
 import { isVibeApp, vibe } from './vibe';
@@ -44,7 +44,9 @@ export interface SettingsConfig {
   planLabels?: Partial<PlanLabels>;
   /** The parking label alone, as v68–v69 stored it: read when `planLabels` has none; no longer written. */
   parkingLabel?: PlanLabel;
-  /** The parking register printed after a parking plan (print window › Details), for everyone. */
+  /** The registers printed after a plan (print window › Details), one per kind, for everyone. */
+  printRegisters?: Partial<Record<RegisterKind, Partial<RegisterPrint>>>;
+  /** The parking register alone, as v68–v71 stored it: read when `printRegisters` has none; no longer written. */
   parkingPrint?: ParkingPrint;
   /** The type the desk labels are drawn in (Settings › Desks › Desk labels). */
   labelStyle?: LabelStyle;
@@ -71,7 +73,7 @@ export function settingsFromState(state: AppState): SettingsConfig {
     customMarkers: state.customMarkers,
     enabledModules: state.enabledModules,
     planLabels: state.planLabels,
-    parkingPrint: state.parkingPrint,
+    printRegisters: state.printRegisters,
     labelStyle: state.labelStyle,
     // Not when the app database holds them: one source, never two (see lib/sharedSettings).
     ...(state.respondersInDb ? {} : { firstResponders: state.firstResponders, responderRoles: state.responderRoles }),

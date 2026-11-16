@@ -11,7 +11,8 @@ import type {
   OrgRole,
   PanelsState,
   PlanLabels,
-  ParkingPrint,
+  RegisterKind,
+  RegisterPrint,
   PlanId,
   PlanViews,
   Site,
@@ -75,11 +76,11 @@ export interface AppState {
   userZoomed: boolean;
   spaceFilter: SpaceFilter;
   /**
-   * Spaces list only, like `spaceFilter`: the department whose desks the list is narrowed to,
-   * `null` for all of them. Read off the desk record's own `department` — the same field the
-   * plan colours by — so the list can answer "where does Finance sit" with the colours on.
+   * The departments ticked in the Spaces panel: the list narrows to their spaces and the plan dims
+   * the rest. None ticked is every department. A space's department is its record's own, else its
+   * holder's (selectors.unitDepartment).
    */
-  spaceDepartment: string | null;
+  spaceDepartments: string[];
   spaceSearch: string;
 
   units: Unit[];
@@ -182,6 +183,11 @@ export interface AppState {
    */
   colorBy: 'status' | 'department';
   /**
+   * The same choice for this viewer alone, from the switch on the plan's counts card; null follows
+   * `colorBy`, the Settings default for everyone. Never saved — see selectors.colorByOf.
+   */
+  colorByView: 'status' | 'department' | null;
+  /**
    * What the print sheet's plan pages show. `detail`: the whole floor with numbered desks, then a
    * zoomed page for every area of desks, each desk labelled as on screen. `floor`: the numbered
    * whole floor alone. `view`: the area on screen, at the viewer's own zoom. Session-only.
@@ -208,8 +214,11 @@ export interface AppState {
   planViews: PlanViews;
   /** What desks, stalls and rooms say on the plan (Settings › Desks / Parking / Rooms) — see PlanLabel. */
   planLabels: PlanLabels;
-  /** The parking register every print of a parking plan carries (print window › Details), kept for everyone. */
-  parkingPrint: ParkingPrint;
+  /**
+   * The registers a print carries after its plan (print window › Details) — desks, rooms, parking
+   * stalls, lockers — each with its own choices, kept for everyone (lib/register).
+   */
+  printRegisters: Record<RegisterKind, RegisterPrint>;
 
   toast: string | null;
 

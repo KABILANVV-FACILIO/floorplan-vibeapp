@@ -82,6 +82,22 @@ export const DEFAULT_PARKING_PRINT: ParkingPrint = {
   sort: 'name',
 };
 
+/** The kinds of space a register can list after a plan — each with its own choices (print › Details). */
+export type RegisterKind = 'workstation' | 'parking' | 'locker' | 'room';
+/** One register's choices: printed or not, its columns (lib/register keys), which rows, in what order. */
+export type RegisterPrint = ParkingPrint;
+/**
+ * Every register's choices, kept for everyone. Parking prints its register as it always has; the
+ * others are off until someone turns them on in Details, so nobody's printout grows unasked.
+ */
+export const DEFAULT_REGISTER_PRINTS: Record<RegisterKind, RegisterPrint> = {
+  parking: DEFAULT_PARKING_PRINT,
+  workstation: { register: false, cols: ['name', 'id', 'dtype', 'ddept', 'status', 'emp', 'hrms', 'dept'], rows: 'all', sort: 'name' },
+  locker: { register: false, cols: ['name', 'id', 'status', 'emp', 'hrms', 'dept'], rows: 'all', sort: 'name' },
+  room: { register: false, cols: ['name', 'id', 'code', 'bookable', 'status', 'by', 'time'], rows: 'all', sort: 'name' },
+};
+export const REGISTER_KINDS: RegisterKind[] = ['workstation', 'room', 'parking', 'locker'];
+
 /** Whether a unit's module is switched on. Amenity markers are never gated. */
 export function isModuleEnabled(enabled: EnabledModules, type: UnitType): boolean {
   if (type === 'amenity') return true;

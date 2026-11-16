@@ -1,7 +1,7 @@
-import { DEFAULT_ENABLED_MODULES, DEFAULT_PARKING_PRINT, DEFAULT_PLAN_LABEL, DEFAULT_PLAN_LABELS, DEFAULT_PLAN_VIEWS, LABELLED_TYPES, floorImageKey, isRoomLike, planForPlacement } from '../lib/types';
+import { DEFAULT_ENABLED_MODULES, DEFAULT_PLAN_LABEL, DEFAULT_REGISTER_PRINTS, REGISTER_KINDS, DEFAULT_PLAN_LABELS, DEFAULT_PLAN_VIEWS, LABELLED_TYPES, floorImageKey, isRoomLike, planForPlacement } from '../lib/types';
 import { DEFAULT_LABEL_STYLE } from '../lib/labelLayout';
 import type { LabelStyle } from '../lib/labelLayout';
-import type { AppMode, Booking, Building, Floor, FloorSearchHit, LabelledType, MarkerDef, ModuleKey, OrgRole, ParkingPrint, PlanId, PlanLabel, PlanLabels, PlanViews, Site, Surface, SurfaceAccess, Unit } from '../lib/types';
+import type { AppMode, Booking, Building, Floor, FloorSearchHit, LabelledType, MarkerDef, ModuleKey, OrgRole, PlanId, PlanLabel, PlanLabels, PlanViews, RegisterKind, RegisterPrint, Site, Surface, SurfaceAccess, Unit } from '../lib/types';
 import { clamp, fitView } from '../lib/geometry';
 import { seedBookings } from '../lib/mockData';
 import { viewFromLocation } from '../lib/routes';
@@ -72,7 +72,7 @@ export function buildInitialState(): AppState {
     viewAnim: false,
     userZoomed: false,
     spaceFilter: 'all',
-    spaceDepartment: null,
+    spaceDepartments: [],
     spaceSearch: '',
 
     units: [],
@@ -131,6 +131,7 @@ export function buildInitialState(): AppState {
     settingsTab: 'permissions',
     moduleColors: {},
     colorBy: 'status',
+    colorByView: null,
     printScope: 'detail',
     departments: [],
     departmentColors: {},
@@ -140,7 +141,7 @@ export function buildInitialState(): AppState {
     // out again once the role and the grid arrive.
     planViews: DEFAULT_PLAN_VIEWS,
     planLabels: DEFAULT_PLAN_LABELS,
-    parkingPrint: DEFAULT_PARKING_PRINT,
+    printRegisters: DEFAULT_REGISTER_PRINTS,
 
     toast: null,
 
@@ -195,7 +196,7 @@ export type Action =
   | { type: 'SET_VIEW'; view: AppState['view']; animate?: boolean }
   | { type: 'MARK_USER_ZOOMED'; value: boolean }
   | { type: 'SET_SPACE_FILTER'; filter: AppState['spaceFilter'] }
-  | { type: 'SET_SPACE_DEPARTMENT'; department: string | null }
+  | { type: 'SET_SPACE_DEPARTMENTS'; departments: string[] }
   | { type: 'SET_SPACE_SEARCH'; value: string }
   | { type: 'PORTFOLIO_LOADED'; portfolio: Site[]; employees: AppState['employees'] }
   | { type: 'EMPLOYEES_LOADED'; employees: AppState['employees'] }
@@ -253,6 +254,7 @@ export type Action =
   | { type: 'SET_SETTINGS_TAB'; tab: AppState['settingsTab'] }
   | { type: 'SET_MODULE_COLOR'; key: string; hex: string }
   | { type: 'SET_COLOR_BY'; value: AppState['colorBy'] }
+  | { type: 'SET_COLOR_BY_VIEW'; value: AppState['colorByView'] }
   | { type: 'SET_PRINT_SCOPE'; value: AppState['printScope'] }
   | { type: 'SET_DEPARTMENT_COLOR'; department: string; hex: string }
   | { type: 'DEPARTMENTS_LOADED'; departments: { id: string; name: string }[] }
@@ -296,7 +298,7 @@ export type Action =
   | { type: 'DISCARD_CHANGES' }
   | { type: 'SET_PENDING_MODE_SWITCH'; mode: AppState['mode'] | null }
   | { type: 'SET_PLAN_LABEL'; kind: LabelledType; value: PlanLabel }
-  | { type: 'SET_PARKING_PRINT'; value: ParkingPrint }
+  | { type: 'SET_PRINT_REGISTER'; kind: RegisterKind; value: RegisterPrint }
   | { type: 'RESET_DEMO'; units: Unit[]; assignments: AppState['assignments']; bookings: Booking[] };
 
 /**
@@ -431,7 +433,7 @@ export function reducer(state: AppState, action: Action): AppState {
         navView: 'spaces',
         spaceSearch: '',
         spaceFilter: 'all',
-        spaceDepartment: null,
+        spaceDepartments: [],
         loading: true,
         // Switching floors: shimmer immediately (cleared once the new floor's image resolves), so
         // the new floor's markers never briefly render over the old/blank background.
@@ -545,8 +547,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, userZoomed: action.value };
     case 'SET_SPACE_FILTER':
       return { ...state, spaceFilter: action.filter };
-    case 'SET_SPACE_DEPARTMENT':
-      return { ...state, spaceDepartment: action.department };
+    case 'SET_SPACE_DEPARTMENTS':
+      return { ...state, spaceDepartments: action.departments };
     case 'SET_SPACE_SEARCH':
       return { ...state, spaceSearch: action.value };
     case 'PORTFOLIO_LOADED':
@@ -743,7 +745,10 @@ export function reducer(state: AppState, action: Action): AppState {
         planLabels: Object.fromEntries(
           LABELLED_TYPES.map((k) => [k, { ...DEFAULT_PLAN_LABEL, ...((k === 'parking' ? (c.planLabels?.parking ?? c.parkingLabel) : c.planLabels?.[k]) ?? {}) }]),
         ) as PlanLabels,
-        parkingPrint: { ...DEFAULT_PARKING_PRINT, ...(c.parkingPrint ?? {}) },
+        // Each register over its default; parking also from where v68–v71 kept it, before there were four.
+        printRegisters: Object.fromEntries(
+          REGISTER_KINDS.map((k) => [k, { ...DEFAULT_REGISTER_PRINTS[k], ...((k === 'parking' ? (c.printRegisters?.parking ?? c.parkingPrint) : c.printRegisters?.[k]) ?? {}) }]),
+        ) as AppState['printRegisters'],
         // Over the defaults too: a config saved before the setting existed must not blank it.
         labelStyle: c.labelStyle
           ? { name: { ...DEFAULT_LABEL_STYLE.name, ...c.labelStyle.name }, detail: { ...DEFAULT_LABEL_STYLE.detail, ...c.labelStyle.detail } }
@@ -802,8 +807,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return settleAccess({ ...state, access: {} });
     case 'SET_PLAN_LABEL':
       return { ...state, planLabels: { ...state.planLabels, [action.kind]: action.value } };
-    case 'SET_PARKING_PRINT':
-      return { ...state, parkingPrint: action.value };
+    case 'SET_PRINT_REGISTER':
+      return { ...state, printRegisters: { ...state.printRegisters, [action.kind]: action.value } };
 
     case 'SET_ACTIVE_VIEW': {
       // Clamped, not trusted: this is also the landing point for a deep link, which can name a tab
@@ -820,6 +825,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, moduleColors: { ...state.moduleColors, [action.key]: action.hex } };
     case 'SET_COLOR_BY':
       return { ...state, colorBy: action.value };
+    case 'SET_COLOR_BY_VIEW':
+      return { ...state, colorByView: action.value };
     case 'SET_PRINT_SCOPE':
       return { ...state, printScope: action.value };
     case 'SET_DEPARTMENT_COLOR':

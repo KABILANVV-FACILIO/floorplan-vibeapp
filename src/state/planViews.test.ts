@@ -7,7 +7,7 @@ vi.mock('../lib/pdfPreview', () => ({ renderPdfToDataUrl: vi.fn() }));
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { buildInitialState, permittedMode, reducer } from './reducer';
-import { activeDepartment, bookingAllowed, canAssign, canBookFromCalendar, canSee, floorDepartments, markerLabelInputs, myAssignedUnit, unitDepartment } from './selectors';
+import { activeDepartments, bookingAllowed, canAssign, canBookFromCalendar, canSee, floorDepartments, markerLabelInputs, myAssignedUnit, unitDepartment } from './selectors';
 import { markerModel } from '../lib/markerModel';
 import { settingsFromState } from '../lib/settingsStore';
 import { SURFACES, SURFACE_ORDER } from '../lib/types';
@@ -88,21 +88,36 @@ describe('the department filter on the plan', () => {
   });
 
   it('dims the other departments on the plan, never a landmark, and keeps them clickable', () => {
-    const s = floor({ spaceDepartment: 'Finance' });
-    const dept = activeDepartment(s);
-    expect(dept).toBe('Finance');
-    const dimmed = s.units.filter((u) => markerModel(s, u, { department: dept }).isDimmed).map((u) => u.id);
+    const s = floor({ spaceDepartments: ['Finance'] });
+    const departments = activeDepartments(s);
+    expect(departments).toEqual(['Finance']);
+    const dimmed = s.units.filter((u) => markerModel(s, u, { departments }).isDimmed).map((u) => u.id);
     expect(dimmed).toEqual(['2', '3', '4']);
   });
 
+  it('keeps every ticked department lit when several are ticked', () => {
+    const s = floor({ spaceDepartments: ['Finance', 'Legal Affairs'] });
+    const departments = activeDepartments(s);
+    expect(departments).toEqual(['Finance', 'Legal Affairs']);
+    const dimmed = s.units.filter((u) => markerModel(s, u, { departments }).isDimmed).map((u) => u.id);
+    expect(dimmed).toEqual(['2', '4']); // Engineering's, and the free desk with none
+  });
+
+  it('dims nothing when no department is ticked — every department shows', () => {
+    const s = floor({ spaceDepartments: [] });
+    expect(activeDepartments(s)).toEqual([]);
+    expect(s.units.some((u) => markerModel(s, u, { departments: activeDepartments(s) }).isDimmed)).toBe(false);
+  });
+
   it("drops the other departments' cards, but not the selected desk's", () => {
-    const s = floor({ spaceDepartment: 'Finance', selected: '2' });
-    const ids = markerLabelInputs(s, s.units, { department: 'Finance' }).map((l) => l.id);
+    const s = floor({ spaceDepartments: ['Finance'], selected: '2' });
+    const ids = markerLabelInputs(s, s.units, { departments: ['Finance'] }).map((l) => l.id);
     expect(ids).toEqual(['1', '2', 'st']);
   });
 
-  it('filters nothing for a department no longer on the floor', () => {
-    expect(activeDepartment(floor({ spaceDepartment: 'Strategy & Planning' }))).toBeNull();
+  it('filters by the ticked departments still on the floor, and nothing when none is', () => {
+    expect(activeDepartments(floor({ spaceDepartments: ['Strategy & Planning'] }))).toEqual([]);
+    expect(activeDepartments(floor({ spaceDepartments: ['Strategy & Planning', 'Finance'] }))).toEqual(['Finance']);
   });
 });
 

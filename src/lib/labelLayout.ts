@@ -87,6 +87,10 @@ export const CHIP_PX = 24;
 export const CHIP_MAX_SCALE = 3;
 /** The share of the desk pitch a chip covers once it tracks the drawing — a desk, not a dot and not a blob. */
 export const CHIP_FOOTPRINT_OF_PITCH = 0.45;
+/** The most of the pitch a chip may cover zoomed out: just under it, so neighbours never overlap. */
+export const CHIP_FIT_OF_PITCH = 0.9;
+/** The least a chip shrinks to, however close the spaces sit — still a mark you can see and click. */
+export const CHIP_MIN_PX = 10;
 
 /**
  * How big a chip is on screen at `zoom`.
@@ -100,7 +104,12 @@ export const CHIP_FOOTPRINT_OF_PITCH = 0.45;
  */
 export function chipScreenSize(zoom: number, footprintPlanPx: number | null | undefined): number {
   if (!footprintPlanPx || !(zoom > 0)) return CHIP_PX;
-  return Math.max(CHIP_PX, Math.min(CHIP_PX * CHIP_MAX_SCALE, footprintPlanPx * zoom));
+  // The floor gives way where the spaces sit closer than a chip: a car park of stalls a few px
+  // apart on a whole-floor view drew 24px chips over each other, hiding some. There the chip is
+  // just under the gap between neighbours (never below CHIP_MIN_PX); anywhere roomier, CHIP_PX.
+  const pitch = (footprintPlanPx / CHIP_FOOTPRINT_OF_PITCH) * zoom;
+  const least = Math.max(CHIP_MIN_PX, Math.min(CHIP_PX, pitch * CHIP_FIT_OF_PITCH));
+  return Math.max(least, Math.min(CHIP_PX * CHIP_MAX_SCALE, footprintPlanPx * zoom));
 }
 
 export interface LabelLayoutOptions {

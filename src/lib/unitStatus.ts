@@ -1,8 +1,8 @@
 import type { AppState } from '../state/types';
 import { personInitials } from './displayNames';
-import { conflictsFor, contactById, isAssignable, isBookable, multiSelectedSet, showsHolder } from '../state/selectors';
+import { colorByOf, conflictsFor, contactById, isAssignable, isBookable, multiSelectedSet, showsHolder } from '../state/selectors';
 import { isRoomLike, resolveMarkerDef, STATE_DEFS } from './types';
-import { departmentColor, departmentsIn } from './departmentColors';
+import { departmentColor, departmentKey, departmentsIn } from './departmentColors';
 import type { Unit } from './types';
 import { fmtTime } from './geometry';
 
@@ -108,11 +108,14 @@ export function markerStyle(state: AppState, unit: Unit, markerScale = 1): Marke
     // Coloured by DEPARTMENT: the chip stops reporting availability and reports the team instead.
     // Only desks carry a department, and only in Assign view — Booking view is asking "what is
     // free at 10:00", which a department colour cannot answer.
-    if (state.colorBy === 'department' && unit.type === 'workstation' && unit.departmentId) {
+    // A desk with a department name and no record id (the demo seed) is keyed by its name, exactly
+    // as departmentsIn keys it for the legend and the counts card.
+    const deptKey = unit.departmentId || (unit.department?.trim() ? 'name:' + departmentKey(unit.department) : null);
+    if (colorByOf(state) === 'department' && unit.type === 'workstation' && deptKey) {
       // Keyed by the department's record id, so a rename in Facilio keeps the colour. The set of
       // ids on the plan goes along, so no two departments here can land on the same colour.
       const c = departmentColor(
-        unit.departmentId,
+        deptKey,
         state.departmentColors,
         departmentsIn(state.units).map((d) => d.id),
       );

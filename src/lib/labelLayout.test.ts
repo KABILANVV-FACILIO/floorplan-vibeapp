@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CARD_PAD_X, CHIP_MAX_SCALE, CHIP_PX, DEFAULT_LABEL_TYPOGRAPHY, cardOffset, chipScreenSize, planMarkerLabels, planRoomLabels, scaleTypography, typographyOf } from './labelLayout';
+import { CARD_PAD_X, CHIP_FOOTPRINT_OF_PITCH, CHIP_MAX_SCALE, CHIP_MIN_PX, CHIP_PX, DEFAULT_LABEL_TYPOGRAPHY, cardOffset, chipScreenSize, planMarkerLabels, planRoomLabels, scaleTypography, typographyOf } from './labelLayout';
 import type { LabelPlacement, MarkerLabelInput, RoomLabelInput } from './labelLayout';
 
 /**
@@ -286,8 +286,8 @@ describe('the type the labels are drawn in', () => {
 
 describe('chipScreenSize', () => {
   it('holds the readable size on a whole-floor view, tracks the drawing zooming in, and stops at the cap', () => {
-    const footprint = 20; // plan px — a share of this floor's desk pitch
-    expect(chipScreenSize(0.4, footprint)).toBe(CHIP_PX); // 8px would be a speck
+    const footprint = 20; // plan px — a share of this floor's desk pitch (44 plan px)
+    expect(chipScreenSize(0.7, footprint)).toBe(CHIP_PX); // 14px would be a speck; 31px apart, 24 fits
     expect(chipScreenSize(1.2, footprint)).toBe(CHIP_PX); // exactly the floor
     expect(chipScreenSize(2, footprint)).toBe(40);
     expect(chipScreenSize(3, footprint)).toBe(60);
@@ -301,6 +301,16 @@ describe('chipScreenSize', () => {
       expect(s).toBeGreaterThanOrEqual(last);
       last = s;
     }
+  });
+
+  it('gives way where the spaces sit closer than a chip, so neighbours never cover each other', () => {
+    // A car park on a whole-floor view: stalls 16px apart on screen.
+    const footprint = 40 * CHIP_FOOTPRINT_OF_PITCH;
+    const size = chipScreenSize(0.4, footprint);
+    expect(size).toBeLessThan(16);
+    expect(size).toBeGreaterThan(12);
+    // And never below a mark you can still see and click.
+    expect(chipScreenSize(0.05, footprint)).toBe(CHIP_MIN_PX);
   });
 
   it('is the constant size when the floor has no pitch to speak of', () => {
