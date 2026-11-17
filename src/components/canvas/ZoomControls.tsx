@@ -6,9 +6,13 @@ export function ZoomControls({ rectW, rectH }: { rectW: number; rectH: number })
   const { state, actions } = useFloorplan();
   const zoomPct = Math.round(state.view.z * 100) + '%';
   const scaleText = state.pxPerMeter ? `${(state.pxPerMeter / state.view.z).toFixed(0)} px/m` : `${IMG_W}px plan`;
+  // Beside the side panel while it is open where it docks, not on top of it: pinned to the corner,
+  // these covered the panel's foot — the people filter's Apply button among it.
+  const details = state.panels.details;
+  const besidePanel = details.open && details.x == null;
 
   return (
-    <div className={styles.wrap}>
+    <div className={styles.wrap} style={besidePanel ? { right: 336 } : undefined}>
       <span className={styles.readout}>
         {scaleText} · {zoomPct}
       </span>

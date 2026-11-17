@@ -149,3 +149,147 @@
   font: 400 12px/1.4 var(--font-sans);
   color: var(--ink-500);
 }
+
+/* Rows are reachable with Tab; show where the keyboard is. */
+.row:focus {
+  outline: none;
+}
+.row:focus-visible {
+  outline: 2px solid var(--blue-500);
+  outline-offset: -2px;
+}
+
+/* The Department filter: a field that opens its tick list in place, as the People list's does
+   (AssignPanel). Ticking applies at once — the list below and the plan are what is being watched. */
+.deptBtn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--ink-500);
+  font: 400 12px/1 var(--font-sans);
+  cursor: pointer;
+  text-align: left;
+}
+.deptBtn:hover {
+  border-color: var(--ink-400);
+}
+.deptBtn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+.deptBtnOn {
+  border-color: var(--blue-500);
+  background: var(--blue-025);
+  color: var(--blue-600);
+}
+.deptBtnLabel {
+  flex-shrink: 0;
+}
+.deptBtnValue {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--ink-900);
+}
+.deptBtnOn .deptBtnValue {
+  color: var(--blue-700);
+}
+.deptPicker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.choiceList {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 168px;
+  overflow-y: auto;
+  padding: 3px;
+  border: 1px solid var(--ink-100);
+  border-radius: var(--radius-sm);
+  background: var(--ink-050);
+}
+.choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 5px 6px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  text-align: left;
+  font: 400 12px/1.2 var(--font-sans);
+  color: var(--ink-700);
+}
+.choice:hover {
+  background: #fff;
+}
+.choice:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+.choiceOn {
+  color: var(--ink-900);
+}
+.choiceLabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.choiceCount {
+  flex-shrink: 0;
+  font: 500 10.5px/1 var(--font-sans);
+  color: var(--ink-600);
+  font-variant-numeric: tabular-nums;
+}
+.check {
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  box-sizing: border-box;
+  border: 1.5px solid var(--ink-400);
+  border-radius: 3px;
+  background: #fff;
+  display: grid;
+  place-items: center;
+}
+.checkOn {
+  background: var(--blue-500);
+  border-color: var(--blue-500);
+}
+.deptPickerFoot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.deptHint {
+  font: 400 11px/1.3 var(--font-sans);
+  color: var(--ink-600);
+}
+.linkBtn {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: 500 12px/1 var(--font-sans);
+  color: var(--blue-500);
+  cursor: pointer;
+}
+.linkBtn:hover {
+  text-decoration: underline;
+}

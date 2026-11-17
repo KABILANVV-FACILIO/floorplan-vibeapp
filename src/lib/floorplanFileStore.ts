@@ -1,26 +1,19 @@
-import { isVibeApp, vibe } from './vibe';
-import { fetchVibeFloorplanFile, listVibeFloorplanFloors, storeVibeFloorplanFile } from './vibeDbDataSource';
-
 /**
- * Persistence for an uploaded floorplan source file (an image, or a rasterized snapshot of a
- * PDF/CAD file), so the app can reload it after a refresh.
+ * This browser's copy of an uploaded floorplan source file (an image, or a rasterized snapshot of a
+ * PDF/CAD file), so a floor drawn from an upload survives a refresh where the org has no plan image
+ * of its own to read back — chiefly offline `npm run dev` and the demo floors. A floor in Facilio
+ * reads its plan from the org's `indoorfloorplan` record, which the upload writes.
  *
- * As a vibe app the bytes go to the app's file store (`vibe.uploadFile`, which returns a durable
- * `fileId`) and only the small metadata record — the fileId, name and mime — is written to the vibe
- * DB. That split matters: a rasterized floor plan routinely exceeds the ~5MB localStorage budget the
- * previous build was stuck with, and the file store has no such cap.
+ * There was an app-database tier ahead of this one (a metadata row in the vibe DB, the bytes in the
+ * app's file store). Its function could never be deployed — it ran DDL the app's database login
+ * may not — so it was switched off and then removed; while off, each upload still sent its bytes to
+ * the file store with no row to find them by.
  *
- * Outside a vibe app (offline `npm run dev`) it degrades to the old localStorage copy, so the seed
- * dataset still behaves.
- *
- * Callers see one shape either way: `dataUrl` is always something an `<img>` can render — a real
- * data URL from localStorage, or an object URL over the blob downloaded from the file store.
+ * `dataUrl` is always something an `<img>` can render: a real data URL.
  */
 export interface StoredFloorplanFile {
-  /** A renderable URL — a data URL from local storage, or an object URL over the stored blob. */
+  /** A renderable URL — a data URL. */
   dataUrl: string;
-  /** Durable handle in the app's vibe file store, when the bytes live there. */
-  fileId?: number | null;
   name?: string;
   mime?: string;
 }
@@ -28,32 +21,8 @@ export interface StoredFloorplanFile {
 const LS_PREFIX = 'facilio_floorplan_file_v1:';
 const fileKey = (floorId: string, planId: string) => `${LS_PREFIX}${floorId}::${planId}`;
 
-/** The metadata row held in the vibe DB — deliberately tiny, the bytes live in the file store. */
-interface StoredFileRecord {
-  fileId?: number | null;
-  name?: string;
-  mime?: string;
-  /** Only set by the localStorage path; a vibe row never inlines bytes. */
-  dataUrl?: string;
-}
-
-/**
- * Reads a previously-uploaded floorplan file for a floor+plan back.
- *
- * Falls through to the local copy when the app store can't answer — the vibe DB addon isn't
- * available in every region, and a plan that silently stops surviving a refresh is worse than one
- * that persists per-browser.
- */
+/** Reads a previously-uploaded floorplan file for a floor+plan back. */
 export async function loadFloorplanFile(floorId: string, planId: string): Promise<StoredFloorplanFile | null> {
-  if (isVibeApp) {
-    const row = await fetchVibeFloorplanFile<StoredFileRecord>(floorId, planId).catch(() => null);
-    if (row?.fileId) {
-      const blob = await vibe.downloadFile(row.fileId).catch(() => null);
-      if (blob) return { dataUrl: URL.createObjectURL(blob), fileId: row.fileId, name: row.name, mime: row.mime };
-    } else if (row?.dataUrl) {
-      return { dataUrl: row.dataUrl, name: row.name, mime: row.mime };
-    }
-  }
   return loadLocalFloorplanFile(floorId, planId);
 }
 
@@ -80,11 +49,6 @@ function loadLocalFloorplanFile(floorId: string, planId: string): StoredFloorpla
  * portfolio tree stop showing "no plan" for floors whose upload lives in the store.
  */
 export async function listFloorplanFloorIds(): Promise<string[]> {
-  if (isVibeApp) {
-    const ids = await listVibeFloorplanFloors().catch(() => []);
-    if (ids.length) return ids;
-    // fall through to the local scan — see loadFloorplanFile
-  }
   try {
     const ids: string[] = [];
     for (let i = 0; i < localStorage.length; i++) {
@@ -107,8 +71,8 @@ export async function listFloorplanFloorIds(): Promise<string[]> {
 export async function persistFloorplanFile(floorId: string, planId: string, file: StoredFloorplanFile): Promise<void> {
   // Callers hand over whatever URL they happen to be rendering, and for an upload that is routinely
   // a `blob:` object URL (the connected-app round-trip and the server-rendered image both build
-  // one). Those die with the document, so resolve to bytes ONCE, up front: the store gets a real
-  // blob and the local fallback gets a real data URL, instead of a string that reloads as nothing.
+  // one). Those die with the document, so resolve to bytes first, and keep a real data URL instead
+  // of a string that reloads as nothing.
   const blob = await urlToBlob(file.dataUrl).catch(() => null);
   if (!blob) {
     // eslint-disable-next-line no-console
@@ -116,27 +80,6 @@ export async function persistFloorplanFile(floorId: string, planId: string, file
     return;
   }
 
-  if (isVibeApp) {
-    try {
-      const name = file.name ?? `floorplan-${floorId}-${planId}`;
-      const uploaded = await vibe.uploadFile(blob, name);
-      // `storeVibeFloorplanFile` RESOLVES (rather than throwing) once the floorplanApi circuit
-      // breaker has tripped — the function isn't deployed in every region. Without checking, that
-      // silent no-op used to return here having written the metadata nowhere AND skipped the local
-      // fallback, so every upload after the first one persisted nothing at all.
-      const stored = await storeVibeFloorplanFile(floorId, planId, {
-        fileId: uploaded.fileId,
-        name: uploaded.fileName ?? name,
-        mime: uploaded.contentType ?? file.mime ?? blob.type,
-      });
-      if (stored) return;
-      // eslint-disable-next-line no-console
-      console.info('[floorplanFile] vibe DB unavailable for the metadata row; keeping a local copy instead');
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('[floorplanFile] vibe save failed; falling back to this browser only', err);
-    }
-  }
   try {
     const dataUrl = await blobToDataUrl(blob);
     localStorage.setItem(fileKey(floorId, planId), JSON.stringify({ ...file, dataUrl }));

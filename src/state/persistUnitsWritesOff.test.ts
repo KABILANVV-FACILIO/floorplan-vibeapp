@@ -66,7 +66,10 @@ const org = vi.hoisted(() => ({
   /** Every request, in order: [method, module, detail]. */
   log: [] as [string, string, unknown][],
   nextId: 9000,
+  /** Marker writes the org refuses, by method ('create' | 'update' | 'delete'). */
+  refuseMarkers: [] as string[],
 }));
+const refused = (method: string, module: string) => (module === 'floorplanmarker' && org.refuseMarkers.includes(method) ? { error: { code: 500, message: `${method} refused` } } : null);
 
 vi.mock('../lib/facilioApi', () => ({
   apiOrigin: 'https://example.test',
@@ -97,18 +100,24 @@ vi.mock('../lib/facilioApi', () => ({
     // The writes change the tables, so a later read (Refresh) sees what a save really left.
     createRecord: vi.fn(async (module: string, { data }: { data: any }) => {
       org.log.push(['create', module, data]);
+      const no = refused('create', module);
+      if (no) return no;
       const row = { id: org.nextId++, ...data };
       (org.tables[module] ??= []).push(row);
       return { error: null, [module]: row };
     }),
     updateRecord: vi.fn(async (module: string, { id, data }: { id: number; data: any }) => {
       org.log.push(['update', module, { id, ...data }]);
+      const no = refused('update', module);
+      if (no) return no;
       const row = (org.tables[module] ?? []).find((r) => r.id === id);
       if (row) Object.assign(row, data);
       return { error: null };
     }),
     deleteRecord: vi.fn(async (module: string, id: number) => {
       org.log.push(['delete', module, id]);
+      const no = refused('delete', module);
+      if (no) return no;
       org.tables[module] = (org.tables[module] ?? []).filter((r) => r.id !== id);
       return { error: null };
     }),
@@ -177,6 +186,7 @@ beforeEach(() => {
   };
   org.log = [];
   org.nextId = 9000;
+  org.refuseMarkers = [];
 });
 
 describe('room outline writes, switched off', () => {
@@ -214,8 +224,8 @@ describe('with room outline writes off, nothing writes a zone', () => {
     // Save.
     const { floorId, units, savedUnits } = state;
     const outcome = await m.persistUnits(floorId, units, savedUnits);
-    state = m.reducer(state, { type: 'MARK_SAVED', floorId, units, baseline: savedUnits, retry: outcome.roomsToRetry });
-    expect(outcome.roomsToRetry).toEqual([]);
+    state = m.reducer(state, { type: 'MARK_SAVED', floorId, units, baseline: savedUnits, retry: outcome.toRetry });
+    expect(outcome.toRetry).toEqual([]);
     // The editor zone was relabelled and then rebound away: it counts once, as the room it was.
     expect(outcome.roomsNotWritten.sort()).toEqual(['Editor Zone', 'Male Toilet B', 'Meeting Room 2', 'Pantry']);
     // The desk went through, as it would have with no room touched.
@@ -530,7 +540,7 @@ describe('a zone tied to a desk on a later page of `desks` leaves the plan once 
     const outcome = await m.persistUnits(floorId, units, savedUnits);
     // Page 2 lands while the save is out; then the save finishes.
     let state = m.reducer(moved, { type: 'FLOOR_UNITS_MORE', floorId, units: rest });
-    state = m.reducer(state, { type: 'MARK_SAVED', floorId, units, baseline: savedUnits, retry: outcome.roomsToRetry });
+    state = m.reducer(state, { type: 'MARK_SAVED', floorId, units, baseline: savedUnits, retry: outcome.toRetry });
     expect(state.savedUnits.filter((u) => u.id === '1001').map((u) => u.type)).toEqual(['workstation']);
     expect(state.units.filter((u) => u.id === '1001').map((u) => u.type)).toEqual(['workstation']);
     expect(state.unsavedChanges).toBe(0);
@@ -579,5 +589,64 @@ describe('a room traced on a floor with org outlines gets the name it always did
     expect(selectors.nextLabel(traced, 'room', 'RM')).toBe('RM-02');
     // Desks are numbered as before.
     expect(selectors.nextLabel(state, 'workstation', 'WS')).toBe('WS-02');
+  });
+});
+
+describe('a desk marker the org refuses is not called saved', () => {
+  /** Save the way the Save button does: persist, then MARK_SAVED with what came back to retry. */
+  async function save(m: Mods, state: ReturnType<Mods['reducer']>) {
+    const { floorId, units, savedUnits } = state;
+    const outcome = await m.persistUnits(floorId, units, savedUnits);
+    return { outcome, state: m.reducer(state, { type: 'MARK_SAVED', floorId, units, baseline: savedUnits, retry: outcome.toRetry }) };
+  }
+
+  it('a refused move is named, stays unsaved, and goes through on the next Save', async () => {
+    const m = await fresh();
+    let state = await loadFloor(m);
+    state = m.reducer(state, { type: 'UPDATE_UNIT', id: '1001', patch: { geom: { kind: 'point', x: 0.6, y: 0.6 } } });
+
+    org.refuseMarkers = ['update'];
+    let saved = await save(m, state);
+    expect(markerWrites()).toHaveLength(1); // it was tried…
+    expect(saved.outcome).toMatchObject({ unitsNotWritten: ['WS-1'], toRetry: ['1001'] });
+    expect(m.savedNotice(saved.outcome)).toBe('Not saved to Facilio: WS-1 — save again to retry.');
+    expect(saved.state.unsavedChanges).toBe(1); // …and the Save bar stays, so it can be tried again
+
+    org.refuseMarkers = [];
+    saved = await save(m, saved.state);
+    expect(saved.outcome).toMatchObject({ unitsNotWritten: [], toRetry: [] });
+    expect(m.savedNotice(saved.outcome)).toBe('Changes saved');
+    expect(saved.state.unsavedChanges).toBe(0);
+    expect(org.tables.floorplanmarker[0].geometry).not.toBe(deskMarker().geometry); // the move landed
+  });
+
+  it('a refused delete is named and the desk stays unsaved', async () => {
+    const m = await fresh();
+    let state = await loadFloor(m);
+    state = m.reducer(state, { type: 'DELETE_UNIT', id: '1001' });
+
+    org.refuseMarkers = ['delete'];
+    const saved = await save(m, state);
+    expect(markerWrites()).toEqual([['delete', 'floorplanmarker', 777]]);
+    expect(saved.outcome).toMatchObject({ unitsNotWritten: ['WS-1'], toRetry: ['1001'] });
+    expect(saved.state.unsavedChanges).toBeGreaterThan(0);
+    expect(org.tables.floorplanmarker).toHaveLength(1); // still in the org, as the toast says
+  });
+
+  it('a refused create is named, alongside the room changes, without "Desks saved"', async () => {
+    const m = await fresh();
+    let state = await loadFloor(m);
+    const newDesk: Unit = { id: '1002', type: 'workstation', label: 'WS-2', room: null, geom: { kind: 'point', x: 0.4, y: 0.4 }, floor: FLOOR, plan: 'workstation' };
+    state = m.reducer(state, { type: 'ADD_UNIT', unit: newDesk });
+    state = m.reducer(state, { type: 'UPDATE_UNIT', id: '819848', patch: { label: 'Male Toilet B' } });
+
+    org.refuseMarkers = ['create'];
+    const saved = await save(m, state);
+    expect(saved.outcome).toMatchObject({ unitsNotWritten: ['WS-2'], toRetry: ['1002'], roomsNotWritten: ['Male Toilet B'] });
+    expect(m.savedNotice(saved.outcome)).toBe(
+      "Not saved to Facilio: WS-2 — save again to retry. 1 room change can't be saved to Facilio yet and will be undone when you reload: Male Toilet B",
+    );
+    expect(saved.state.units.some((u) => u.id === '1002')).toBe(true); // still on screen…
+    expect(saved.state.savedUnits.some((u) => u.id === '1002')).toBe(false); // …and not taken as saved
   });
 });

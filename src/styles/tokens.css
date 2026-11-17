@@ -1,5 +1,5 @@
 /* Design tokens ported from the Facilio Atom design system (colors_and_type.css).
-   Fonts are loaded via Google Fonts in index.html instead of self-hosted @font-face. */
+   Roboto is self-hosted (@fontsource/roboto, imported in main.tsx) so the print PDF can embed it. */
 :root {
   /* Brand */
   --brand-indigo: #3c229d;

@@ -258,7 +258,10 @@ export function Tooltip() {
           sits on the plan — its geometry, its label, its type — and a "Mark as In-active" button
           under an outline you are tracing is a record-lifecycle action in the middle of a layout
           task, one press from being fired by accident. */}
-      {state.mode !== 'edit' && (state.mode !== 'book' || bookable) && (
+      {/* Without the Assignment right (Roles & access › Floorplans) none of them, in either view:
+          they are the desk record's own flow — Vacate, Re-assign — and booking is the Book button
+          below. With neither right the card only says what the space is. */}
+      {state.mode !== 'edit' && state.planViews.assign && (state.mode !== 'book' || bookable) && (
         <StateflowActions
           unit={unit}
           showState={false}

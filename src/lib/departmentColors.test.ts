@@ -43,6 +43,13 @@ describe('a department always looks like itself', () => {
     expect(new Set(colours).size).toBe(DEPARTMENT_PALETTE.length);
   });
 
+  it('keeps fifteen departments distinct too, past the wheel', () => {
+    const ids = Array.from({ length: 15 }, (_, i) => `dept-${i}`);
+    const map = departmentColorMap(ids);
+    expect(new Set(Object.values(map)).size).toBe(15);
+    for (const c of Object.values(map)) expect(c).toMatch(/^#[0-9a-f]{6}$/i);
+  });
+
   it('lets a chosen colour reserve itself, so no default duplicates it', () => {
     const ids = ['11', '12', '13', '14'];
     const overrides = { '11': DEPARTMENT_PALETTE[0] };

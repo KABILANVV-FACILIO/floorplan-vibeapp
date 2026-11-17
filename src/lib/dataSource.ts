@@ -1,11 +1,13 @@
 import { FacilioApiDataSource } from './facilioApiDataSource';
 import { ConnectorDataSource } from './connectorDataSource';
+import { IncompleteListError } from './rateLimit';
 import type { Asset } from './assets';
 import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, Site, Unit } from './types';
 
 // Local dev data lives as editable JSON in src/data/*.json — change a file and the app uses it
 // (Vite picks the JSON up on save). This is the seed the LocalJsonDataSource serves; session edits
 // are layered on top in localStorage so a dev session survives reloads.
+import { DEMO_DATA } from './featureFlags';
 import portfolioJson from '../data/portfolio.json';
 import employeesJson from '../data/employees.json';
 import assetsJson from '../data/assets.json';
@@ -26,9 +28,6 @@ import bookingsJson from '../data/bookings.json';
  *    data layer when the app runs outside a Facilio host; its list actions page at 200 rows.
  * 3. LocalJsonDataSource — the editable src/data/*.json seed plus localStorage, so `npm run dev`
  *    works with no backend at all.
- *
- * VibeDbDataSource (this app's own records via the `floorplanApi` function) exists but is out of
- * the live list until the function is deployable in this region — see defaultTiers.
  */
 export interface FloorplanDataSource {
   readonly name: string;
@@ -86,13 +85,16 @@ export interface CreateSpaceLoc {
 }
 
 // ---- seed data (editable JSON in src/data) ----
-const SEED_PORTFOLIO = portfolioJson as unknown as Site[];
-const SEED_EMPLOYEES = employeesJson as unknown as Employee[];
-const SEED_ASSETS = assetsJson as unknown as Asset[];
-const SEED_UNITS = unitsJson as unknown as Unit[];
-const SEED_ASSIGNMENTS = assignmentsJson as unknown as Assignments;
+// Demo only (featureFlags.DEMO_DATA — the dev server, never a deployed build). Deployed, the local
+// tier still keeps this browser's own edits, but it has no sample sites, people, desks or bookings
+// to fall back to: an org list that comes back empty stays empty.
+const SEED_PORTFOLIO = (DEMO_DATA ? portfolioJson : []) as unknown as Site[];
+const SEED_EMPLOYEES = (DEMO_DATA ? employeesJson : []) as unknown as Employee[];
+const SEED_ASSETS = (DEMO_DATA ? assetsJson : []) as unknown as Asset[];
+const SEED_UNITS = (DEMO_DATA ? unitsJson : []) as unknown as Unit[];
+const SEED_ASSIGNMENTS = (DEMO_DATA ? assignmentsJson : {}) as unknown as Assignments;
 // Bookings are stored date-agnostic; getBookings stamps the requested day (demo behaviour).
-const SEED_BOOKINGS = bookingsJson as unknown as Omit<Booking, 'date'>[];
+const SEED_BOOKINGS = (DEMO_DATA ? bookingsJson : []) as unknown as Omit<Booking, 'date'>[];
 
 // ---- local session persistence (localStorage) ----
 const LS_KEY = 'facilio_floorplan_proto_v2';
@@ -256,14 +258,12 @@ export function clearLocalData(): void {
  *
  * The connector keeps everything V3 can't do (the asset catalog when the module name differs, the
  * floor's real space records) and is the whole data layer when the app runs outside a Facilio host.
- * The vibe DB sits above it because it alone holds on-plan geometry — org records have no position.
  */
 function defaultTiers(): FloorplanDataSource[] {
-  // VibeDbDataSource is deliberately NOT in the live list. Its backing function cannot be deployed
-  // in this region (Azure AE has no ai-agents-server), so every handler answered 404 —
-  // "function 'floorplanApi' not found" — and each floor load paid six doomed round trips before
-  // falling through. The class and functions/floorplanApi/code.ts stay in the repo: once the
-  // function is deployable, add `new VibeDbDataSource()` back between the V3 and connector tiers.
+  // An app-database tier (VibeDbDataSource, over a `floorplanApi` function) once sat between V3 and
+  // the connector. The function could never be deployed — it ran DDL the app's database login may
+  // not — so the tier was taken out of this list and later removed with it; on-plan geometry lives
+  // in the org's own `floorplanmarker` records.
   return [new FacilioApiDataSource(), new ConnectorDataSource(), new LocalJsonDataSource()];
 }
 
@@ -308,6 +308,9 @@ export class CompositeDataSource implements FloorplanDataSource {
         console.info(`[dataSource] ${String(method)} <- ${tier.name}${describe(result)}`);
         return result;
       } catch (err) {
+        // The org answered in part (lib/rateLimit): its rows, and its own way to finish, are the
+        // answer. Another tier's would mix sources, and is refused by the same limit anyway.
+        if (err instanceof IncompleteListError) throw err;
         lastErr = err;
         // eslint-disable-next-line no-console
         console.warn(`[dataSource] ${String(method)} unavailable on "${tier.name}", falling back:`, (err as Error)?.message ?? err);

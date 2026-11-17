@@ -33,6 +33,8 @@ export interface MarkerLabelInput {
   dept?: string | null;
   /** The "Your desk" pill stands above the chip as well as the card. */
   pill?: boolean;
+  /** What the pill says — "Your desk", or "Your parking" over a stall (see selectors.myPinText). */
+  pillText?: string;
   /**
    * Placement order — lower goes first and therefore wins a collision. The selected record and
    * the user's own desk come first; everything else shares the last rank and is ordered by
@@ -85,6 +87,10 @@ export const CHIP_PX = 24;
 export const CHIP_MAX_SCALE = 3;
 /** The share of the desk pitch a chip covers once it tracks the drawing — a desk, not a dot and not a blob. */
 export const CHIP_FOOTPRINT_OF_PITCH = 0.45;
+/** The most of the pitch a chip may cover zoomed out: just under it, so neighbours never overlap. */
+export const CHIP_FIT_OF_PITCH = 0.9;
+/** The least a chip shrinks to, however close the spaces sit — still a mark you can see and click. */
+export const CHIP_MIN_PX = 10;
 
 /**
  * How big a chip is on screen at `zoom`.
@@ -98,7 +104,26 @@ export const CHIP_FOOTPRINT_OF_PITCH = 0.45;
  */
 export function chipScreenSize(zoom: number, footprintPlanPx: number | null | undefined): number {
   if (!footprintPlanPx || !(zoom > 0)) return CHIP_PX;
-  return Math.max(CHIP_PX, Math.min(CHIP_PX * CHIP_MAX_SCALE, footprintPlanPx * zoom));
+  // The floor gives way where the spaces sit closer than a chip: a car park of stalls a few px
+  // apart on a whole-floor view drew 24px chips over each other, hiding some. There the chip is
+  // just under the gap between neighbours (never below CHIP_MIN_PX); anywhere roomier, CHIP_PX.
+  const pitch = (footprintPlanPx / CHIP_FOOTPRINT_OF_PITCH) * zoom;
+  const least = Math.max(CHIP_MIN_PX, Math.min(CHIP_PX, pitch * CHIP_FIT_OF_PITCH));
+  return Math.max(least, Math.min(CHIP_PX * CHIP_MAX_SCALE, footprintPlanPx * zoom));
+}
+
+/**
+ * One chip's size: the floor's (chipScreenSize), unless that would cover its own nearest neighbour
+ * — then just under the gap, never below CHIP_MIN_PX. The floor's size follows its typical
+ * spacing, so on a sparse floor a few desks set side by side drew over each other; now those few
+ * give way, and every chip that clears its neighbour — every chip on an evenly laid floor — keeps
+ * the floor's size.
+ */
+export function chipSizeNear(size: number, zoom: number, nearestPlanPx: number | undefined): number {
+  if (!nearestPlanPx || !(zoom > 0)) return size;
+  const gap = nearestPlanPx * zoom;
+  if (size <= gap) return size;
+  return Math.min(size, Math.max(CHIP_MIN_PX, gap * CHIP_FIT_OF_PITCH));
 }
 
 export interface LabelLayoutOptions {
@@ -397,7 +422,7 @@ export function planMarkerLabels(inputs: MarkerLabelInput[], opts: LabelLayoutOp
 
     // The "Your desk" pill draws whatever it lands on — it is the answer to "where do I sit".
     if (i.pill) {
-      const w = estimateLabelWidth(PILL_TEXT, t.nameFont) + PILL_EXTRA;
+      const w = estimateLabelWidth(i.pillText ?? PILL_TEXT, t.nameFont) + PILL_EXTRA;
       const box = { x: cx - w / 2, y: cy - half - GAP - PILL_HEIGHT, w, h: PILL_HEIGHT };
       if (i.must || !grid.hits(box)) {
         grid.add(box);

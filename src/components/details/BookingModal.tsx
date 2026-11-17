@@ -290,17 +290,6 @@ function BookingFormInner() {
   /** A form picker is offered only where the context can't decide: the All-spaces switch. */
   const canPickForm = !!target.allowTypeSwitch;
 
-  /**
-   * The RESOURCE field on the loaded form, from its own metadata — rendered as the lookup and
-   * named on the create payload. NOTE: every hook stays above the `if (!unit)` bail-out below.
-   */
-  const formResourceField = useMemo(() => {
-    if (!formMeta || !unit) return null;
-    const hit = [...formMeta.fields].filter(isResourceField).sort((a, b) => resourceFieldRank(a) - resourceFieldRank(b))[0];
-    return hit?.name ?? null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [formMeta, unit?.type, isFacility]);
-
   // The loaded form is the authority on what it books: re-derive the type from its fields.
   useEffect(() => {
     if (!canPickForm || !formMeta) return;
@@ -387,6 +376,10 @@ function BookingFormInner() {
     if (isRoom) return lm === 'rooms' ? 0 : lm === 'space' || lm === 'basespace' ? 2 : 1;
     return lm in RESOURCE_LOOKUP_TYPE ? 0 : 1;
   }
+  /**
+   * The RESOURCE field on the loaded form, from its own metadata — rendered as the lookup and
+   * named on the create payload. Read below `isRoom`: the predicates close over it.
+   */
   const primaryResourceFieldName = formMeta ? ([...formMeta.fields].filter(isResourceField).sort((a, b) => resourceFieldRank(a) - resourceFieldRank(b))[0]?.name ?? null) : null;
 
   /** Org fields rendered generically → typed extras for the API. */
@@ -490,7 +483,7 @@ function BookingFormInner() {
       externalAttendees,
       formId: formMeta?.id,
       extras: extraValues,
-      resourceField: formResourceField ?? undefined,
+      resourceField: primaryResourceFieldName ?? undefined,
     });
     setSubmitting(false);
     if (ok) actions.closeBookingForm();

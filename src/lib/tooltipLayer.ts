@@ -74,13 +74,22 @@ function place(el: HTMLElement, text: string): void {
   tip.style.left = `${Math.round(left)}px`;
 }
 
-function tipTextFor(target: EventTarget | null): { el: HTMLElement; text: string } | null {
+export function tipTextFor(target: EventTarget | null): { el: HTMLElement; text: string } | null {
   if (!(target instanceof Element)) return null;
   const el = target.closest<HTMLElement>('[data-tip]');
   if (!el) return null;
   const text = (el.getAttribute('data-tip') ?? '').trim();
   // An empty data-tip is the documented way to suppress a tooltip (e.g. a Select while open).
-  return text ? { el, text } : null;
+  if (!text) return null;
+  // `data-tip-overflow`: only when the text is actually cut off. A long site or building name in a
+  // narrow tree is truncated with "…" and needs its tip; one that fits does not, and a tip on every
+  // row while scrolling a long tree is noise. Measured on `[data-tip-measure]` inside it, or on the
+  // element itself — at hover time, since a panel resize changes which names fit.
+  if (el.hasAttribute('data-tip-overflow')) {
+    const measured = el.querySelector<HTMLElement>('[data-tip-measure]') ?? el;
+    if (measured.scrollWidth <= measured.clientWidth) return null;
+  }
+  return { el, text };
 }
 
 function onOver(e: Event): void {

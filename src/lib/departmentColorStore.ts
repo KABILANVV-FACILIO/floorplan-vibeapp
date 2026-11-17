@@ -1,27 +1,18 @@
 import { isVibeApp, vibe } from './vibe';
-import { clearDepartmentColor, fetchDepartmentColors, storeDepartmentColor } from './vibeDbDataSource';
-import type { DepartmentColorRow } from './vibeDbDataSource';
 
 /**
- * Where the org's department -> marker colour scheme lives.
+ * Where the org's department -> marker colour scheme lives, keyed by the department's RECORD ID.
  *
- * The scheme is org data keyed by the department's RECORD ID, so it belongs in a table of its own
- * (`fp_department_color`, see functions/floorplanApi) — and that table exists, with its handlers.
- * What does not exist, in this region, is a database to put it in: `facilio vibe db create`
- * answers 500 on Azure AE (verified on this app, twice), which is the same wall the settings blob
- * hit and the reason the file-store tier below was written in the first place.
+ * The same two tiers as the settings blob (lib/settingsStore), in the same order:
  *
- * So the same three tiers, in the same order, for the same reason:
- *
- *   1. the app DATABASE — one row per department, queryable by anything else that wants the
- *      scheme. Live the moment a database is provisioned; no code change needed then.
- *   2. the app FILE STORE — the whole scheme as one JSON blob. Durable and org-wide, which is
- *      what actually matters to the person choosing the colours; it just isn't a table.
- *   3. localStorage — offline `npm run dev`, and the last resort when both server tiers fail.
+ *   1. the app FILE STORE — the whole scheme as one JSON blob. Durable and org-wide, which is
+ *      what actually matters to the person choosing the colours.
+ *   2. localStorage — offline `npm run dev`, and the last resort when the file store fails.
  *
  * Writes go to the best tier that accepts them. The map is small (one entry per department the
- * org actually recoloured), so writing the whole blob rather than a delta costs nothing and
- * cannot leave the tiers disagreeing about a single department.
+ * org actually recoloured), so writing the whole blob rather than a delta costs nothing. (A table
+ * of its own, one row per department, sat ahead of these behind the `floorplanApi` function; that
+ * function could never be deployed and was removed.)
  */
 
 const LS_KEY = 'facilio_floorplan_department_colors_v1';
@@ -32,12 +23,6 @@ export type DepartmentColorScheme = Record<string, { name: string; color: string
 
 export async function loadDepartmentColors(): Promise<DepartmentColorScheme> {
   if (isVibeApp) {
-    const rows = await fetchDepartmentColors().catch(() => [] as DepartmentColorRow[]);
-    if (rows.length) {
-      // eslint-disable-next-line no-console
-      console.info('[departments] colours loaded from the app database');
-      return Object.fromEntries(rows.map((r) => [r.departmentId, { name: r.departmentName, color: r.color }]));
-    }
     const fromFile = await loadColorsFile().catch(() => null);
     if (fromFile) {
       // eslint-disable-next-line no-console
@@ -48,10 +33,7 @@ export async function loadDepartmentColors(): Promise<DepartmentColorScheme> {
   return loadLocalColors() ?? {};
 }
 
-/**
- * Persist one department's colour. Takes the whole scheme too, because the file and browser tiers
- * store it as a single blob — the database is the only tier that can write one department alone.
- */
+/** Persist one department's colour. Takes the whole scheme too: both tiers store it as a single blob. */
 export async function saveDepartmentColor(
   departmentId: string,
   departmentName: string,
@@ -59,7 +41,6 @@ export async function saveDepartmentColor(
   scheme: DepartmentColorScheme,
 ): Promise<void> {
   if (isVibeApp) {
-    if (await storeDepartmentColor(departmentId, departmentName, color).catch(() => false)) return;
     if (await saveColorsFile(scheme).catch(() => false)) return;
     // eslint-disable-next-line no-console
     console.warn('[departments] no server tier accepted the colour; keeping it in this browser only');
@@ -70,7 +51,6 @@ export async function saveDepartmentColor(
 /** Drop a department's colour so it falls back to the app's default wheel. */
 export async function resetDepartmentColor(departmentId: string, scheme: DepartmentColorScheme): Promise<void> {
   if (isVibeApp) {
-    if (await clearDepartmentColor(departmentId).catch(() => false)) return;
     if (await saveColorsFile(scheme).catch(() => false)) return;
   }
   saveLocalColors(scheme);

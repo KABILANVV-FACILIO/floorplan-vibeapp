@@ -116,14 +116,17 @@ export function DatePicker({
       if (rootRef.current?.contains(t) || popRef.current?.contains(t)) return;
       setOpen(false);
     };
+    // Capture phase, stopped here: Escape closes the picker, not the booking form around it.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      setOpen(false);
     };
     document.addEventListener('mousedown', onDoc);
-    document.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', onKey, true);
     return () => {
       document.removeEventListener('mousedown', onDoc);
-      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('keydown', onKey, true);
     };
   }, [open]);
 

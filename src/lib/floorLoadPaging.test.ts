@@ -33,6 +33,8 @@ const spaces = [...desks.slice(MARKERS), ...desks.slice(0, MARKERS)].map((d) => 
 const tables: Record<string, unknown[]> = { desks, lockers: [], parkingstall: [], space: spaces, floorplanmarker: markers, floorplanmarkedzone: [] };
 
 const calls: string[] = [];
+/** Pages the org refuses, as "<module> p<n>". */
+const failing = new Set<string>();
 let releasePageTwo: () => void = () => {};
 const pageTwoGate = new Promise<void>((r) => (releasePageTwo = r));
 
@@ -55,6 +57,7 @@ vi.mock('./facilioApi', () => ({
       calls.push(`${opts.relatedModuleName} p${params.page}`);
       // Hold the later pages until the test has seen the first answer.
       if (params.page > 1) await pageTwoGate;
+      if (failing.has(`${opts.relatedModuleName} p${params.page}`)) return { error: { code: 500, message: 'down' }, list: null };
       const all = tables[opts.relatedModuleName];
       return { error: null, list: all.slice((params.page - 1) * params.perPage, params.page * params.perPage) };
     }),
@@ -65,7 +68,7 @@ vi.mock('./cadPreview', () => ({ renderCadToDataUrl: vi.fn() }));
 vi.spyOn(console, 'info').mockImplementation(() => {});
 const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-const { FacilioApiDataSource } = await import('./facilioApiDataSource');
+const { FacilioApiDataSource, takeFloorReadFailure } = await import('./facilioApiDataSource');
 
 describe('loading a floor bigger than one page', () => {
   it('draws from the first pages, and hands over the rest when it arrives', async () => {
@@ -104,5 +107,34 @@ describe('loading a floor bigger than one page', () => {
     // The zone list was read, and read cleanly — no failure quietly absorbed on the way.
     expect(calls.filter((c) => c === 'floorplanmarkedzone p1')).toHaveLength(1);
     expect(warn.mock.calls.filter((c) => String(c[0]).includes('floorplanmarkedzone'))).toHaveLength(0);
+    // Every page came back: nothing to tell anyone.
+    expect(takeFloorReadFailure(FLOOR)).toBe(false);
+  });
+
+  it('says part of the floor did not load when a later page of its desks fails — once', async () => {
+    failing.add('desks p2');
+    const onMore = vi.fn();
+    await new FacilioApiDataSource().getUnits(FLOOR, onMore);
+    await vi.waitFor(() => expect(onMore).toHaveBeenCalled());
+    expect(takeFloorReadFailure(FLOOR)).toBe(true);
+    expect(takeFloorReadFailure(FLOOR)).toBe(false);
+    failing.clear();
+  });
+
+  it("says so too when a plan's marker list fails outright", async () => {
+    failing.add('floorplanmarker p1');
+    await new FacilioApiDataSource().getUnits(FLOOR, vi.fn());
+    expect(takeFloorReadFailure(FLOOR)).toBe(true);
+    failing.clear();
+  });
+
+  it('says it once when a list fails on its first page, not again when the rest arrives', async () => {
+    failing.add('lockers p1');
+    const onMore = vi.fn();
+    await new FacilioApiDataSource().getUnits(FLOOR, onMore);
+    expect(takeFloorReadFailure(FLOOR)).toBe(true);
+    await vi.waitFor(() => expect(onMore).toHaveBeenCalled());
+    expect(takeFloorReadFailure(FLOOR)).toBe(false);
+    failing.clear();
   });
 });

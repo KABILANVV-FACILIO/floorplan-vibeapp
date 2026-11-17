@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { DragEvent as ReactDragEvent, FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { clamp, polyAreaM2, polygonCentroid, toNorm, unitCenter } from '../../lib/geometry';
 import { IMG_H, IMG_W } from '../../lib/mockData';
@@ -10,13 +10,15 @@ import { DraftOverlay } from './DraftOverlay';
 import { Legend } from './Legend';
 import { ZoomControls } from './ZoomControls';
 import { Tooltip } from './Tooltip';
+import { DeleteConfirmModal } from './DeleteConfirmModal';
+import { planShortcutAllowed } from '../../lib/keyboard';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
-import { isBookable, markerLabelInputs, planMarkers, planRooms, roomLabelInputs, visibleUnits } from '../../state/selectors';
-import { CHIP_FOOTPRINT_OF_PITCH, CHIP_PX, chipScreenSize, HALO_TEXT, LABEL_MAX_SCALE, planMarkerLabels, planRoomLabels, ROOM_FONT, ROOM_LINE_PX, scaleTypography, typographyOf } from '../../lib/labelLayout';
+import { activeDepartments, isBookable, markerLabelInputs, planMarkers, planRooms, roomLabelInputs, unitPlanLabel, visibleUnits } from '../../state/selectors';
+import { CHIP_FOOTPRINT_OF_PITCH, CHIP_PX, chipScreenSize, chipSizeNear, HALO_TEXT, LABEL_MAX_SCALE, planMarkerLabels, planRoomLabels, ROOM_FONT, ROOM_LINE_PX, scaleTypography, typographyOf } from '../../lib/labelLayout';
 import type { LabelPlacement, RoomLabelPlacement } from '../../lib/labelLayout';
 import { markerModel } from '../../lib/markerModel';
 import { sharedLabelTextMeasurer } from '../../lib/textMeasure';
-import { deskPitch } from '../../lib/printAreas';
+import { chipPitch, nearestDistances } from '../../lib/printAreas';
 import type { MarkerHandlers } from './Marker';
 import { useDataState } from '../../state/useDataState';
 import { floorImageKey, isRoomLike, isZoneTool, unitOnPlan } from '../../lib/types';
@@ -83,6 +85,8 @@ export function Canvas() {
   const [dragPreview, setDragPreview] = useState<{ id: string; x: number; y: number } | null>(null);
   const [editPreview, setEditPreview] = useState<EditPreview>(null);
   const [marquee, setMarquee] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
+  /** Units the Delete key asked to remove, waiting on the confirm (see DeleteConfirmModal). */
+  const [pendingDelete, setPendingDelete] = useState<string[] | null>(null);
   // Write-through mirrors of the gesture-preview state, updated in the SAME tick as the
   // mousemove (not on render): the mouseup handlers read these and dispatch to the store
   // AFTER clearing the local preview. Dispatching from inside a setState updater is a
@@ -187,15 +191,20 @@ export function Canvas() {
           actions.setTool('select');
         }
       } else if (e.key === 'Enter') {
+        // Enter on a button (a dialog's Delete, say) is that button's, not "close the outline".
+        if (!planShortcutAllowed(e.target, wrapRef.current)) return;
         if (state.mode === 'edit' && isZoneTool(state.tool) && state.draft.length >= 3) actions.closeDraft();
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (state.mode !== 'edit') return;
-        if (multiSel.size > 0) {
-          actions.deleteUnits([...multiSel]);
-        } else if (state.selected) {
-          actions.deleteUnit(state.selected);
-        }
+        // Only a key aimed at the plan: not a held-down key's repeats, and not one that landed on a
+        // button, inside a dialog, or anywhere else the focus happened to be. And never straight
+        // away — the confirm comes first (see DeleteConfirmModal).
+        if (state.mode !== 'edit' || e.repeat || !planShortcutAllowed(e.target, wrapRef.current)) return;
+        const ids = multiSel.size > 0 ? [...multiSel] : state.selected ? [state.selected] : [];
+        if (ids.length === 0) return;
+        e.preventDefault();
+        setPendingDelete(ids);
       } else if ((e.key === 'v' || e.key === 'V') && state.mode === 'edit') {
+        if (!planShortcutAllowed(e.target, wrapRef.current)) return;
         actions.setTool('select');
       }
     }
@@ -555,17 +564,22 @@ export function Canvas() {
   const markers = useMemo(() => planMarkers(data).map((u) => ({ ...u, geom: previewedGeom(u) })), [data, editPreview]);
   // What each marker shows (chip colours, holder, title) — once per data change, not per marker
   // per render (see lib/markerModel).
-  const models = useMemo(() => new Map(markers.map((m) => [m.id, markerModel(data, m)])), [data, markers]);
-  // The chip's footprint on the plan, in plan px: a share of the median distance between the
-  // floor's desks (lockers and stalls count, amenities do not). Null with fewer than two.
-  const chipFootprint = useMemo(() => {
+  // The Spaces panel's department filter: the other departments' desks go faint and lose their cards.
+  const departments = useMemo(() => activeDepartments(data), [data]);
+  const models = useMemo(() => new Map(markers.map((m) => [m.id, markerModel(data, m, { departments })])), [data, markers, departments]);
+  // The chip's footprint on the plan, in plan px: a share of the spacing between the floor's desks
+  // (lockers and stalls count, amenities do not; see chipPitch). Null with fewer than two. And each
+  // desk's own nearest neighbour, which a chip never draws over (see chipSizeNear).
+  const { chipFootprint, nearest } = useMemo(() => {
     const pts = markers.filter((m) => m.geom.kind === 'point' && m.type !== 'amenity').map((m) => ({ id: m.id, x: (m.geom as { x: number }).x * IMG_W, y: (m.geom as { y: number }).y * IMG_H }));
-    return pts.length >= 2 ? deskPitch(pts) * CHIP_FOOTPRINT_OF_PITCH : null;
+    return { chipFootprint: pts.length >= 2 ? chipPitch(pts) * CHIP_FOOTPRINT_OF_PITCH : null, nearest: nearestDistances(pts) };
   }, [markers]);
   // How big a chip is at this zoom (see chipScreenSize): with its footprint a share of the desk
-  // pitch, chips grow with the drawing and sit proportionate to the desks on it.
+  // pitch, chips grow with the drawing and sit proportionate to the desks on it — but for the few
+  // set closer together than that, which take just under their gap instead.
   const chipSize = chipScreenSize(state.view.z, chipFootprint);
   const chipScale = (chipSize / CHIP_PX).toFixed(4);
+  const chipSizeOf = useCallback((id: string) => chipSizeNear(chipSize, state.view.z, nearest.get(id)), [chipSize, state.view.z, nearest]);
 
   // Which of those markers may show a label, and which would land on a neighbour. Labels keep a
   // constant screen size while the gaps between markers shrink with the zoom, so on a dense floor
@@ -585,9 +599,10 @@ export function Canvas() {
         .filter((m) => m.geom.kind === 'point')
         .map((m) => {
           const g = m.geom as { x: number; y: number };
-          return { x: g.x * IMG_W * state.view.z - chipSize / 2, y: g.y * IMG_H * state.view.z - chipSize / 2, w: chipSize, h: chipSize };
+          const size = chipSizeOf(m.id);
+          return { x: g.x * IMG_W * state.view.z - size / 2, y: g.y * IMG_H * state.view.z - size / 2, w: size, h: size };
         }),
-    [markers, state.view.z, chipSize],
+    [markers, state.view.z, chipSizeOf],
   );
   // Room names next: where each goes at this zoom — inside its room, or just outside a room too
   // small for it, never under a chip (see planRoomLabels). The desk cards then keep clear of them.
@@ -600,7 +615,7 @@ export function Canvas() {
   const labelPlan = useStablePlacements(
     useMemo(
       () =>
-        planMarkerLabels(markerLabelInputs(data, markers, { measure: sharedLabelTextMeasurer(), chipSize, typography }), {
+        planMarkerLabels(markerLabelInputs(data, markers, { departments, measure: sharedLabelTextMeasurer(), chipSize, chipSizeOf, typography }), {
           planW: IMG_W,
           planH: IMG_H,
           zoom: state.view.z,
@@ -608,7 +623,7 @@ export function Canvas() {
           typography,
           reserved: roomLabelBoxes,
         }),
-      [data, markers, state.view.z, chipSize, typography, roomLabelBoxes],
+      [data, markers, departments, state.view.z, chipSize, chipSizeOf, typography, roomLabelBoxes],
     ),
   );
   prevPlanRef.current = labelPlan;
@@ -683,6 +698,40 @@ export function Canvas() {
     [],
   );
 
+  /**
+   * A marker reached with Tab. The plan clips its content, and the browser scrolls a clipping box to
+   * bring a focused child into view — which would slide the drawing out from under every pointer
+   * calculation. So the box never scrolls; a desk focused off-screen is panned to instead, at the
+   * same zoom, without selecting it.
+   */
+  function keepPlanUnscrolled() {
+    const wrap = wrapRef.current;
+    if (wrap && (wrap.scrollTop || wrap.scrollLeft)) {
+      wrap.scrollTop = 0;
+      wrap.scrollLeft = 0;
+    }
+  }
+  function onFocusIn(e: ReactFocusEvent) {
+    keepPlanUnscrolled();
+    const el = e.target as HTMLElement;
+    const wrap = wrapRef.current;
+    if (!wrap || !el.dataset.unitId) return;
+    // Keyboard focus only. A click focuses the marker too, and a desk clicked near the edge must
+    // not slide away from the pointer — least of all under a drag that has just begun.
+    try {
+      if (!el.matches(':focus-visible')) return;
+    } catch {
+      return; // an engine without :focus-visible — leave the plan where it is
+    }
+    const r = el.getBoundingClientRect();
+    const w = wrap.getBoundingClientRect();
+    const pad = 32;
+    if (r.left >= w.left + pad && r.right <= w.right - pad && r.top >= w.top + pad && r.bottom <= w.bottom - pad) return;
+    const cx = (r.left + r.right) / 2 - w.left;
+    const cy = (r.top + r.bottom) / 2 - w.top;
+    actions.setView({ ...state.view, tx: state.view.tx + (w.width / 2 - cx), ty: state.view.ty + (w.height / 2 - cy) });
+  }
+
   const selectedRoom = isEditSelect && multiSel.size === 0 ? rooms.find((r) => r.id === state.selected) : undefined;
 
   const armedRecordLabel = state.placingUnitId ? state.unplacedUnits.find((u) => u.id === state.placingUnitId)?.label : undefined;
@@ -707,6 +756,7 @@ export function Canvas() {
   }
 
   return (
+    <>
     <div
       ref={wrapRef}
       onMouseDown={onMouseDown}
@@ -714,6 +764,8 @@ export function Canvas() {
       onDoubleClick={onDblClick}
       onDragOver={onDragOver}
       onDrop={onDrop}
+      onFocus={onFocusIn}
+      onScroll={keepPlanUnscrolled}
       className={styles.wrap}
       style={{ cursor: isDrawTool || (state.mode === 'edit' && state.placingUnitId) ? 'crosshair' : 'grab' }}
     >
@@ -743,6 +795,8 @@ export function Canvas() {
             model={models.get(m.id)!}
             labels={labelPlan.get(m.id)}
             typography={typography}
+            // Only a chip crowded by a neighbour carries a size of its own; the rest read the plane's.
+            chipScale={chipSizeOf(m.id) < chipSize ? chipSizeOf(m.id) / CHIP_PX : undefined}
             // Only the marker being dragged gets a preview, so the drag re-renders that one alone.
             previewGeom={dragPreview?.id === m.id ? { kind: 'point', x: dragPreview.x, y: dragPreview.y } : undefined}
             handlers={markerHandlers}
@@ -834,6 +888,22 @@ export function Canvas() {
       <Legend />
       <ZoomControls rectW={rect.w} rectH={rect.h} />
     </div>
+    {/* Outside the plan's element: the dialog is portaled, but React still bubbles its clicks and
+        presses through this tree, and the plan would read them as a pan or a deselect. */}
+    {pendingDelete && (
+      <DeleteConfirmModal
+        labels={pendingDelete.map((id) => state.units.find((u) => u.id === id)?.label ?? id)}
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={() => {
+          const ids = pendingDelete.filter((id) => state.units.some((u) => u.id === id));
+          setPendingDelete(null);
+          if (ids.length === 1) actions.deleteUnit(ids[0]);
+          else if (ids.length > 1) actions.deleteUnits(ids);
+          if (multiSel.size > 0) setMultiSel(new Set());
+        }}
+      />
+    )}
+    </>
   );
 }
 
@@ -897,7 +967,7 @@ export function RoomLabel({ unit, placement }: { unit: Unit; placement: RoomLabe
           ...(placement.lines === 2 ? { whiteSpace: 'normal', overflowWrap: 'break-word', display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2, overflow: 'hidden' } : { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }),
         }}
       >
-        {unit.label}
+        {unitPlanLabel(state, unit)}
       </span>
       {busy ? (
         <span style={{ display: 'flex', alignItems: 'center', color: 'var(--ink-600)', font: `500 ${subPx}px/1 var(--font-sans)`, whiteSpace: 'nowrap' }}>

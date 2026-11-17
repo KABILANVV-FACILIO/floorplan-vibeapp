@@ -1,0 +1,290 @@
+/* The floor's occupancy: a chip in the plan's top bar, and the card it opens under it — never a
+   card over the plan, where it hid desks at every zoom. */
+.chipWrap {
+  position: relative;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 11px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--ink-200);
+  background: #fff;
+  font: 400 12.5px/1 var(--font-sans);
+  color: var(--ink-700);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chip:hover {
+  background: var(--ink-050);
+}
+.chipOn,
+.chipOn:hover {
+  background: var(--blue-025);
+  border-color: var(--blue-200);
+  color: var(--blue-600);
+}
+.chip b {
+  font-weight: 600;
+  color: var(--ink-900);
+}
+.chipOn b {
+  color: var(--blue-600);
+}
+.chipPart {
+  white-space: nowrap;
+}
+.chipSep {
+  margin: 0 3px 0 1px;
+  color: var(--ink-400);
+}
+.chipCaret {
+  transition: transform 150ms;
+}
+.chipOn .chipCaret {
+  transform: rotate(180deg);
+}
+
+/* The card, under the chip's right edge. */
+.card {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 2;
+  width: 300px;
+  max-height: calc(100vh - 170px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 14px;
+  background: #fff;
+  border: 1px solid var(--ink-200);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  font-family: var(--font-sans);
+  color: var(--ink-900);
+}
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.headText {
+  flex: 1;
+  min-width: 0;
+}
+.title {
+  font: 600 13px/1.2 var(--font-sans);
+}
+.sub {
+  margin-top: 2px;
+  font: 400 11px/1.3 var(--font-sans);
+  color: var(--ink-600);
+}
+.chip:focus-visible,
+.switchBtn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.switchRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.switchLabel {
+  font: 400 11px/1 var(--font-sans);
+  color: var(--ink-600);
+  white-space: nowrap;
+}
+.switch {
+  flex: 1;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-app);
+  border-radius: 7px;
+}
+.switchBtn {
+  flex: 1;
+  height: 24px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  font: 500 11.5px/1 var(--font-sans);
+  color: var(--ink-600);
+  cursor: pointer;
+}
+.switchOn {
+  background: #fff;
+  color: var(--blue-500);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(40, 54, 72, 0.12);
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rowHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.rowName {
+  font: 600 12.5px/1.2 var(--font-sans);
+}
+.rowHint {
+  font: 400 10.5px/1.2 var(--font-sans);
+  color: var(--ink-600);
+  white-space: nowrap;
+}
+.rowMeta {
+  margin-left: auto;
+  font: 400 11.5px/1.2 var(--font-sans);
+  color: var(--ink-600);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* The meter: a segment per part, a hairline of white between them. */
+.bar {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--ink-100);
+}
+.bar > span:first-child {
+  border-radius: 3px 0 0 3px;
+}
+.bar > span:last-child {
+  border-radius: 0 3px 3px 0;
+}
+
+/* Three tiles per type, the same in every row so the figures line up: the figure over what it
+   counts, edged in its state colour. The label comes first in the markup (dt before dd), drawn under. */
+.tiles {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.tile {
+  min-width: 0;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 1px;
+  padding: 6px 8px 7px;
+  border-top: 3px solid var(--ink-200);
+  border-radius: 6px;
+  background: var(--bg-app);
+}
+.tileUnused {
+  border-top-color: var(--ink-200);
+}
+.tileValue {
+  margin: 0;
+  font: 700 17px/1.15 var(--font-sans);
+  color: var(--ink-900);
+  font-variant-numeric: tabular-nums;
+}
+.tileNone {
+  color: var(--ink-400);
+  font-weight: 500;
+}
+.tileLabel {
+  font: 400 10.5px/1.2 var(--font-sans);
+  color: var(--ink-600);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.swatch {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+}
+
+/* Coloured by department: under the desks' tiles, their shares and the largest few. */
+.byDept {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+.byDeptHead {
+  display: flex;
+  justify-content: space-between;
+  font: 600 10px/1.2 var(--font-sans);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-600);
+}
+.deptLinesAll {
+  max-height: 180px;
+}
+.moreBtn {
+  align-self: flex-start;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: 500 11.5px/1.2 var(--font-sans);
+  color: var(--blue-500);
+  cursor: pointer;
+}
+.moreBtn:hover {
+  text-decoration: underline;
+}
+.moreBtn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.deptLines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  overflow-y: auto;
+}
+.deptLine {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 400 11px/1.2 var(--font-sans);
+  color: var(--ink-700);
+  font-variant-numeric: tabular-nums;
+}
+.deptName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.deptOcc {
+  color: var(--ink-600);
+  white-space: nowrap;
+}
+.deptTotal {
+  min-width: 22px;
+  text-align: right;
+  color: var(--ink-900);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chipCaret {
+    transition: none;
+  }
+}

@@ -5,6 +5,8 @@ import { personDisplayName } from '../../lib/displayNames';
 import { unitStatus } from '../../lib/unitStatus';
 import { fmtTime } from '../../lib/geometry';
 import { resolveMarkerDef, TYPE_META } from '../../lib/types';
+import { responderRolesFor, rolesText } from '../../lib/firstResponders';
+import { ResponderGlyph } from '../canvas/ResponderBadge';
 import { useSheetDrag } from './useSheetDrag';
 import styles from './MobileUnitSheet.module.css';
 
@@ -22,13 +24,15 @@ export function MobileUnitSheet() {
   }, !!unit);
 
   const contactId = unit ? state.assignments[unit.id] : undefined;
-  const showBookTab = state.mobileTab === 'book';
+  const showBookTab = state.mobileTab === 'book' && state.planViews.book;
+  // No Assignment right: the sheet says who holds the space and offers nothing to change it.
+  const assignOn = state.planViews.assign;
   const isAmenity = unit?.type === 'amenity';
   const isAsset = isAmenity && !!unit?.assetId;
   const assignable = unit && !isAmenity ? isAssignable(unit) : false;
   // Contact picking expands the sheet to near-full height with its own
   // search — a plain dropdown was unusable against the full directory.
-  const picking = !!unit && !showBookTab && assignable && (!contactId || state.mobAssignEdit);
+  const picking = !!unit && !showBookTab && assignOn && assignable && (!contactId || state.mobAssignEdit);
 
   const filtered = useMemo(() => {
     const q = contactQuery.trim().toLowerCase();
@@ -67,6 +71,15 @@ export function MobileUnitSheet() {
                 : TYPE_META[unit.type].name}
               {unit.room ? ` · ${unit.room}` : ''}
             </div>
+            {responderRolesFor(state, unit).length > 0 && (
+              // Who sits here, if it matters in an emergency.
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, font: '600 12px/1.3 var(--font-sans)', color: 'var(--ink-700)' }}>
+                {responderRolesFor(state, unit).map((r) => (
+                  <ResponderGlyph key={r.id} role={r} size={14} />
+                ))}
+                {rolesText(responderRolesFor(state, unit))}
+              </div>
+            )}
           </div>
           {!isAmenity && (
             <span className={styles.statusPill} style={{ background: status.bg, color: status.fg }}>
@@ -98,14 +111,16 @@ export function MobileUnitSheet() {
               <span className={styles.avatar}>{initials(contactName(state, contactId))}</span>
               <span className={styles.assignedName}>{contactName(state, contactId)}</span>
             </div>
-            <div className={styles.actionsRow}>
-              <button className={styles.vacateBtn} onClick={() => actions.vacate(unit.id)}>
-                Vacate
-              </button>
-              <button className={styles.reassignBtn} onClick={() => actions.setMobAssignEdit(true)}>
-                Reassign
-              </button>
-            </div>
+            {assignOn && (
+              <div className={styles.actionsRow}>
+                <button className={styles.vacateBtn} onClick={() => actions.vacate(unit.id)}>
+                  Vacate
+                </button>
+                <button className={styles.reassignBtn} onClick={() => actions.setMobAssignEdit(true)}>
+                  Reassign
+                </button>
+              </div>
+            )}
           </>
         )}
 

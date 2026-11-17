@@ -23,6 +23,10 @@
   display: flex;
   flex-direction: column;
 }
+.peopleCardFixed {
+  flex: none;
+  height: 420px;
+}
 .peopleSearchWrap {
   padding: 10px 14px 6px;
   flex-shrink: 0;
@@ -85,6 +89,18 @@
   display: flex;
   flex-direction: column;
 }
+.filterLine {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--blue-025);
+  font: 400 11.5px/1.3 var(--font-sans);
+  color: var(--blue-600);
+}
 .listNote {
   display: flex;
   flex-direction: column;
@@ -109,6 +125,64 @@
 }
 .linkBtn:hover {
   text-decoration: underline;
+}
+/* The Department picker: a field under the search that opens its list in place, pushing the
+   People list down rather than covering it — ticking a department narrows the list at once, and
+   the list is the thing being watched. */
+.deptBtn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 32px;
+  margin-top: 6px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--ink-500);
+  font: 400 12px/1 var(--font-sans);
+  cursor: pointer;
+  text-align: left;
+}
+.deptBtn:hover {
+  border-color: var(--ink-400);
+}
+.deptBtn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+.deptBtnOn {
+  border-color: var(--blue-500);
+  background: var(--blue-025);
+  color: var(--blue-600);
+}
+.deptBtnLabel {
+  flex-shrink: 0;
+}
+.deptBtnValue {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--ink-900);
+}
+.deptBtnOn .deptBtnValue {
+  color: var(--blue-700);
+}
+.deptPicker {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.deptPickerFoot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 .dragHint {
   font-size: 10.5px;

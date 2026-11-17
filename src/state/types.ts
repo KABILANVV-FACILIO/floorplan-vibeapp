@@ -1,4 +1,5 @@
 import type {
+  Access,
   AppMode,
   Assignments,
   Booking,
@@ -7,10 +8,13 @@ import type {
   EnabledModules,
   FloorSearchHit,
   MarkerDef,
+  OrgRole,
   PanelsState,
-  Perms,
+  PlanLabels,
+  RegisterKind,
+  RegisterPrint,
   PlanId,
-  Role,
+  PlanViews,
   Site,
   Unit,
   UnitType,
@@ -19,6 +23,7 @@ import type { Asset } from '../lib/assets';
 import type { ViewTransform } from '../lib/geometry';
 import type { CadGroup } from '../lib/cadAnalyze';
 import type { LabelStyle } from '../lib/labelLayout';
+import type { FirstResponder, ResponderRoleDef } from '../lib/types';
 
 export type SpaceFilter = 'all' | UnitType;
 
@@ -42,6 +47,8 @@ export interface BookFormTarget {
   resourceUnit?: Unit;
   /** Floors the calendar's filter is limited to — the form's lookups follow it. */
   floorIds?: string[];
+  /** Opened from the Bookings calendar by selecting a slot — Bookings › Book decides, not Floorplans › Booking. */
+  fromCalendar?: boolean;
 }
 
 export interface AppState {
@@ -68,6 +75,12 @@ export interface AppState {
   viewAnim: boolean;
   userZoomed: boolean;
   spaceFilter: SpaceFilter;
+  /**
+   * The departments ticked in the Spaces panel: the list narrows to their spaces and the plan dims
+   * the rest. None ticked is every department. A space's department is its record's own, else its
+   * holder's (selectors.unitDepartment).
+   */
+  spaceDepartments: string[];
   spaceSearch: string;
 
   units: Unit[];
@@ -136,6 +149,7 @@ export interface AppState {
   date: string;
   start: number;
   end: number;
+  /** The signed-in person's people id, '' until the org has said who that is. */
   bookBy: string;
   bookPurpose: string;
   bookNotes: string;
@@ -148,17 +162,31 @@ export interface AppState {
   bookingsNonce: number;
   schedView: 'list' | 'calendar';
 
-  role: Role;
-  perms: Perms;
+  /**
+   * The signed-in user's role in the org, resolved from the account payload. NULL when the payload
+   * carried none — a dev session, the mock tier, an older session. A missing fact must never lock
+   * anyone out, so null means every tab shows.
+   */
+  viewerRole: OrgRole | null;
+  /** Which roles reach which tab. A surface absent here falls back to DEFAULT_ACCESS. */
+  access: Access;
+  /** The org's roles, for the Settings picker. Read lazily — gating never needs the list. */
+  orgRoles: OrgRole[];
+  orgRolesLoading: boolean;
 
   activeView: 'map' | 'settings' | 'bookings' | 'people';
-  settingsTab: 'permissions' | 'modules' | 'bookings' | UnitType;
+  settingsTab: 'permissions' | 'modules' | 'bookings' | 'responders' | UnitType;
   moduleColors: Record<string, string>;
   /**
    * What the desk markers' colour MEANS. 'status' answers "what can I take"; 'department' answers
    * "who sits where" — the question a plan coloured only by availability cannot answer at all.
    */
   colorBy: 'status' | 'department';
+  /**
+   * The same choice for this viewer alone, from the switch on the plan's counts card; null follows
+   * `colorBy`, the Settings default for everyone. Never saved — see selectors.colorByOf.
+   */
+  colorByView: 'status' | 'department' | null;
   /**
    * What the print sheet's plan pages show. `detail`: the whole floor with numbered desks, then a
    * zoomed page for every area of desks, each desk labelled as on screen. `floor`: the numbered
@@ -179,6 +207,18 @@ export interface AppState {
    * of settings (vibe DB when deployed).
    */
   enabledModules: EnabledModules;
+  /**
+   * The viewer's Assignment and Booking rights (Roles & access › Floorplans), worked out from
+   * `access` and `viewerRole` by the reducer's settleAccess — never set on its own.
+   */
+  planViews: PlanViews;
+  /** What desks, stalls and rooms say on the plan (Settings › Desks / Parking / Rooms) — see PlanLabel. */
+  planLabels: PlanLabels;
+  /**
+   * The registers a print carries after its plan (print window › Details) — desks, rooms, parking
+   * stalls, lockers — each with its own choices, kept for everyone (lib/register).
+   */
+  printRegisters: Record<RegisterKind, RegisterPrint>;
 
   toast: string | null;
 
@@ -197,6 +237,27 @@ export interface AppState {
   cadAnalyses: Record<string, CadGroup[]>;
   /** The type the desk labels are drawn in — Settings › Desks › Desk labels (see lib/labelLayout). */
   labelStyle: LabelStyle;
+  /**
+   * The org's first aiders and floor wardens — Settings › First responders. Each is shown on the
+   * plan at the desk they hold (see lib/firstResponders).
+   */
+  firstResponders: FirstResponder[];
+  /** The responder roles: the two built-ins first, then the org's own (see sanitizeRoles). */
+  responderRoles: ResponderRoleDef[];
+  /**
+   * True once the app database has answered for the responders (lib/sharedSettings): from then on
+   * it is their only source — Settings writes there, and the settings blob neither carries nor
+   * overrides them. False in local dev, and whenever the database could not be read.
+   */
+  respondersInDb: boolean;
+  /** True once the app database has answered: access-grid saves go there (lib/sharedSettings). */
+  accessInDb: boolean;
+  /**
+   * True when the database HOLDS a grid — then it is the grid's only source and the settings blob
+   * neither carries nor overrides it. False until an admin saves the grid once: the blob's grid,
+   * from before the move, still shows until then.
+   */
+  accessStoredInDb: boolean;
   /** The logged-in user's real assigned/booked desk (from servicePortalHome) — powers "My desk" against the real backend, where `assignments` (mock-derived) can't. */
   myDesk: { recordId: number; name: string; floorId: string | null; booked: boolean } | null;
   floorImages: Record<string, string>;
