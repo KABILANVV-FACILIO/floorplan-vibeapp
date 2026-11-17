@@ -23,8 +23,12 @@ export interface MarkerHandlers {
   onDrop(unit: Unit, e: ReactDragEvent): void;
 }
 
-/** The tick: a short line from the chip's edge to the text, across the gap, per side. */
-const TICK_COLOR = 'var(--ink-300)';
+/**
+ * The tick: a short line from the chip's edge to the text, across the gap, per side. Mid grey, so
+ * it reads over the drawing's own grey lines (the lighter --ink-300 was lost among them) — on
+ * screen and on paper alike, which draw the same marker.
+ */
+const TICK_COLOR = 'var(--ink-500)';
 const TICK: Record<LabelPos, CSSProperties> = {
   below: { top: -CARD_GAP, left: '50%', width: 1, height: CARD_GAP, marginLeft: -0.5 },
   above: { bottom: -CARD_GAP, left: '50%', width: 1, height: CARD_GAP, marginLeft: -0.5 },
@@ -50,6 +54,7 @@ export const Marker = memo(function Marker({
   previewGeom,
   handlers,
   typography = DEFAULT_LABEL_TYPOGRAPHY,
+  chipScale,
 }: {
   model: MarkerModel;
   /**
@@ -62,6 +67,8 @@ export const Marker = memo(function Marker({
   handlers?: MarkerHandlers;
   /** The type the card is drawn in — the one the labels were laid out for (Settings › Desks). */
   typography?: LabelTypography;
+  /** This chip's own `--chip`, where a neighbour closer than the floor's spacing makes it smaller (see chipSizeNear). */
+  chipScale?: number;
 }) {
   const { unit, style, label, title, holder, dept, isMine, pinText, isHighlighted, isDimmed, isBusy, draggable, responderRoles } = model;
   const geom = previewGeom ?? model.geom;
@@ -116,6 +123,7 @@ export const Marker = memo(function Marker({
           // zoom over its 24px base (see chipScreenSize): it grows with the drawing, within bounds,
           // and the plane sets it beside `--inv`, so a zoom re-renders no chip for it.
           transform: 'scale(calc(var(--inv) * var(--chip, 1))) translate(-50%,-50%)',
+          ...(chipScale ? { ['--chip' as string]: chipScale.toFixed(4) } : {}),
           transformOrigin: '0 0',
           background: style.bg,
           border: `2px solid ${style.bd}`,

@@ -7,7 +7,7 @@ import { floorImageKey } from '../../lib/types';
 import type { RegisterKind, Unit } from '../../lib/types';
 import type { AppState } from '../../state/types';
 import { IMG_H, IMG_W } from '../../lib/mockData';
-import { CHIP_FOOTPRINT_OF_PITCH, CHIP_PX, chipScreenSize, planMarkerLabels, planRoomLabels, typographyOf } from '../../lib/labelLayout';
+import { CHIP_FOOTPRINT_OF_PITCH, CHIP_PX, chipScreenSize, chipSizeNear, planMarkerLabels, planRoomLabels, typographyOf } from '../../lib/labelLayout';
 import { FloorplanBackground } from '../canvas/FloorplanBackground';
 import { RoomPolygon } from '../canvas/RoomPolygon';
 import { RoomLabel } from '../canvas/Canvas';
@@ -17,7 +17,7 @@ import { sharedLabelTextMeasurer } from '../../lib/textMeasure';
 import { departmentNames, legendItems, LegendSwatch } from '../canvas/Legend';
 import { ResponderNoticePage } from './ResponderNoticePage';
 import { respondersOnFloor } from '../../lib/firstResponders';
-import { deskPitch, planLabelledDetailAreas } from '../../lib/printAreas';
+import { chipPitch, nearestDistances, planLabelledDetailAreas } from '../../lib/printAreas';
 import type { DetailArea } from '../../lib/printAreas';
 import { REGISTERS, registerCell, registerColumns, registerKindsFor, registerPages, registerRows, registerType, rowsPerPage } from '../../lib/register';
 import type { RegisterColumn, RegisterContext } from '../../lib/register';
@@ -368,12 +368,15 @@ export function printFileName(floorTitle: string, dateISO: string): string {
  * The chip's size on paper at a layout zoom: the print's own 24px, but never wider than the gap to
  * its neighbours — as on screen (chipScreenSize), a car park whose stalls sit closer than a chip
  * printed them over each other. Paper only ever shrinks a chip, never grows one, so a floor with
- * room to spare prints as it always has.
+ * room to spare prints as it always has. `sizeOf` is one chip's own: smaller still where a
+ * neighbour sits closer than the floor's spacing (chipSizeNear), as on screen.
  */
-function printChipSize(markers: Unit[], zoom: number): number {
+function printChipSize(markers: Unit[], zoom: number): { size: number; sizeOf: (id: string) => number } {
   const pts = markers.filter((m) => m.geom.kind === 'point' && m.type !== 'amenity').map((m) => ({ id: m.id, x: (m.geom as { x: number }).x * IMG_W, y: (m.geom as { y: number }).y * IMG_H }));
-  const footprint = pts.length >= 2 ? deskPitch(pts) * CHIP_FOOTPRINT_OF_PITCH : null;
-  return Math.min(CHIP_PX, chipScreenSize(zoom, footprint));
+  const footprint = pts.length >= 2 ? chipPitch(pts) * CHIP_FOOTPRINT_OF_PITCH : null;
+  const size = Math.min(CHIP_PX, chipScreenSize(zoom, footprint));
+  const nearest = nearestDistances(pts);
+  return { size, sizeOf: (id) => chipSizeNear(size, zoom, nearest.get(id)) };
 }
 
 /**
@@ -406,9 +409,9 @@ function PrintZoomedPlan({ cx, cy, zoom, labelScale = 1 }: { cx: number; cy: num
   // Chips first, then the room names clear of them, then the desk cards clear of both — as on screen.
   // As on screen, the ticked departments' desks are labelled and the rest faded (activeDepartments).
   const departments = activeDepartments(state);
-  const chipSize = printChipSize(markers, zoom / labelScale);
+  const { size: chipSize, sizeOf: chipSizeOf } = printChipSize(markers, zoom / labelScale);
   const inputs = useMemo(
-    () => markerLabelInputs(state, markers, { personal: false, departments, keepSelected: false, chipSize, measure: sharedLabelTextMeasurer() }),
+    () => markerLabelInputs(state, markers, { personal: false, departments, keepSelected: false, chipSize, chipSizeOf, measure: sharedLabelTextMeasurer() }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [zoom, labelScale],
   );
@@ -455,7 +458,7 @@ function PrintZoomedPlan({ cx, cy, zoom, labelScale = 1 }: { cx: number; cy: num
         return placement ? <RoomLabel key={`l-${r.id}`} unit={r} placement={placement} /> : null;
       })}
       {markers.map((m) => (
-        <Marker key={m.id} model={models.get(m.id)!} labels={labelPlan.get(m.id)} typography={typography} />
+        <Marker key={m.id} model={models.get(m.id)!} labels={labelPlan.get(m.id)} typography={typography} chipScale={chipSizeOf(m.id) < chipSize ? chipSizeOf(m.id) / CHIP_PX : undefined} />
       ))}
     </div>
   );
@@ -666,9 +669,9 @@ function PrintPlan() {
   const typography = typographyOf(state.labelStyle);
   // As on screen, the ticked departments' desks are labelled and the rest faded (activeDepartments).
   const departments = activeDepartments(state);
-  const chipSize = printChipSize(markers, PRINT_ZOOM);
+  const { size: chipSize, sizeOf: chipSizeOf } = printChipSize(markers, PRINT_ZOOM);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const inputs = useMemo(() => markerLabelInputs(state, markers, { personal: false, departments, keepSelected: false, chipSize, measure: sharedLabelTextMeasurer() }), []);
+  const inputs = useMemo(() => markerLabelInputs(state, markers, { personal: false, departments, keepSelected: false, chipSize, chipSizeOf, measure: sharedLabelTextMeasurer() }), []);
   const roomLabelPlan = useMemo(
     () => {
       const chipBoxes = inputs.map((i) => ({ x: i.x * IMG_W * PRINT_ZOOM - i.size / 2, y: i.y * IMG_H * PRINT_ZOOM - i.size / 2, w: i.size, h: i.size }));
@@ -708,7 +711,7 @@ function PrintPlan() {
         return placement ? <RoomLabel key={`l-${r.id}`} unit={r} placement={placement} /> : null;
       })}
       {markers.map((m) => (
-        <Marker key={m.id} model={models.get(m.id)!} labels={labelPlan.get(m.id)} typography={typography} />
+        <Marker key={m.id} model={models.get(m.id)!} labels={labelPlan.get(m.id)} typography={typography} chipScale={chipSizeOf(m.id) < chipSize ? chipSizeOf(m.id) / CHIP_PX : undefined} />
       ))}
     </div>
   );

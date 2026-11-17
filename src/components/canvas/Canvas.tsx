@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent as ReactDragEvent, FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent } from 'react';
 import { useFloorplan } from '../../state/FloorplanContext';
 import { clamp, polyAreaM2, polygonCentroid, toNorm, unitCenter } from '../../lib/geometry';
@@ -14,11 +14,11 @@ import { DeleteConfirmModal } from './DeleteConfirmModal';
 import { planShortcutAllowed } from '../../lib/keyboard';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
 import { activeDepartments, isBookable, markerLabelInputs, planMarkers, planRooms, roomLabelInputs, unitPlanLabel, visibleUnits } from '../../state/selectors';
-import { CHIP_FOOTPRINT_OF_PITCH, CHIP_PX, chipScreenSize, HALO_TEXT, LABEL_MAX_SCALE, planMarkerLabels, planRoomLabels, ROOM_FONT, ROOM_LINE_PX, scaleTypography, typographyOf } from '../../lib/labelLayout';
+import { CHIP_FOOTPRINT_OF_PITCH, CHIP_PX, chipScreenSize, chipSizeNear, HALO_TEXT, LABEL_MAX_SCALE, planMarkerLabels, planRoomLabels, ROOM_FONT, ROOM_LINE_PX, scaleTypography, typographyOf } from '../../lib/labelLayout';
 import type { LabelPlacement, RoomLabelPlacement } from '../../lib/labelLayout';
 import { markerModel } from '../../lib/markerModel';
 import { sharedLabelTextMeasurer } from '../../lib/textMeasure';
-import { deskPitch } from '../../lib/printAreas';
+import { chipPitch, nearestDistances } from '../../lib/printAreas';
 import type { MarkerHandlers } from './Marker';
 import { useDataState } from '../../state/useDataState';
 import { floorImageKey, isRoomLike, isZoneTool, unitOnPlan } from '../../lib/types';
@@ -567,16 +567,19 @@ export function Canvas() {
   // The Spaces panel's department filter: the other departments' desks go faint and lose their cards.
   const departments = useMemo(() => activeDepartments(data), [data]);
   const models = useMemo(() => new Map(markers.map((m) => [m.id, markerModel(data, m, { departments })])), [data, markers, departments]);
-  // The chip's footprint on the plan, in plan px: a share of the median distance between the
-  // floor's desks (lockers and stalls count, amenities do not). Null with fewer than two.
-  const chipFootprint = useMemo(() => {
+  // The chip's footprint on the plan, in plan px: a share of the spacing between the floor's desks
+  // (lockers and stalls count, amenities do not; see chipPitch). Null with fewer than two. And each
+  // desk's own nearest neighbour, which a chip never draws over (see chipSizeNear).
+  const { chipFootprint, nearest } = useMemo(() => {
     const pts = markers.filter((m) => m.geom.kind === 'point' && m.type !== 'amenity').map((m) => ({ id: m.id, x: (m.geom as { x: number }).x * IMG_W, y: (m.geom as { y: number }).y * IMG_H }));
-    return pts.length >= 2 ? deskPitch(pts) * CHIP_FOOTPRINT_OF_PITCH : null;
+    return { chipFootprint: pts.length >= 2 ? chipPitch(pts) * CHIP_FOOTPRINT_OF_PITCH : null, nearest: nearestDistances(pts) };
   }, [markers]);
   // How big a chip is at this zoom (see chipScreenSize): with its footprint a share of the desk
-  // pitch, chips grow with the drawing and sit proportionate to the desks on it.
+  // pitch, chips grow with the drawing and sit proportionate to the desks on it — but for the few
+  // set closer together than that, which take just under their gap instead.
   const chipSize = chipScreenSize(state.view.z, chipFootprint);
   const chipScale = (chipSize / CHIP_PX).toFixed(4);
+  const chipSizeOf = useCallback((id: string) => chipSizeNear(chipSize, state.view.z, nearest.get(id)), [chipSize, state.view.z, nearest]);
 
   // Which of those markers may show a label, and which would land on a neighbour. Labels keep a
   // constant screen size while the gaps between markers shrink with the zoom, so on a dense floor
@@ -596,9 +599,10 @@ export function Canvas() {
         .filter((m) => m.geom.kind === 'point')
         .map((m) => {
           const g = m.geom as { x: number; y: number };
-          return { x: g.x * IMG_W * state.view.z - chipSize / 2, y: g.y * IMG_H * state.view.z - chipSize / 2, w: chipSize, h: chipSize };
+          const size = chipSizeOf(m.id);
+          return { x: g.x * IMG_W * state.view.z - size / 2, y: g.y * IMG_H * state.view.z - size / 2, w: size, h: size };
         }),
-    [markers, state.view.z, chipSize],
+    [markers, state.view.z, chipSizeOf],
   );
   // Room names next: where each goes at this zoom — inside its room, or just outside a room too
   // small for it, never under a chip (see planRoomLabels). The desk cards then keep clear of them.
@@ -611,7 +615,7 @@ export function Canvas() {
   const labelPlan = useStablePlacements(
     useMemo(
       () =>
-        planMarkerLabels(markerLabelInputs(data, markers, { departments, measure: sharedLabelTextMeasurer(), chipSize, typography }), {
+        planMarkerLabels(markerLabelInputs(data, markers, { departments, measure: sharedLabelTextMeasurer(), chipSize, chipSizeOf, typography }), {
           planW: IMG_W,
           planH: IMG_H,
           zoom: state.view.z,
@@ -619,7 +623,7 @@ export function Canvas() {
           typography,
           reserved: roomLabelBoxes,
         }),
-      [data, markers, departments, state.view.z, chipSize, typography, roomLabelBoxes],
+      [data, markers, departments, state.view.z, chipSize, chipSizeOf, typography, roomLabelBoxes],
     ),
   );
   prevPlanRef.current = labelPlan;
@@ -791,6 +795,8 @@ export function Canvas() {
             model={models.get(m.id)!}
             labels={labelPlan.get(m.id)}
             typography={typography}
+            // Only a chip crowded by a neighbour carries a size of its own; the rest read the plane's.
+            chipScale={chipSizeOf(m.id) < chipSize ? chipSizeOf(m.id) / CHIP_PX : undefined}
             // Only the marker being dragged gets a preview, so the drag re-renders that one alone.
             previewGeom={dragPreview?.id === m.id ? { kind: 'point', x: dragPreview.x, y: dragPreview.y } : undefined}
             handlers={markerHandlers}

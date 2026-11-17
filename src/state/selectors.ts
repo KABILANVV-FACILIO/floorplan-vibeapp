@@ -426,7 +426,7 @@ export function showsHolder(state: AppState, unit: Unit): boolean {
  * (or the "Your desk" pill in its place), and the holder with their department below. Shared with
  * the print sheet so a label reads the same on paper as on screen.
  */
-export function markerLabelInputs(state: AppState, markers: Unit[], opts: { personal?: boolean; /** The department filter (activeDepartments): other departments' desks are dimmed and lose their cards. */ departments?: readonly string[]; /** Whether the selected desk keeps its card under the filter, as it does on screen; the print says no. */ keepSelected?: boolean; measure?: LabelTextMeasure; /** The chip's screen size at the current zoom (see chipScreenSize); 24 when unsaid. */ chipSize?: number; /** The type the cards are drawn in at this zoom (see scaleTypography); the setting's own size when unsaid. */ typography?: LabelTypography } = {}): MarkerLabelInput[] {
+export function markerLabelInputs(state: AppState, markers: Unit[], opts: { personal?: boolean; /** The department filter (activeDepartments): other departments' desks are dimmed and lose their cards. */ departments?: readonly string[]; /** Whether the selected desk keeps its card under the filter, as it does on screen; the print says no. */ keepSelected?: boolean; measure?: LabelTextMeasure; /** The chip's screen size at the current zoom (see chipScreenSize); 24 when unsaid. */ chipSize?: number; /** A chip's own size where it differs from chipSize (see chipSizeNear). */ chipSizeOf?: (id: string) => number; /** The type the cards are drawn in at this zoom (see scaleTypography); the setting's own size when unsaid. */ typography?: LabelTypography } = {}): MarkerLabelInput[] {
   // `personal: false` (the print sheet): no "Your desk" pill — a sheet on a wall is read by everyone.
   const personal = opts.personal !== false;
   const labelsOn = state.mode === 'assign' || state.mode === 'book';
@@ -446,7 +446,7 @@ export function markerLabelInputs(state: AppState, markers: Unit[], opts: { pers
         id: m.id,
         x: g.x ?? 0,
         y: g.y ?? 0,
-        size: opts.chipSize ?? 24,
+        size: opts.chipSizeOf?.(m.id) ?? opts.chipSize ?? 24,
         name,
         // "Your desk" stands above the chip; the card, with the desk's own name, goes elsewhere.
         pill: mine,

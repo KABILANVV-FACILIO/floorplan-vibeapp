@@ -112,6 +112,20 @@ export function chipScreenSize(zoom: number, footprintPlanPx: number | null | un
   return Math.max(least, Math.min(CHIP_PX * CHIP_MAX_SCALE, footprintPlanPx * zoom));
 }
 
+/**
+ * One chip's size: the floor's (chipScreenSize), unless that would cover its own nearest neighbour
+ * — then just under the gap, never below CHIP_MIN_PX. The floor's size follows its typical
+ * spacing, so on a sparse floor a few desks set side by side drew over each other; now those few
+ * give way, and every chip that clears its neighbour — every chip on an evenly laid floor — keeps
+ * the floor's size.
+ */
+export function chipSizeNear(size: number, zoom: number, nearestPlanPx: number | undefined): number {
+  if (!nearestPlanPx || !(zoom > 0)) return size;
+  const gap = nearestPlanPx * zoom;
+  if (size <= gap) return size;
+  return Math.min(size, Math.max(CHIP_MIN_PX, gap * CHIP_FIT_OF_PITCH));
+}
+
 export interface LabelLayoutOptions {
   /** The plan's intrinsic pixel size — normalized coordinates multiply up by these. */
   planW: number;
