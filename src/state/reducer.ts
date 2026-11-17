@@ -757,6 +757,7 @@ export function reducer(state: AppState, action: Action): AppState {
         printRegisters: Object.fromEntries(
           REGISTER_KINDS.map((k) => [k, { ...DEFAULT_REGISTER_PRINTS[k], ...((k === 'parking' ? (c.printRegisters?.parking ?? c.parkingPrint) : c.printRegisters?.[k]) ?? {}) }]),
         ) as AppState['printRegisters'],
+        printScope: c.printScope === 'detail' || c.printScope === 'view' || c.printScope === 'floor' ? c.printScope : state.printScope,
         // Over the defaults too: a config saved before the setting existed must not blank it.
         labelStyle: c.labelStyle
           ? { name: { ...DEFAULT_LABEL_STYLE.name, ...c.labelStyle.name }, detail: { ...DEFAULT_LABEL_STYLE.detail, ...c.labelStyle.detail } }

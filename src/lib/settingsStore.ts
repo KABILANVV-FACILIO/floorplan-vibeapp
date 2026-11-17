@@ -48,6 +48,8 @@ export interface SettingsConfig {
   printRegisters?: Partial<Record<RegisterKind, Partial<RegisterPrint>>>;
   /** The parking register alone, as v68–v71 stored it: read when `printRegisters` has none; no longer written. */
   parkingPrint?: ParkingPrint;
+  /** What the plan's page shows (print window › Print settings › Plan), for everyone; Floor + details until set. */
+  printScope?: AppState['printScope'];
   /** The type the desk labels are drawn in (Settings › Desks › Desk labels). */
   labelStyle?: LabelStyle;
   /** The org's first aiders and floor wardens (Settings › First responders). */
@@ -74,6 +76,7 @@ export function settingsFromState(state: AppState): SettingsConfig {
     enabledModules: state.enabledModules,
     planLabels: state.planLabels,
     printRegisters: state.printRegisters,
+    printScope: state.printScope,
     labelStyle: state.labelStyle,
     // Not when the app database holds them: one source, never two (see lib/sharedSettings).
     ...(state.respondersInDb ? {} : { firstResponders: state.firstResponders, responderRoles: state.responderRoles }),

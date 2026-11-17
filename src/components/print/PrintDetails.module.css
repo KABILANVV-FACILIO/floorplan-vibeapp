@@ -18,16 +18,6 @@
   font: 600 14px/1.3 var(--font-sans);
   color: var(--ink-900);
 }
-.note {
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--ink-600);
-}
-.note b {
-  font-weight: 600;
-  color: var(--ink-900);
-}
 .hint {
   margin: 2px 0 0;
   font-size: 12.5px;
@@ -169,11 +159,33 @@
   }
 }
 
-/* One tab per register the plan prints (Desks | Rooms on a desk plan); a dot marks unsaved changes. */
-.tabs {
+/* Plan: what the plan's page shows, above the registers' tabs; its choices drawn like the tabs. */
+.planRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 20px 14px;
+}
+.planLabel {
+  flex: none;
+  width: 64px;
+  font: 600 13px/1 var(--font-sans);
+  color: var(--ink-900);
+}
+.planSeg {
+  flex: 1;
   display: flex;
   gap: 4px;
-  margin: 0 20px 4px;
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-app);
+}
+
+/* One tab per register the plan prints (Desks | Rooms on a desk plan), in a row like Plan's; a dot marks unsaved changes. */
+.tabs {
+  flex: 1;
+  display: flex;
+  gap: 4px;
   padding: 3px;
   border-radius: var(--radius-sm);
   background: var(--bg-app);

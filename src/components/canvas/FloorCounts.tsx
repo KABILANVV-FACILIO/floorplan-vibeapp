@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { activeDepartments, colorByOf, deskDepartmentCounts, floorCounts } from '../../state/selectors';
 import type { CountedType, FloorCount } from '../../state/selectors';
@@ -12,24 +12,11 @@ const NAME: Record<CountedType, string> = { workstation: 'Desks', parking: 'Park
 const LABEL: Record<string, string> = { occupied: 'Occupied', booked: 'Booked', free: 'Free' };
 /** How many departments the card lists before "Show all": the largest ones, by desks. */
 const TOP_DEPARTMENTS = 5;
-const FOLD_KEY = 'fp.floorCounts.folded';
-/** The switch's pick, kept per browser like the fold: it is the viewer's own, never the org's. */
+/** The switch's pick, kept per browser: it is the viewer's own, never the org's. */
 const COLOUR_KEY = 'fp.floorCounts.colorBy';
+/** How long the card lingers after the pointer leaves, so it can cross the gap from the chip. */
+const HOVER_CLOSE_MS = 180;
 
-function readFolded(): boolean {
-  try {
-    return localStorage.getItem(FOLD_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-function writeFolded(folded: boolean) {
-  try {
-    localStorage.setItem(FOLD_KEY, folded ? '1' : '0');
-  } catch {
-    // A blocked store costs only the memory of the fold.
-  }
-}
 function readColour(): 'status' | 'department' | null {
   try {
     const v = localStorage.getItem(COLOUR_KEY);
@@ -42,7 +29,7 @@ function writeColour(value: 'status' | 'department') {
   try {
     localStorage.setItem(COLOUR_KEY, value);
   } catch {
-    // As above: only the memory of the pick is lost.
+    // A blocked store costs only the memory of the pick.
   }
 }
 
@@ -97,23 +84,50 @@ function ByDepartment({ lines, total }: { lines: DeptLine[]; total: number }) {
 }
 
 /**
- * The floor's occupancy, in the Location panel under "Spaces on this floor" (Assignment and Booking
- * views) — not over the plan, where a card hid desks at every zoom. Every desk, parking stall
- * and room placed on the floor, and how many are occupied, booked in the date and hours picked in
- * the toolbar, and free (selectors.floorCounts) — in the state colours set in Settings. Each type
- * reads as its name, how many in all and how much is taken, then three tiles (Occupied, Booked,
- * Free), each edged in its state colour with the figure over what it counts; a zero is a dash, and
- * a room — never held — shows Occupied as one. Ticked departments narrow desks and stalls; rooms
- * stay whole-floor.
+ * The floor's occupancy, as a chip in the plan's top bar (Assignment and Booking views): one line —
+ * "Desks 91/122 · Rooms 0/18", taken of all per type — that covers no desk at any zoom. Hovering it
+ * opens the card under it; a click keeps the card open until a second click, Escape or a click
+ * elsewhere. (A floating card over the plan hid desks; in the Location panel it was out of sight.)
+ *
+ * The card: every desk, parking stall and room placed on the floor, and how many are occupied,
+ * booked in the date and hours picked in the toolbar, and free (selectors.floorCounts) — in the
+ * state colours set in Settings. Each type reads as its name, how many in all and how much is taken,
+ * then three tiles (Occupied, Booked, Free), each edged in its state colour with the figure over
+ * what it counts; a zero is a dash, and a room — never held — shows Occupied as one. Ticked
+ * departments narrow desks and stalls; rooms stay whole-floor.
  *
  * In Assignment view a switch colours the desks by department for this viewer (colorByView, never
  * saved for the org; Settings › Desks › Colour desks by stays the default for everyone): the plan,
- * the legend and the desks bar then take each department's colour. The pick and the fold are
- * remembered in this browser.
+ * the legend and the desks bar then take each department's colour. The pick is remembered in this
+ * browser.
  */
 export function FloorCounts() {
   const { state, actions } = useFloorplanData();
-  const [folded, setFolded] = useState(readFolded);
+  // Shown while hovered; pinned by a click.
+  const [hovered, setHovered] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(closeTimer.current), []);
+  useEffect(() => {
+    if (!pinned) return;
+    const close = () => {
+      setPinned(false);
+      setHovered(false);
+    };
+    const onDown = (e: PointerEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) close();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close();
+    };
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [pinned]);
   // The viewer's last pick, back on load.
   useEffect(() => {
     const kept = readColour();
@@ -132,10 +146,6 @@ export function FloorCounts() {
   );
   if (!rows.length || (mode !== 'assign' && mode !== 'book')) return null;
 
-  const fold = (value: boolean) => {
-    setFolded(value);
-    writeFolded(value);
-  };
   const partsOf = (row: FloorCount): Part[] => {
     const parts: Part[] = [
       { key: 'occupied', label: 'occupied', n: row.occupied, color: moduleColor(state, row.type, 'assigned') },
@@ -150,96 +160,116 @@ export function FloorCounts() {
   const byDept = canColourByDept && colorByOf(state) === 'department';
   const departments = activeDepartments(state);
   const day = parseISO(date)?.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }) ?? date;
-  const lead = rows[0];
+  const open = hovered || pinned;
 
-  if (folded) {
-    return (
-      <button type="button" className={styles.pill} aria-expanded={false} aria-label="Show the occupancy of this floor" onClick={() => fold(false)}>
-        <span className={styles.pillTitle}>Occupancy</span>
-        {/* One line in the panel: the lead type's taken of all — the tiles say the rest. */}
-        <span className={styles.pillPart}>
-          <b>{lead.occupied + lead.booked}</b>/{lead.total} {NAME[lead.type].toLowerCase()} taken
-        </span>
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden>
+  return (
+    <div
+      ref={wrapRef}
+      className={styles.chipWrap}
+      onMouseEnter={() => {
+        window.clearTimeout(closeTimer.current);
+        setHovered(true);
+      }}
+      onMouseLeave={() => {
+        window.clearTimeout(closeTimer.current);
+        closeTimer.current = window.setTimeout(() => setHovered(false), HOVER_CLOSE_MS);
+      }}
+    >
+      <button
+        type="button"
+        className={[styles.chip, open ? styles.chipOn : ''].join(' ')}
+        aria-expanded={open}
+        aria-label="Occupancy of this floor"
+        onClick={() => {
+          setPinned((p) => !p);
+          setHovered(!pinned);
+        }}
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden>
+          <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />
+        </svg>
+        {/* Taken (occupied or booked) of all, per type — the card says the rest. */}
+        {rows.map((row, i) => (
+          <span key={row.type} className={styles.chipPart}>
+            {i > 0 && <span className={styles.chipSep}>·</span>}
+            {NAME[row.type]} <b>{row.occupied + row.booked}</b>/{row.total}
+          </span>
+        ))}
+        <svg className={styles.chipCaret} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden>
           <path d="M6 9l6 6 6-6" />
         </svg>
       </button>
-    );
-  }
 
-  return (
-    <section className={styles.card} aria-label="Occupancy of this floor">
-      <div className={styles.head}>
-        <div className={styles.headText}>
-          <div className={styles.title}>Occupancy</div>
-          <div className={styles.sub}>
-            Bookings for {day}, {fmtTime(start)}–{fmtTime(end)}
-          </div>
-        </div>
-        <button type="button" className={styles.foldBtn} aria-expanded aria-label="Fold the occupancy" data-tip="Fold" onClick={() => fold(true)}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden>
-            <path d="M18 15l-6-6-6 6" />
-          </svg>
-        </button>
-      </div>
-
-      {canColourByDept && (
-        <div className={styles.switchRow}>
-          <span className={styles.switchLabel}>Colour by</span>
-          <div className={styles.switch} role="group" aria-label="Colour desks by" data-tip="For you only — Settings › Desks sets it for everyone">
-            {(['status', 'department'] as const).map((v) => (
-              <button
-                key={v}
-                type="button"
-                className={[styles.switchBtn, (byDept ? 'department' : 'status') === v ? styles.switchOn : ''].join(' ')}
-                aria-pressed={(byDept ? 'department' : 'status') === v}
-                onClick={() => {
-                  actions.setColorByView(v);
-                  writeColour(v);
-                }}
-              >
-                {v === 'status' ? 'Status' : 'Department'}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {rows.map((row) => {
-        const lines = byDept && row.type === 'workstation' ? deptLines : null;
-        const parts = partsOf(row);
-        // The card counts the whole floor, whichever plan is on screen ("On this floor"); the one
-        // row that needs a word is Rooms under ticked departments, which it does not narrow.
-        const hint = row.type === 'room' && departments.length ? 'whole floor' : '';
-        const taken = Math.round(((row.occupied + row.booked) / row.total) * 100);
-        return (
-          <div key={row.type} className={styles.row}>
-            <div className={styles.rowHead}>
-              <span className={styles.rowName}>{NAME[row.type]}</span>
-              {hint && <span className={styles.rowHint}>{hint}</span>}
-              <span className={styles.rowMeta}>
-                {row.total} in all · {taken}% taken
-              </span>
+      {open && (
+        <section className={styles.card} aria-label="Occupancy of this floor">
+          <div className={styles.head}>
+            <div className={styles.headText}>
+              <div className={styles.title}>Occupancy</div>
+              <div className={styles.sub}>
+                Bookings for {day}, {fmtTime(start)}–{fmtTime(end)}
+              </div>
             </div>
-            <dl className={styles.tiles}>
-              {/* A room is never held: its Occupied tile is a dash, so the tiles line up with the others'. */}
-              {row.type === 'room' && (
-                <div className={[styles.tile, styles.tileUnused].join(' ')}>
-                  <dt className={styles.tileLabel}>Occupied</dt>
-                  <dd className={[styles.tileValue, styles.tileNone].join(' ')}>–</dd>
-                </div>
-              )}
-              {parts.map((p) => (
-                <div key={p.key} className={styles.tile} style={{ borderTopColor: p.color }}>
-                  <dt className={styles.tileLabel}>{LABEL[p.key]}</dt>
-                  <dd className={[styles.tileValue, p.n ? '' : styles.tileNone].join(' ')}>{p.n || '–'}</dd>
-                </div>
-              ))}
-            </dl>
-            {lines && <ByDepartment lines={lines} total={row.total} />}
           </div>
-        );
-      })}
-    </section>
+
+          {canColourByDept && (
+            <div className={styles.switchRow}>
+              <span className={styles.switchLabel}>Colour by</span>
+              <div className={styles.switch} role="group" aria-label="Colour desks by" data-tip="For you only — Settings › Desks sets it for everyone">
+                {(['status', 'department'] as const).map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    className={[styles.switchBtn, (byDept ? 'department' : 'status') === v ? styles.switchOn : ''].join(' ')}
+                    aria-pressed={(byDept ? 'department' : 'status') === v}
+                    onClick={() => {
+                      actions.setColorByView(v);
+                      writeColour(v);
+                    }}
+                  >
+                    {v === 'status' ? 'Status' : 'Department'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {rows.map((row) => {
+            const lines = byDept && row.type === 'workstation' ? deptLines : null;
+            const parts = partsOf(row);
+            // The card counts the whole floor, whichever plan is on screen ("On this floor"); the one
+            // row that needs a word is Rooms under ticked departments, which it does not narrow.
+            const hint = row.type === 'room' && departments.length ? 'whole floor' : '';
+            const taken = Math.round(((row.occupied + row.booked) / row.total) * 100);
+            return (
+              <div key={row.type} className={styles.row}>
+                <div className={styles.rowHead}>
+                  <span className={styles.rowName}>{NAME[row.type]}</span>
+                  {hint && <span className={styles.rowHint}>{hint}</span>}
+                  <span className={styles.rowMeta}>
+                    {row.total} in all · {taken}% taken
+                  </span>
+                </div>
+                <dl className={styles.tiles}>
+                  {/* A room is never held: its Occupied tile is a dash, so the tiles line up with the others'. */}
+                  {row.type === 'room' && (
+                    <div className={[styles.tile, styles.tileUnused].join(' ')}>
+                      <dt className={styles.tileLabel}>Occupied</dt>
+                      <dd className={[styles.tileValue, styles.tileNone].join(' ')}>–</dd>
+                    </div>
+                  )}
+                  {parts.map((p) => (
+                    <div key={p.key} className={styles.tile} style={{ borderTopColor: p.color }}>
+                      <dt className={styles.tileLabel}>{LABEL[p.key]}</dt>
+                      <dd className={[styles.tileValue, p.n ? '' : styles.tileNone].join(' ')}>{p.n || '–'}</dd>
+                    </div>
+                  ))}
+                </dl>
+                {lines && <ByDepartment lines={lines} total={row.total} />}
+              </div>
+            );
+          })}
+        </section>
+      )}
+    </div>
   );
 }

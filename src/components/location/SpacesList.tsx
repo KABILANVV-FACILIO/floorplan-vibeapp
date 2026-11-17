@@ -9,7 +9,6 @@ import { unitStatus } from '../../lib/unitStatus';
 import { Chip } from '../primitives/Chip';
 import { SkeletonRows } from '../primitives/Skeleton';
 import { StatusPill } from '../primitives/StatusPill';
-import { FloorCounts } from '../canvas/FloorCounts';
 import type { SpaceFilter } from '../../state/types';
 import { isRoomLike } from '../../lib/types';
 import type { Unit } from '../../lib/types';
@@ -181,8 +180,6 @@ export function SpacesList() {
             </div>
           </div>
         )}
-        {/* The floor's occupancy, following the Department field above (canvas/FloorCounts). */}
-        <FloorCounts />
       </div>
       <div className={styles.list}>
         {state.loading ? (

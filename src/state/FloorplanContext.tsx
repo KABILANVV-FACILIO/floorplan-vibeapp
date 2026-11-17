@@ -1755,6 +1755,7 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
     state.enabledModules,
     state.planLabels,
     state.printRegisters,
+    state.printScope,
   ]);
 
   useEffect(() => {

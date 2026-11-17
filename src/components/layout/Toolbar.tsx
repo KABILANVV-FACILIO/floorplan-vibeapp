@@ -1,6 +1,7 @@
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { canEdit, myAssignedUnit } from '../../state/selectors';
 import { usePrintViewer } from '../print/PrintController';
+import { FloorCounts } from '../canvas/FloorCounts';
 import styles from './Toolbar.module.css';
 
 export function Toolbar({ leftPad, rightPad }: { leftPad: number; rightPad: number }) {
@@ -109,6 +110,9 @@ export function Toolbar({ leftPad, rightPad }: { leftPad: number; rightPad: numb
             <path d="M15 3v18" />
           </svg>
         </button>
+
+        {/* The floor's occupancy: one line here, the tiles on hover (canvas/FloorCounts). */}
+        <FloorCounts />
       </div>
     </div>
   );

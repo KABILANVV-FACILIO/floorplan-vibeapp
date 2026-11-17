@@ -1,26 +1,33 @@
 import { Fragment, useState } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
 import type { RegisterKind, RegisterPrint } from '../../lib/types';
+import type { AppState } from '../../state/types';
 import { columnsNote, REGISTERS, registerColumns, registerKindsFor } from '../../lib/register';
 import { Modal, ModalFooter, ModalHeader } from '../primitives/Modal';
 import { Button } from '../primitives/Button';
 import { Select } from '../primitives/Select';
 import styles from './PrintDetails.module.css';
 
-/** The Settings tab where each labelled kind's "Label on the plan" lives. */
-const LABEL_TAB: Partial<Record<RegisterKind, string>> = { workstation: 'Desks', parking: 'Parking', room: 'Rooms' };
-
 type LabelField = { name: string; label: string } | null;
 
+/** What the plan's page shows. Floor + details: the whole floor, then a zoomed page for every area of desks (or stalls, or lockers), each labelled in full. */
+const SCOPES: { value: AppState['printScope']; label: string }[] = [
+  { value: 'detail', label: 'Floor + details' },
+  { value: 'view', label: 'Current view' },
+  { value: 'floor', label: 'Whole floor' },
+];
+
 /**
- * The print window's Details: what the registers after the plan list — desks and rooms after a
- * desk plan, stalls after a parking plan, lockers after a locker plan — a tab each, every kind with
- * its own choices. Staged like the Settings modals — nothing reaches the pages until Apply, which
- * applies every tab — and kept for everyone (the settings blob), so every printout reads the same.
+ * The print window's settings: what the plan's page shows (Plan), and what the registers after it
+ * list — desks and rooms after a desk plan, stalls after a parking plan, lockers after a locker plan
+ * — a tab each, every kind with its own choices. Staged like the Settings modals — nothing reaches
+ * the pages until Apply, which applies the plan and every tab — and kept for everyone (the settings
+ * blob), so every printout reads the same.
  */
 export function PrintDetails({ labelFields, onClose }: { labelFields: Partial<Record<RegisterKind, LabelField>>; onClose: () => void }) {
   const { state, actions } = useFloorplanData();
   const kinds = registerKindsFor(state.planId);
+  const [scope, setScope] = useState(state.printScope);
   const [tab, setTab] = useState<RegisterKind>(kinds[0]);
   const [drafts, setDrafts] = useState<Record<RegisterKind, RegisterPrint>>(() => {
     const out = {} as Record<RegisterKind, RegisterPrint>;
@@ -38,27 +45,36 @@ export function PrintDetails({ labelFields, onClose }: { labelFields: Partial<Re
       REGISTERS[kind].columns.filter((c) => !c.locked && draft.cols.includes(c.key) !== applied.cols.includes(c.key)).length
     );
   };
-  const changed = kinds.reduce((n, k) => n + changedIn(k), 0);
+  const changed = (scope !== state.printScope ? 1 : 0) + kinds.reduce((n, k) => n + changedIn(k), 0);
   const plural = kinds.length > 1;
 
   return (
     <Modal onClose={onClose} width={560}>
-      <ModalHeader
-        title="Print details"
-        subtitle={plural ? 'What the printed pages list after the plan, for each kind on it — for everyone who prints them.' : `What the printed ${REGISTERS[kinds[0]].many} pages show, for everyone who prints them.`}
-        onClose={onClose}
-      />
+      <ModalHeader title="Print settings" subtitle="What the printed pages show, for everyone who prints them." onClose={onClose} />
+      <div className={styles.planRow}>
+        <span className={styles.planLabel}>Plan</span>
+        <div className={styles.planSeg} role="radiogroup" aria-label="Plan">
+          {SCOPES.map((s) => (
+            <button key={s.value} type="button" role="radio" aria-checked={scope === s.value} className={[styles.tab, scope === s.value ? styles.tabOn : ''].join(' ')} onClick={() => setScope(s.value)}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+      </div>
       {plural && (
-        <div className={styles.tabs} role="tablist" aria-label="Registers">
-          {kinds.map((k) => {
-            const n = changedIn(k);
-            return (
-              <button key={k} type="button" role="tab" aria-selected={tab === k} className={[styles.tab, tab === k ? styles.tabOn : ''].join(' ')} onClick={() => setTab(k)}>
-                {REGISTERS[k].many[0].toUpperCase() + REGISTERS[k].many.slice(1)}
-                {n > 0 && <span className={styles.tabDot} aria-label={`${n} unsaved`} />}
-              </button>
-            );
-          })}
+        <div className={styles.planRow}>
+          <span className={styles.planLabel}>Details</span>
+          <div className={styles.tabs} role="tablist" aria-label="Details">
+            {kinds.map((k) => {
+              const n = changedIn(k);
+              return (
+                <button key={k} type="button" role="tab" aria-selected={tab === k} className={[styles.tab, tab === k ? styles.tabOn : ''].join(' ')} onClick={() => setTab(k)}>
+                  {REGISTERS[k].many[0].toUpperCase() + REGISTERS[k].many.slice(1)}
+                  {n > 0 && <span className={styles.tabDot} aria-label={`${n} unsaved`} />}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
       <RegisterChoices key={tab} kind={tab} draft={drafts[tab]} labelField={labelFields[tab] ?? null} onChange={(d) => setDrafts((all) => ({ ...all, [tab]: d }))} />
@@ -71,6 +87,7 @@ export function PrintDetails({ labelFields, onClose }: { labelFields: Partial<Re
           variant="primary"
           disabled={!changed}
           onClick={() => {
+            if (scope !== state.printScope) actions.setPrintScope(scope);
             for (const k of kinds) {
               if (!changedIn(k)) continue;
               // Kept in register order, whatever order they were ticked in.
@@ -89,27 +106,14 @@ export function PrintDetails({ labelFields, onClose }: { labelFields: Partial<Re
 
 /** One register's choices: printed or not, its columns by where they come from, which rows and their order. */
 function RegisterChoices({ kind, draft, labelField, onChange }: { kind: RegisterKind; draft: RegisterPrint; labelField: LabelField; onChange: (d: RegisterPrint) => void }) {
-  const { state } = useFloorplanData();
   const catalog = REGISTERS[kind];
   const note = columnsNote(registerColumns(draft, labelField, kind).length);
   const toggle = (key: string) => onChange({ ...draft, cols: draft.cols.includes(key) ? draft.cols.filter((k) => k !== key) : [...draft.cols, key] });
   const toggleGroup = (keys: string[], allOn: boolean) =>
     onChange({ ...draft, cols: allOn ? draft.cols.filter((k) => !keys.includes(k)) : [...draft.cols, ...keys.filter((k) => !draft.cols.includes(k))] });
-  const labelTab = LABEL_TAB[kind];
-  const showsHolder = kind === 'workstation' || kind === 'parking' ? state.planLabels[kind].showHolder : false;
 
   return (
     <div className={styles.body}>
-      {labelTab && (
-        <section className={styles.section}>
-          <h4 className={styles.heading}>On the plan</h4>
-          <p className={styles.note}>
-            Each {catalog.one} reads its <b>{labelField?.label ?? 'name'}</b>
-            {kind === 'room' ? '' : showsHolder ? ', with the assigned person under it' : ', without the assigned person'}. Change this in Settings › {labelTab} › Label on the plan.
-          </p>
-        </section>
-      )}
-
       <section className={styles.section}>
         <div className={styles.switchRow}>
           <button
@@ -122,13 +126,7 @@ function RegisterChoices({ kind, draft, labelField, onChange }: { kind: Register
           >
             <span className={styles.knob} />
           </button>
-          <div>
-            <h4 className={styles.heading}>{catalog.title}</h4>
-            <p className={styles.hint}>
-              Pages after the plan, one row per {catalog.one}, a column per detail
-              {kind === 'room' ? ' — bookings in the date and hours picked in the toolbar' : ''}
-            </p>
-          </div>
+          <h4 className={styles.heading}>{catalog.title}</h4>
         </div>
 
         {draft.register && (
