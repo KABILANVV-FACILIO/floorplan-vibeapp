@@ -3,6 +3,7 @@ import {
   badgeLetters,
   holdersOf,
   newRoleId,
+  peopleOnFloor,
   responderCountLabel,
   responderDataFrom,
   responderRolesFor,
@@ -132,6 +133,28 @@ describe('respondersOnFloor', () => {
   });
 });
 
+// Test Floor 1 (ENEC, 2026-11-17): one floor warden holding three desks.
+const threeDesks = {
+  ...state,
+  units: [...state.units, desk('d4', 'd2'), desk('d5', 'TEest Desk 2'), desk('d6', 'Test Desk - 1')],
+  assignments: { ...state.assignments, d4: 'e4', d5: 'e4', d6: 'e4' },
+  firstResponders: [...state.firstResponders, { employeeId: 'e4', name: 'Amrithya', roles: ['floorWarden'] } as FirstResponder],
+};
+
+describe('peopleOnFloor', () => {
+  it('is one entry a person, their desks together in label order, people in name order', () => {
+    expect(peopleOnFloor(respondersOnFloor(threeDesks)).map((p) => [p.responder.name, p.units.map((u) => u.label)])).toEqual([
+      ['Ahmed Albusaeedi', ['WS-02']],
+      ['Amrithya', ['d2', 'TEest Desk 2', 'Test Desk - 1']],
+      ['Mohammed Abdul Rub', ['WS-01']],
+    ]);
+  });
+
+  it('keeps a role to its own people', () => {
+    expect(holdersOf(peopleOnFloor(respondersOnFloor(threeDesks)), 'floorWarden').map((p) => p.responder.name)).toEqual(['Ahmed Albusaeedi', 'Amrithya', 'Mohammed Abdul Rub']);
+  });
+});
+
 describe('responderRolesFor', () => {
   it("gives the roles of the person at a desk, as definitions in the org's order", () => {
     expect(responderRolesFor(state, state.units[1]).map((r) => r.id)).toEqual(['firstAider', 'floorWarden']);
@@ -182,6 +205,11 @@ describe('responderCountLabel', () => {
     expect(responderCountLabel(onFloor, roles)).toBe('1 First aider · 2 Floor wardens · 1 Fire marshal');
     expect(responderCountLabel(onFloor.filter((x) => x.responder.employeeId === 'e1'), roles)).toBe('1 First aider · 1 Floor warden');
     expect(responderCountLabel([], roles)).toBe('');
+  });
+
+  it('counts people, not desks: one floor warden on three desks is one', () => {
+    expect(responderCountLabel(respondersOnFloor(threeDesks), roles)).toBe('1 First aider · 3 Floor wardens · 1 Fire marshal');
+    expect(responderCountLabel(respondersOnFloor(threeDesks).filter((x) => x.responder.employeeId === 'e4'), roles)).toBe('1 Floor warden');
   });
 });
 

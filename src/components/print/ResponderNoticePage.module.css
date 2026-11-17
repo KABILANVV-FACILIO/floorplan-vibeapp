@@ -7,9 +7,6 @@
   gap: 14px;
   overflow: hidden;
 }
-.sign {
-  flex: none;
-}
 .sections {
   width: 82%;
   display: flex;
@@ -119,4 +116,10 @@
 .num {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+/* A desk a line: someone holding several on the floor lists them all in one cell. */
+.desk {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

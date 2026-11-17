@@ -155,6 +155,26 @@ export function respondersOnFloor(state: Pick<AppState, 'units' | 'assignments' 
   return out.sort((a, b) => a.responder.name.localeCompare(b.responder.name) || a.unit.label.localeCompare(b.unit.label));
 }
 
+export interface FloorPerson {
+  responder: FirstResponder;
+  /** Every desk they hold on this floor, in label order. */
+  units: Unit[];
+}
+
+/**
+ * The same list by person: one entry each, their desks together, in name order. A notice or a
+ * count names people — someone holding three desks is one floor warden, not three.
+ */
+export function peopleOnFloor(list: FloorResponder[]): FloorPerson[] {
+  const byId = new Map<string, FloorPerson>();
+  for (const { responder, unit } of list) {
+    const person = byId.get(responder.employeeId);
+    if (person) person.units.push(unit);
+    else byId.set(responder.employeeId, { responder, units: [unit] });
+  }
+  return [...byId.values()];
+}
+
 /** The roles of the person at this desk, as definitions in the org's order — empty for everyone else. */
 export function responderRolesFor(state: ResponderState, unit: Unit): ResponderRoleDef[] {
   if (unit.type !== 'workstation' || state.firstResponders.length === 0) return [];
@@ -178,7 +198,8 @@ export function holdersOf<T extends { responder: FirstResponder }>(list: T[], ro
 export function responderCountLabel(list: FloorResponder[], roles: ResponderRoleDef[]): string {
   return roles
     .map((d) => {
-      const n = list.filter((x) => x.responder.roles.includes(d.id)).length;
+      // People, not desks: one person on three desks is one.
+      const n = new Set(list.filter((x) => x.responder.roles.includes(d.id)).map((x) => x.responder.employeeId)).size;
       return n === 0 ? null : `${n} ${n === 1 ? d.name : d.plural}`;
     })
     .filter(Boolean)
