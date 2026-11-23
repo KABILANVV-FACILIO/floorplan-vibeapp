@@ -615,6 +615,9 @@ export const STATE_SWATCHES = ['#29A01E', '#0059D6', '#3C229D', '#B61919', '#F59
 export const STATE_DEFS: Record<UnitType, StateDef[]> = {
   workstation: [
     { key: 'free', label: 'Vacant', desc: 'Assignable, no owner yet', def: '#29A01E' },
+    // A desk whose record the org holds as Temporarily Vacant (lib/recordStates): unheld, but set
+    // aside — the occupancy card's middle tile, and its own colour on the plan.
+    { key: 'tempVacant', label: 'Temporarily vacant', desc: 'Vacated, held open before it is assigned again', def: '#F59E0B' },
     { key: 'assigned', label: 'Assigned', desc: 'Has a permanent owner', def: '#0059D6' },
     { key: 'hot', label: 'Hot desk', desc: 'Bookable by anyone, per session', def: '#3C229D' },
     { key: 'booked', label: 'Booked', desc: 'Reserved for a time window', def: '#B61919' },

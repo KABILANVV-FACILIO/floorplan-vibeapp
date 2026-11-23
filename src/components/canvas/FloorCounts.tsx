@@ -15,8 +15,6 @@ const TILES: Record<CountedType, [string, string, string]> = {
   parking: ['Occupied', 'Reserved', 'Vacant'],
   room: ['Occupied', 'Booked', 'Free'],
 };
-/** The middle tile's edge on a desk row: Settings has no colour for a state the plan doesn't draw. */
-const TEMPORARILY_VACANT = 'var(--warning-500)';
 /** How many departments the card lists before "Show all": the largest ones, by desks. */
 const TOP_DEPARTMENTS = 5;
 /** The switch's pick, kept per browser: it is the viewer's own, never the org's. */
@@ -159,7 +157,7 @@ export function FloorCounts() {
     const [held, aside, rest] = TILES[row.type];
     const parts: Part[] = [
       { key: 'occupied', label: held, n: row.occupied, color: moduleColor(state, row.type, 'assigned') },
-      { key: 'aside', label: aside, n: row.aside, color: row.type === 'workstation' ? TEMPORARILY_VACANT : moduleColor(state, row.type, 'booked') },
+      { key: 'aside', label: aside, n: row.aside, color: moduleColor(state, row.type, row.type === 'workstation' ? 'tempVacant' : 'booked') },
       { key: 'free', label: rest, n: row.free, color: moduleColor(state, row.type, row.type === 'room' ? 'available' : 'free') },
     ];
     return row.type === 'room' ? parts.slice(1) : parts;

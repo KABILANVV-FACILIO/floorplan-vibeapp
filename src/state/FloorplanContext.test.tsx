@@ -359,6 +359,18 @@ describe('the settings in the app database', () => {
       expect(now().moduleColors['workstation.free']).toBe('#123456');
     });
 
+    it("does not put a responder list edited before the database answered back over the database's own", async () => {
+      ctx.role = ADMIN;
+      let answer!: (v: unknown) => void;
+      ctx.sharedRead = () => new Promise((r) => (answer = r));
+      await boot();
+      act(() => store.actions.setFirstResponders([{ employeeId: '7', name: 'Old copy', roles: ['firstAider'] }]));
+      await settled();
+      await act(async () => answer(shared({ responders: [{ employeeId: '12', name: 'Sara Haddad', roles: ['firstAider'] }] })));
+      await settled();
+      expect(now().firstResponders.map((r: { employeeId: string }) => r.employeeId)).toEqual(['12']);
+    });
+
     it('sends nothing when nothing changed before the reads answered — the load is never sent back', async () => {
       ctx.role = ADMIN;
       let answer!: (v: unknown) => void;

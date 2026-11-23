@@ -16,7 +16,7 @@ import { MobileDatePicker } from './MobileDatePicker';
 import { FloorplanSkeleton } from '../canvas/FloorplanSkeleton';
 import { EmptyFloorArt } from '../primitives/EmptyFloorArt';
 import { parseISO } from '../primitives/Calendar';
-import { markerStyle } from '../../lib/unitStatus';
+import { hasTemporarilyVacantDesk, markerStyle, moduleColor } from '../../lib/unitStatus';
 import { MARKER_ICONS } from '../canvas/markerIcons';
 import { contactName, myAssignedUnit } from '../../state/selectors';
 import { departmentDisplayName } from '../../lib/displayNames';
@@ -96,8 +96,10 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
   const legend: { label: string; color: string; glyph?: ResponderRoleDef }[] = [
     ...(state.mobileTab === 'assign'
       ? [
-          { label: 'Vacant', color: 'var(--success-500)' },
-          { label: 'Assigned', color: 'var(--blue-500)' },
+          // The colours the markers are drawn in (Settings › Desks), so the key matches the plan.
+          { label: 'Vacant', color: moduleColor(state, 'workstation', 'free') },
+          ...(hasTemporarilyVacantDesk(state, mobileUnits) ? [{ label: 'Temporarily vacant', color: moduleColor(state, 'workstation', 'tempVacant') }] : []),
+          { label: 'Assigned', color: moduleColor(state, 'workstation', 'assigned') },
         ]
       : [
           { label: 'Available', color: 'var(--success-500)' },

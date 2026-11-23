@@ -201,6 +201,8 @@ const USER_SETTINGS_ACTIONS = new Set<Action['type']>([
   'SET_FIRST_RESPONDERS',
   'SET_RESPONDER_ROLES',
 ]);
+/** The settings actions that replace a whole list the app database keeps apart (see the autosave). */
+const WHOLE_LIST_ACTIONS = new Set<Action['type']>(['SET_FIRST_RESPONDERS', 'SET_RESPONDER_ROLES', 'SET_ACCESS', 'SET_SURFACE_ACCESS', 'RESET_ACCESS']);
 /** The loads that set the stored settings (or decide where they live) — see USER_SETTINGS_ACTIONS. */
 const SETTINGS_LOAD_ACTIONS = new Set<Action['type']>([
   'APPLY_SETTINGS',
@@ -2464,7 +2466,10 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
       // A load that landed after the change may have put the stored value back on screen: the
       // changes are applied again, over the settings as loaded. Where that changes the screen, this
       // effect runs again and sends that; where it does not, what is on screen already is the change.
-      if (loadAfterChange) changes.forEach(rawDispatch);
+      // Not the responders or the access grid: each action carries a WHOLE list, built on what was
+      // on screen before the database answered, and once the database holds them this save never
+      // sends them — replayed, an older list would sit on screen unsaved, for the next edit to store.
+      if (loadAfterChange) changes.filter((a) => !WHOLE_LIST_ACTIONS.has(a.type)).forEach(rawDispatch);
     }
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {

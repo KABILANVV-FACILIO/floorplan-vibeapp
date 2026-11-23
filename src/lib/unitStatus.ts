@@ -7,8 +7,21 @@ import { isReserved, isTemporarilyVacant } from './recordStates';
 import type { Unit } from './types';
 import { fmtTime } from './geometry';
 
+/**
+ * The state colour an unheld space is drawn in: a desk its record holds as Temporarily Vacant has
+ * its own (Settings › Desks › States & colour coding); every other unheld space the vacant one.
+ */
+export function vacantColorKey(state: AppState, unit: Unit): 'tempVacant' | 'free' {
+  return unit.type === 'workstation' && isTemporarilyVacant(state.recordStates?.[unit.id]) ? 'tempVacant' : 'free';
+}
+
+/** Whether any unheld desk among `units` (the floor's) is Temporarily Vacant — the legend keys the colour only then. */
+export function hasTemporarilyVacantDesk(state: AppState, units: Unit[] = state.units): boolean {
+  return units.some((u) => u.type === 'workstation' && !state.assignments[u.id] && vacantColorKey(state, u) === 'tempVacant');
+}
+
 export function moduleColor(state: AppState, type: Unit['type'], key: string): string {
-  const override = state.moduleColors[`${type}.${key}`];
+  const override = state.moduleColors?.[`${type}.${key}`];
   if (override) return override;
   const def = STATE_DEFS[type]?.find((s) => s.key === key);
   return def ? def.def : '#607796';
@@ -31,6 +44,8 @@ export interface UnitStatus {
 const TOKEN = {
   success050: 'var(--success-050)',
   success700: 'var(--success-700)',
+  warning050: 'var(--warning-050)',
+  warning700: 'var(--warning-700)',
   danger050: 'var(--danger-050)',
   danger700: 'var(--danger-700)',
   blue050: 'var(--blue-050)',
@@ -144,7 +159,7 @@ export function markerStyle(state: AppState, unit: Unit, markerScale = 1): Marke
       const c = moduleColor(state, unit.type, 'assigned');
       return { bg: c, bd: c, fg: '#fff', opacity: 1, shadow, size, radius, zIndex, occText: initialsFor(contactId), icon: initialsFor(contactId) ? null : markerIcon(unit.type) };
     }
-    const free = moduleColor(state, unit.type, 'free');
+    const free = moduleColor(state, unit.type, vacantColorKey(state, unit));
     return { bg: tint(free), bd: free, fg: free, opacity: 1, shadow, size, radius, zIndex, occText: null, icon: markerIcon(unit.type) };
   }
 
@@ -196,8 +211,9 @@ function contactNameFallback(state: AppState, contactId: string): string {
  *
  * Except where the record's own state says more, as the occupancy card counts it (floorCounts): a
  * desk the org holds open as Temporarily Vacant, a stall that is Reserved. One desk was otherwise
- * "Temporarily vacant" in the card and "Vacant" in its pill, tooltip and name. Drawn in the vacant
- * colour all the same, so the legend's key still holds.
+ * "Temporarily vacant" in the card and "Vacant" in its pill, tooltip and name. A Temporarily Vacant
+ * desk is drawn in its own colour (vacantColorKey), which the legend keys; a Reserved stall in the
+ * vacant one.
  */
 function vacantWord(state: AppState, unit: Unit): string {
   if (unit.type === 'room' || unit.type === 'delivery') return 'Free';
@@ -205,6 +221,14 @@ function vacantWord(state: AppState, unit: Unit): string {
   if (unit.type === 'workstation' && isTemporarilyVacant(recordState)) return 'Temporarily vacant';
   if (unit.type === 'parking' && isReserved(recordState)) return 'Reserved';
   return 'Vacant';
+}
+
+/** The pill of an unheld space: its word, and a Temporarily Vacant desk in its own colour and amber. */
+function vacantStatus(state: AppState, unit: Unit): UnitStatus {
+  const key = vacantColorKey(state, unit);
+  return key === 'tempVacant'
+    ? { key: 'free', text: vacantWord(state, unit), bg: TOKEN.warning050, fg: TOKEN.warning700, dot: moduleColor(state, unit.type, key) }
+    : { key: 'free', text: vacantWord(state, unit), bg: TOKEN.success050, fg: TOKEN.success700, dot: moduleColor(state, unit.type, key) };
 }
 
 export function unitStatus(state: AppState, unit: Unit, contactName: (id: string) => string): UnitStatus {
@@ -220,7 +244,7 @@ export function unitStatus(state: AppState, unit: Unit, contactName: (id: string
     if (holder) {
       return { key: 'assigned', text: `Assigned · ${contactName(holder)}`, bg: TOKEN.blue050, fg: TOKEN.blue700, dot: moduleColor(state, unit.type, 'assigned') };
     }
-    return { key: 'free', text: vacantWord(state, unit), bg: TOKEN.success050, fg: TOKEN.success700, dot: moduleColor(state, unit.type, 'free') };
+    return vacantStatus(state, unit);
   }
   if (state.mode === 'assign') {
     if (!isAssignable(unit)) {
@@ -236,7 +260,7 @@ export function unitStatus(state: AppState, unit: Unit, contactName: (id: string
         dot: moduleColor(state, unit.type, 'assigned'),
       };
     }
-    return { key: 'free', text: vacantWord(state, unit), bg: TOKEN.success050, fg: TOKEN.success700, dot: moduleColor(state, unit.type, 'free') };
+    return vacantStatus(state, unit);
   }
   // book mode
   if (!isBookable(unit)) {

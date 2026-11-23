@@ -116,22 +116,34 @@ describe('a person in the People list', () => {
 describe('a desk the org holds open, or a stall it reserved', () => {
   const states = { d4: 'temporarilyvacant', p2: 'reserved' };
 
-  it('is called what the counts card calls it, in its pill, tooltip and name — in the vacant colour still', () => {
+  it('is called what the counts card calls it, in its pill, tooltip and name — a desk in its own colour', () => {
     const s = floor({ recordStates: states });
     const name = (id: string) => '';
     const d4 = s.units.find((u) => u.id === 'd4')!;
     const status = unitStatus(s, d4, name);
     expect(status.text).toBe('Temporarily vacant');
     expect(status.key).toBe('free');
-    expect(status.dot).toBe(unitStatus(floor(), d4, name).dot);
+    // Settings › Desks › States & colour coding: the Temporarily vacant colour, not the vacant one.
+    expect(status.dot).toBe('#F59E0B');
+    expect(unitStatus(floor(), d4, name).dot).toBe('#29A01E');
     expect(markerModel(s, d4).title).toContain('Temporarily vacant');
-    expect(markerStyle(s, d4)).toEqual(markerStyle(floor(), d4));
+    expect(markerStyle(s, d4).bd).toBe('#F59E0B');
+    expect(markerStyle(floor(), d4).bd).toBe('#29A01E');
+    // The colour picked in Settings is the one drawn.
+    expect(markerStyle({ ...s, moduleColors: { 'workstation.tempVacant': '#123456' } }, d4).bd).toBe('#123456');
 
     const p2 = s.units.find((u) => u.id === 'p2')!;
     expect(unitStatus({ ...s, planId: 'parking' }, p2, name).text).toBe('Reserved');
     // Held, it is theirs whatever its state; and a plain vacant desk stays "Vacant".
     expect(unitStatus({ ...s, recordStates: { d1: 'temporarilyvacant' } }, s.units[0], name).text).toMatch(/^Assigned/);
     expect(unitStatus(s, s.units.find((u) => u.id === 'd3')!, name).text).toBe('Vacant');
+  });
+
+  it('is keyed in the legend only on a floor that has one', () => {
+    const keys = (st: ReturnType<typeof floor>) => legendItems(st).map((i) => i.key);
+    expect(keys(floor({ recordStates: states }))).toContain('state:tempVacant');
+    expect(keys(floor())).not.toContain('state:tempVacant');
+    expect(legendItems(floor({ recordStates: states })).find((i) => i.key === 'state:tempVacant')?.color).toBe('#F59E0B');
   });
 });
 

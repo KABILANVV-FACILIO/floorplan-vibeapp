@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
-import { moduleColor } from '../../lib/unitStatus';
+import { hasTemporarilyVacantDesk, moduleColor } from '../../lib/unitStatus';
 import { AMENITY_META, isRoomLike, TYPE_META } from '../../lib/types';
 import { activeDepartments, colorByOf, departmentColorIds, enabledTypes } from '../../state/selectors';
 import { departmentColor, departmentsIn } from '../../lib/departmentColors';
@@ -66,10 +66,15 @@ export function legendItems(state: AppState): LegendItem[] {
     // Desks with no department on their record keep the state colours, so the key says so.
     if (!ticked.length && state.units.some((u) => u.type === 'workstation' && !u.department)) {
       items.push({ key: 'dept:none', label: 'No department', color: moduleColor(state, 'workstation', 'free') });
+      if (hasTemporarilyVacantDesk(state, state.units.filter((u) => !u.department))) {
+        items.push({ key: 'state:tempVacant', label: 'Temporarily vacant', color: moduleColor(state, 'workstation', 'tempVacant') });
+      }
     }
   } else if (state.mode === 'assign') {
     items = [
       { key: 'state:free', label: 'Vacant', color: moduleColor(state, 'workstation', 'free') },
+      // Keyed only on a floor that has one, like the amenities and badges below.
+      ...(hasTemporarilyVacantDesk(state) ? [{ key: 'state:tempVacant', label: 'Temporarily vacant', color: moduleColor(state, 'workstation', 'tempVacant') }] : []),
       { key: 'state:assigned', label: 'Assigned', color: moduleColor(state, 'workstation', 'assigned') },
     ];
   } else {
