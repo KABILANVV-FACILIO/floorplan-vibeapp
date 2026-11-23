@@ -82,3 +82,13 @@
   font: 400 12px/1.5 var(--font-sans);
   color: var(--ink-500);
 }
+/* "Retry" after a read that failed — a text button in the line that says so. */
+.retry {
+  border: none;
+  background: none;
+  padding: 0;
+  font: 600 12px/1.5 var(--font-sans);
+  color: var(--blue-600);
+  text-decoration: underline;
+  cursor: pointer;
+}

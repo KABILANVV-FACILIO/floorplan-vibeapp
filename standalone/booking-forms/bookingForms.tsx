@@ -16,7 +16,7 @@
  *    (`desk` / `space` / `parkingStall`), `parentModuleId` resolved from the org's module list.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 
 // ---------------------------------------------------------------------------
@@ -26,9 +26,28 @@ import type { CSSProperties, ReactNode } from 'react';
 const FACILIO_SDK_URL = 'https://static.facilio.com/apps-sdk/beta/facilio_apps_sdk.min.js';
 const SDK_READY_TIMEOUT_MS = 20000;
 
+/** `?capp_id=` / `?origin=` (or the same after `#`) — set by the Facilio host on a connected app's URL. */
+function hostParam(name: string): string | null {
+  const fromSearch = new URLSearchParams(window.location.search).get(name);
+  if (fromSearch) return fromSearch;
+  return new URLSearchParams(window.location.hash.replace(/^#/, '')).get(name);
+}
+
 let sdkReady: Promise<any> | null = null;
 function facilioAppReady(): Promise<any> {
   if (sdkReady) return sdkReady;
+  // A page that already started the SDK (the app this form is dropped into) owns it: a second
+  // init() would open a second channel to the host. Reuse what it made.
+  const existing = (window as any).facilioApp;
+  if (existing && existing.api && existing.request) {
+    sdkReady = Promise.resolve(existing);
+    return sdkReady;
+  }
+  // The host puts both on the URL of every connected app it frames. Without them there is no host
+  // to talk to — init() would only fail later, or answer for whatever page set them — so refuse now.
+  if (!hostParam('capp_id') || !hostParam('origin')) {
+    return Promise.reject(new Error('not opened as a Facilio connected app (the page URL has no capp_id/origin)'));
+  }
   sdkReady = new Promise((resolve, reject) => {
     let settled = false;
     const timer = setTimeout(() => {
@@ -89,6 +108,12 @@ function facilioAppReady(): Promise<any> {
       }
     };
     document.head.appendChild(script);
+  });
+  // A failed start is not kept: the next call tries again, rather than every later call failing
+  // for the rest of the page's life on one blip.
+  const pending = sdkReady;
+  pending.catch(() => {
+    if (sdkReady === pending) sdkReady = null;
   });
   return sdkReady;
 }
@@ -221,7 +246,7 @@ const RESOURCE_MODULE: Record<BookableType, string> = {
 let modulesCache: Promise<Map<string, number>> | null = null;
 function moduleIdByName(): Promise<Map<string, number>> {
   if (!modulesCache) {
-    modulesCache = customGet('v3/modules/list/all', { skipPermission: true })
+    const pending = customGet('v3/modules/list/all', { skipPermission: true })
       .then((body: any) => {
         const map = new Map<string, number>();
         const lists = [body?.data?.modules, body?.data?.systemModules, body?.data?.customModules, body?.modules].filter(Array.isArray);
@@ -234,7 +259,12 @@ function moduleIdByName(): Promise<Map<string, number>> {
         }
         return map;
       })
-      .catch(() => new Map());
+      .catch(() => new Map<string, number>());
+    modulesCache = pending;
+    // An empty answer (the read failed, or carried no list) is not kept — the next booking asks again.
+    void pending.then((map) => {
+      if (!map.size && modulesCache === pending) modulesCache = null;
+    });
   }
   return modulesCache;
 }
@@ -244,8 +274,12 @@ function moduleIdByName(): Promise<Map<string, number>> {
 let orgTzCache: Promise<string | null> | null = null;
 function fetchOrgTimezone(): Promise<string | null> {
   if (!orgTzCache) {
-    orgTzCache = customGet('v2/fetchAccount', { optimized: true })
-      .catch(() => null)
+    let failed = false;
+    const pending: Promise<string | null> = customGet('v2/fetchAccount', { optimized: true })
+      .catch(() => {
+        failed = true;
+        return null;
+      })
       .then((body: any) => {
         const account = body?.result?.account ?? body?.account ?? null;
         for (const tz of [account?.timezone ?? account?.org?.timezone, account?.org?.timeZone, account?.user?.timezone]) {
@@ -260,6 +294,11 @@ function fetchOrgTimezone(): Promise<string | null> {
         }
         return null;
       });
+    orgTzCache = pending;
+    // A read that failed is not an org without a zone: forget it, so the next form asks again.
+    void pending.then(() => {
+      if (failed && orgTzCache === pending) orgTzCache = null;
+    });
   }
   return orgTzCache;
 }
@@ -376,16 +415,27 @@ const S: Record<string, CSSProperties> = {
   chipDisabled: { background: '#f2f4f7', color: '#b3bdc9', cursor: 'not-allowed' },
   button: { padding: '10px 16px', borderRadius: 8, border: 'none', background: '#0059d6', color: '#fff', font: '600 13.5px system-ui, sans-serif', cursor: 'pointer' },
   error: { color: '#b61919', font: '500 12.5px system-ui, sans-serif' },
+  success: { color: '#0a6b3d', font: '500 12.5px system-ui, sans-serif' },
 };
 
-function Field({ label, required, children }: { label: string; required?: boolean; children: ReactNode }) {
+/**
+ * A labelled field. `children` is given the id the label points at, so a screen reader pairs the two;
+ * a field that is a group (the time slots) is labelled through `aria-labelledby` instead.
+ */
+function Field({ label, required, children }: { label: string; required?: boolean; children: (ids: { id: string; labelId: string }) => ReactNode }) {
+  const id = useId();
+  const labelId = `${id}-label`;
   return (
     <div>
-      <label style={S.label}>
-        {required && <span style={{ color: '#b61919', marginRight: 3 }}>*</span>}
+      <label id={labelId} htmlFor={id} style={S.label}>
+        {required && (
+          <span aria-hidden="true" style={{ color: '#b61919', marginRight: 3 }}>
+            *
+          </span>
+        )}
         {label}
       </label>
-      {children}
+      {children({ id, labelId })}
     </div>
   );
 }
@@ -394,7 +444,11 @@ export interface FacilioBookingFormProps {
   unitType: BookableType;
   resourceId: number;
   resourceLabel: string;
-  onDone?: (bookingId: number) => void;
+  /**
+   * Called once the booking exists. `null` when Facilio created it but didn't return its id — it is
+   * still booked, so the form treats it as done either way (see onSubmit).
+   */
+  onDone?: (bookingId: number | null) => void;
   onCancel?: () => void;
 }
 
@@ -432,6 +486,8 @@ export function FacilioBookingForm({ unitType, resourceId, resourceLabel, onDone
   const [noOfAttendees, setNoOfAttendees] = useState('1');
   const [extras, setExtras] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
+  /** Set once the booking exists. From then on the form can't submit again — see onSubmit. */
+  const [booked, setBooked] = useState<{ id: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -452,6 +508,8 @@ export function FacilioBookingForm({ unitType, resourceId, resourceLabel, onDone
   const TIME_OPTIONS = useMemo(() => Array.from({ length: 1440 / 30 + 1 }, (_, i) => i * 30), []);
 
   async function onSubmit() {
+    // A double click, or Enter held down, must not send a second booking for the same window.
+    if (submitting || booked) return;
     setError(null);
     if (date < minDate || date > maxDate) {
       setError(isRoom ? 'Rooms can only be booked for today.' : 'Bookings can be made at most one week ahead.');
@@ -474,7 +532,6 @@ export function FacilioBookingForm({ unitType, resourceId, resourceLabel, onDone
       if (KNOWN_FIELDS.has(f.name) || RESOURCE_LOOKUPS.has((f.lookupModule ?? '').toLowerCase())) continue;
       if (f.required && !(extras[f.name] ?? '').trim()) return setError(`“${f.label || f.name}” is required.`);
     }
-    setSubmitting(true);
     const extraValues: Record<string, unknown> = {};
     for (const f of form?.fields ?? []) {
       const raw = (extras[f.name] ?? '').trim();
@@ -486,29 +543,47 @@ export function FacilioBookingForm({ unitType, resourceId, resourceLabel, onDone
       else if (f.type === 'DECISION_BOX') extraValues[f.name] = raw === '1';
       else extraValues[f.name] = raw;
     }
-    const res = await createSpaceBooking({
-      unitType,
-      resourceId,
-      resourceLabel,
-      dateISO: date,
-      startMinutes: start,
-      endMinutes: end,
-      name: name.trim() || undefined,
-      description: description.trim() || undefined,
-      host: host || undefined,
-      reservedBy: reservedBy || undefined,
-      noOfAttendees: Number(noOfAttendees) || 1,
-      formId: form?.id,
-      extras: extraValues,
-    });
-    setSubmitting(false);
-    if (!res.ok) setError(res.reason ?? 'Booking failed.');
-    else if (res.id) onDone?.(res.id);
+    // Whatever happens, the button comes back: an error thrown on the way (a dropped connection, a
+    // bridge that rejects) used to skip the line that cleared "Saving…", and the form sat on it for
+    // good with no way to retry.
+    setSubmitting(true);
+    let res: Awaited<ReturnType<typeof createSpaceBooking>>;
+    try {
+      res = await createSpaceBooking({
+        unitType,
+        resourceId,
+        resourceLabel,
+        dateISO: date,
+        startMinutes: start,
+        endMinutes: end,
+        name: name.trim() || undefined,
+        description: description.trim() || undefined,
+        host: host || undefined,
+        reservedBy: reservedBy || undefined,
+        noOfAttendees: Number(noOfAttendees) || 1,
+        formId: form?.id,
+        extras: extraValues,
+      });
+    } catch (err) {
+      setError(`Booking failed: ${(err as Error)?.message || 'the request did not go through'}. Nothing was booked — you can try again.`);
+      return;
+    } finally {
+      setSubmitting(false);
+    }
+    if (!res.ok) {
+      setError(res.reason ?? 'Booking failed.');
+      return;
+    }
+    // Booked — with or without an id back. A success that carried no id used to change nothing on
+    // screen, so people pressed Submit again and booked the same space twice.
+    setBooked({ id: res.id ?? null });
+    onDone?.(res.id ?? null);
   }
 
   const contactSelect = (value: number | '', onChange: (v: number | '') => void, label: string, required?: boolean) => (
     <Field label={label} required={required}>
-      <select style={S.input} value={value} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : '')}>
+      {({ id }) => (
+      <select id={id} aria-required={required || undefined} style={S.input} value={value} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : '')}>
         <option value="">— Select —</option>
         {contacts.map((c) => (
           <option key={c.id} value={c.id}>
@@ -516,6 +591,7 @@ export function FacilioBookingForm({ unitType, resourceId, resourceLabel, onDone
           </option>
         ))}
       </select>
+      )}
     </Field>
   );
 
@@ -524,35 +600,39 @@ export function FacilioBookingForm({ unitType, resourceId, resourceLabel, onDone
   return (
     <div style={S.root}>
       <Field label={isRoom ? 'Location' : unitType === 'parking' ? 'Parking' : 'Desk'} required>
-        <div style={{ ...S.input, background: '#f2f4f7' }}>{resourceLabel}</div>
+        {({ id }) => (
+          <output id={id} style={{ ...S.input, display: 'block', background: '#f2f4f7' }}>
+            {resourceLabel}
+          </output>
+        )}
       </Field>
 
-      <Field label="Name">
-        <input style={S.input} value={name} onChange={(e) => setName(e.target.value)} placeholder="Enter your text here" />
-      </Field>
+      <Field label="Name">{({ id }) => <input id={id} style={S.input} value={name} onChange={(e) => setName(e.target.value)} placeholder="Enter your text here" />}</Field>
       <Field label="Description">
-        <textarea style={{ ...S.input, height: 64, resize: 'vertical' }} value={description} onChange={(e) => setDescription(e.target.value)} />
+        {({ id }) => <textarea id={id} style={{ ...S.input, height: 64, resize: 'vertical' }} value={description} onChange={(e) => setDescription(e.target.value)} />}
       </Field>
       {contactSelect(host, setHost, 'Host')}
       {contactSelect(reservedBy, setReservedBy, 'Reserved By', true)}
       <Field label="Number Of Attendees">
-        <input style={S.input} type="number" min={1} value={noOfAttendees} onChange={(e) => setNoOfAttendees(e.target.value)} />
+        {({ id }) => <input id={id} style={S.input} type="number" min={1} value={noOfAttendees} onChange={(e) => setNoOfAttendees(e.target.value)} />}
       </Field>
 
       {/* Time controls: rooms = 2h slots, desks = start/end, parking/locker = slotMinutes chips */}
       <Field label={useSlots ? 'Time Slots' : 'Booking Window'} required>
+        {({ id, labelId }) => (
+        <div role="group" aria-labelledby={labelId}>
         <div style={{ display: 'grid', gridTemplateColumns: useSlots ? '1fr' : '1fr 1fr 1fr', gap: 12 }}>
-          <input style={S.input} type="date" value={date} min={minDate} max={maxDate} onChange={(e) => setDate(e.target.value)} />
+          <input id={id} aria-label="Date" style={S.input} type="date" value={date} min={minDate} max={maxDate} onChange={(e) => setDate(e.target.value)} />
           {!useSlots && (
             <>
-              <select style={S.input} value={startMin} onChange={(e) => setStartMin(Number(e.target.value))}>
+              <select aria-label="Start time" style={S.input} value={startMin} onChange={(e) => setStartMin(Number(e.target.value))}>
                 {TIME_OPTIONS.filter((m) => m < endMin).map((m) => (
                   <option key={m} value={m}>
                     {fmtTime(m)}
                   </option>
                 ))}
               </select>
-              <select style={S.input} value={endMin} onChange={(e) => setEndMin(Number(e.target.value))}>
+              <select aria-label="End time" style={S.input} value={endMin} onChange={(e) => setEndMin(Number(e.target.value))}>
                 {TIME_OPTIONS.filter((m) => m > startMin).map((m) => (
                   <option key={m} value={m}>
                     {fmtTime(m)}
@@ -571,6 +651,7 @@ export function FacilioBookingForm({ unitType, resourceId, resourceLabel, onDone
                   key={m}
                   type="button"
                   disabled={!selectable}
+                  aria-pressed={slotStart === m}
                   onClick={() => setSlotStart(m)}
                   style={{ ...S.chip, ...(slotStart === m ? S.chipActive : {}), ...(selectable ? {} : S.chipDisabled) }}
                 >
@@ -580,6 +661,8 @@ export function FacilioBookingForm({ unitType, resourceId, resourceLabel, onDone
             })}
           </div>
         )}
+        </div>
+        )}
       </Field>
 
       {/* Org-form fields the block above doesn't model — rendered generically. */}
@@ -587,8 +670,9 @@ export function FacilioBookingForm({ unitType, resourceId, resourceLabel, onDone
         .filter((f) => !KNOWN_FIELDS.has(f.name) && !RESOURCE_LOOKUPS.has((f.lookupModule ?? '').toLowerCase()))
         .map((f) => (
           <Field key={f.name} label={f.label || f.name} required={f.required}>
-            {f.lookupModule && PEOPLE_LOOKUPS.has(f.lookupModule.toLowerCase()) ? (
-              <select style={S.input} value={extras[f.name] ?? ''} onChange={(e) => setExtras((x) => ({ ...x, [f.name]: e.target.value }))}>
+            {({ id }) =>
+            f.lookupModule && PEOPLE_LOOKUPS.has(f.lookupModule.toLowerCase()) ? (
+              <select id={id} aria-required={f.required || undefined} style={S.input} value={extras[f.name] ?? ''} onChange={(e) => setExtras((x) => ({ ...x, [f.name]: e.target.value }))}>
                 <option value="">— Select —</option>
                 {contacts.map((c) => (
                   <option key={c.id} value={c.id}>
@@ -597,27 +681,41 @@ export function FacilioBookingForm({ unitType, resourceId, resourceLabel, onDone
                 ))}
               </select>
             ) : f.type === 'TEXTAREA' ? (
-              <textarea style={{ ...S.input, height: 56 }} value={extras[f.name] ?? ''} onChange={(e) => setExtras((x) => ({ ...x, [f.name]: e.target.value }))} />
+              <textarea id={id} aria-required={f.required || undefined} style={{ ...S.input, height: 56 }} value={extras[f.name] ?? ''} onChange={(e) => setExtras((x) => ({ ...x, [f.name]: e.target.value }))} />
             ) : (
               <input
+                id={id}
+                aria-required={f.required || undefined}
                 style={S.input}
                 type={f.type === 'NUMBER' || f.type === 'DECIMAL' ? 'number' : f.type === 'DATE' ? 'date' : f.type === 'DATETIME' ? 'datetime-local' : 'text'}
                 value={extras[f.name] ?? ''}
                 onChange={(e) => setExtras((x) => ({ ...x, [f.name]: e.target.value }))}
               />
-            )}
+            )
+            }
           </Field>
         ))}
 
-      {error && <div style={S.error}>{error}</div>}
+      {error && (
+        <div role="alert" style={S.error}>
+          {error}
+        </div>
+      )}
+      {booked && (
+        <div role="status" style={S.success}>
+          {booked.id != null
+            ? `Booked — booking #${booked.id}.`
+            : "Booked. Facilio didn't send back the booking's number, so check your bookings rather than submitting again."}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
         {onCancel && (
           <button type="button" style={{ ...S.button, background: '#fff', color: '#1c2733', border: '1.5px solid #d5dce4' }} onClick={onCancel} disabled={submitting}>
-            Cancel
+            {booked ? 'Close' : 'Cancel'}
           </button>
         )}
-        <button type="button" style={S.button} onClick={onSubmit} disabled={submitting}>
-          {submitting ? 'Saving…' : 'Submit Details'}
+        <button type="button" style={S.button} onClick={onSubmit} disabled={submitting || !!booked}>
+          {submitting ? 'Saving…' : booked ? 'Booked' : 'Submit Details'}
         </button>
       </div>
     </div>

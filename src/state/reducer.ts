@@ -1,11 +1,18 @@
-import { DEFAULT_ENABLED_MODULES, DEFAULT_PERMS, floorImageKey, isRoomLike, planForPlacement } from '../lib/types';
+import { DEFAULT_ENABLED_MODULES, DEFAULT_PLAN_LABEL, DEFAULT_REGISTER_PRINTS, REGISTER_KINDS, DEFAULT_PLAN_LABELS, DEFAULT_PLAN_VIEWS, LABELLED_TYPES, floorImageKey, isRoomLike, planForPlacement } from '../lib/types';
 import { DEFAULT_LABEL_STYLE } from '../lib/labelLayout';
 import type { LabelStyle } from '../lib/labelLayout';
-import type { Booking, Building, Floor, FloorSearchHit, MarkerDef, ModuleKey, PlanId, Site, Unit } from '../lib/types';
-import { clamp, fitView } from '../lib/geometry';
-import { seedBookings } from '../lib/mockData';
+import type { AppMode, Booking, Building, Floor, FloorSearchHit, LabelledType, MarkerDef, ModuleKey, OrgRole, PlanId, PlanLabel, PlanLabels, PlanViews, RegisterKind, RegisterPrint, Site, Surface, SurfaceAccess, Unit } from '../lib/types';
+import { clamp } from '../lib/geometry';
+import { slotNow } from '../lib/orgTime';
 import { viewFromLocation } from '../lib/routes';
 import type { AppState } from './types';
+import { bookingAllowed, canAssign, canBook, canEdit, clampView } from './selectors';
+import { sanitizeResponders, sanitizeRoles, withRecordNames } from '../lib/firstResponders';
+import { BUILTIN_RESPONDER_ROLES } from '../lib/types';
+import type { FirstResponder, ResponderRoleDef } from '../lib/types';
+import { splitSettings } from '../lib/settingsStore';
+import type { SettingsConfig } from '../lib/settingsStore';
+import type { DepartmentColorScheme } from '../lib/departmentColorStore';
 
 function todayIso(): string {
   const d = new Date();
@@ -41,6 +48,9 @@ function countUnsavedChanges(units: Unit[], savedUnits: Unit[]): number {
 
 export function buildInitialState(): AppState {
   const iso = todayIso();
+  // The window opens on now (by this device's clock, until the org's is known — see SET_WINDOW_NOW).
+  const clock = new Date();
+  const opening = slotNow(clock.getHours() * 60 + clock.getMinutes(), 30);
   return {
     mode: 'assign',
     tool: 'select',
@@ -58,6 +68,7 @@ export function buildInitialState(): AppState {
     portfolioSearch: '',
     portfolioSearchResults: [],
     portfolioSearching: false,
+    portfolioSearchFailed: null,
     panels: {
       context: { open: true, x: null, y: null },
       portfolio: { open: true, x: null, y: null },
@@ -68,6 +79,7 @@ export function buildInitialState(): AppState {
     viewAnim: false,
     userZoomed: false,
     spaceFilter: 'all',
+    spaceDepartments: [],
     spaceSearch: '',
 
     units: [],
@@ -78,8 +90,10 @@ export function buildInitialState(): AppState {
     saving: false,
     pendingModeSwitch: null,
     assignments: {},
+    recordStates: {},
     bookings: [],
     employees: [],
+    rosterStatus: 'loading',
     assets: [],
     portfolio: [],
     pxPerMeter: null,
@@ -93,6 +107,8 @@ export function buildInitialState(): AppState {
     highlightUnitId: null,
     busyUnitId: null,
     recordNonce: 0,
+    recordVersions: {},
+    floorSwitchFrom: null,
     draft: [],
     calib: [],
     calibLen: '',
@@ -101,9 +117,12 @@ export function buildInitialState(): AppState {
     dragOverId: null,
 
     date: iso,
-    start: 600,
-    end: 660,
-    bookBy: 'c1',
+    start: opening.start,
+    end: opening.end,
+    // Nobody until Facilio says who is signed in (boot sets it from the account's people id). It
+    // used to start as the demo seed's first person, so that person's desk wore "Your desk" for
+    // anyone the account read could not identify.
+    bookBy: '',
     bookPurpose: '',
     bookNotes: '',
     bookModalOpen: false,
@@ -112,8 +131,10 @@ export function buildInitialState(): AppState {
     bookingsNonce: 0,
     schedView: 'list',
 
-    role: 'admin',
-    perms: { ...DEFAULT_PERMS },
+    viewerRole: null,
+    access: {},
+    orgRoles: [],
+    orgRolesLoading: false,
 
     // Each bottom-nav view is a path route (see lib/routes.ts) — boot straight into whatever
     // the URL says, so a refresh/deep link on /bookings etc. lands on that tab.
@@ -121,15 +142,22 @@ export function buildInitialState(): AppState {
     settingsTab: 'permissions',
     moduleColors: {},
     colorBy: 'status',
+    colorByView: null,
     printScope: 'detail',
     departments: [],
     departmentColors: {},
     slotGranularity: 30,
     enabledModules: DEFAULT_ENABLED_MODULES,
+    // Nobody is known yet, so neither right is held (selectors.canSee); settleAccess works them
+    // out again once the role and the grid arrive.
+    planViews: DEFAULT_PLAN_VIEWS,
+    planLabels: DEFAULT_PLAN_LABELS,
+    printRegisters: DEFAULT_REGISTER_PRINTS,
 
     toast: null,
 
-    mobileTab: 'book',
+    // Book is the phone's default, but not without the Booking right (nobody has it yet).
+    mobileTab: permittedMode(DEFAULT_PLAN_VIEWS, 'book') as AppState['mobileTab'],
     mobSel: null,
     mobPickSite: null,
     mobPickBuilding: null,
@@ -141,6 +169,12 @@ export function buildInitialState(): AppState {
     autoMapGroups: null,
     cadAnalyses: {},
     labelStyle: DEFAULT_LABEL_STYLE,
+    firstResponders: [],
+    responderRoles: BUILTIN_RESPONDER_ROLES.map((r) => ({ ...r })),
+    respondersInDb: false,
+    accessInDb: false,
+    accessStoredInDb: false,
+    settingsDb: { answered: false, settings: false, print: false, colors: false },
     myDesk: null,
     floorImages: {},
     floorsWithPlans: {},
@@ -164,30 +198,47 @@ export type Action =
   | { type: 'SET_NAV_VIEW'; view: AppState['navView'] }
   | { type: 'TOGGLE_NODE'; id: string }
   | { type: 'SELECT_FLOOR_START'; floorId: string }
-  | { type: 'SELECT_FLOOR_DONE'; floorId: string; units: Unit[]; assignments: AppState['assignments']; bookings: Booking[] }
+  /** `date`: the day `bookings` were read for — a day picked since keeps its own (SET_DATE). */
+  | { type: 'SELECT_FLOOR_DONE'; floorId: string; units: Unit[]; assignments: AppState['assignments']; bookings: Booking[]; date?: string }
+  /**
+   * A floor's load failed (Facilio busy, a list it could not finish). `revertTo` names the floor
+   * whose data is still on screen when the load was a switch away from it; without it the data on
+   * screen is kept when it is this floor's (`keep`), and cleared when it is not.
+   */
+  | { type: 'SELECT_FLOOR_FAILED'; floorId: string; revertTo?: string; keep?: boolean }
   /** The whole floor, once the pages past the first have arrived in the background. */
   | { type: 'FLOOR_UNITS_MORE'; floorId: string; units: Unit[] }
   /** Holders of the records past the first pages. */
   | { type: 'FLOOR_ASSIGNMENTS_MORE'; floorId: string; assignments: AppState['assignments'] }
-  | { type: 'SET_PLAN'; planId: AppState['planId'] }
+  /** `floorId` when the plan type was resolved by a floor's load: ignored once that floor is left. */
+  | { type: 'SET_PLAN'; planId: AppState['planId']; floorId?: string }
   | { type: 'SET_STAGE_SIZE'; w: number; h: number }
   | { type: 'SET_VIEW'; view: AppState['view']; animate?: boolean }
   | { type: 'MARK_USER_ZOOMED'; value: boolean }
   | { type: 'SET_SPACE_FILTER'; filter: AppState['spaceFilter'] }
+  | { type: 'SET_SPACE_DEPARTMENTS'; departments: string[] }
   | { type: 'SET_SPACE_SEARCH'; value: string }
   | { type: 'PORTFOLIO_LOADED'; portfolio: Site[]; employees: AppState['employees'] }
   | { type: 'EMPLOYEES_LOADED'; employees: AppState['employees'] }
+  | { type: 'ROSTER_STATUS'; status: AppState['rosterStatus'] }
   | { type: 'TREE_LOADING'; id: string; loading: boolean }
   | { type: 'BUILDINGS_LOADED'; siteId: string; buildings: Building[] }
   | { type: 'FLOORS_LOADED'; buildingId: string; floors: Floor[] }
   | { type: 'SET_PORTFOLIO_SEARCH'; query: string }
-  | { type: 'PORTFOLIO_SEARCH_RESULTS'; query: string; results: FloorSearchHit[] }
+  | { type: 'PORTFOLIO_SEARCH_RESULTS'; query: string; results: FloorSearchHit[]; failed?: 'busy' | 'error' }
   | { type: 'ASSETS_LOADED'; assets: AppState['assets'] }
   | { type: 'SELECT_UNIT'; id: string | null }
   | { type: 'HIGHLIGHT_UNIT'; id: string | null }
   | { type: 'SET_UNIT_BUSY'; id: string | null }
-  | { type: 'RECORD_CHANGED' }
-  | { type: 'ASSIGNMENTS_LOADED'; assignments: AppState['assignments'] }
+  /** `ids`: the unit / record ids the write changed — only those re-read. Without, everything does. */
+  | { type: 'RECORD_CHANGED'; ids?: string[] }
+  /** Who holds what on `floorId`, re-read from the org — ignored once that floor is left. */
+  | { type: 'ASSIGNMENTS_LOADED'; floorId: string; assignments: AppState['assignments'] }
+  /** Record states read with the holders: a whole floor's (replace) or a later page's (merge). */
+  /** `ids`: a re-read of those records only — their states are replaced, every other record's kept. */
+  | { type: 'RECORD_STATES'; floorId: string; states: AppState['recordStates']; merge?: boolean; ids?: string[] }
+  /** Who holds `unitIds`, re-read after a write to them: each set or cleared, every other unit kept. */
+  | { type: 'HOLDERS_LOADED'; floorId: string; unitIds: string[]; assignments: AppState['assignments'] }
   | { type: 'ADD_UNIT'; unit: Unit }
   | { type: 'ADD_UNITS'; units: Unit[] }
   | { type: 'UPDATE_UNIT'; id: string; patch: Partial<Unit> }
@@ -206,8 +257,12 @@ export type Action =
   | { type: 'DRAG_OVER_UNIT'; id: string | null }
   | { type: 'ASSIGN'; unitId: string; contactId: string; assignments: AppState['assignments'] }
   | { type: 'VACATE'; unitId: string; assignments: AppState['assignments'] }
-  | { type: 'SET_DATE'; value: string; bookings: Booking[] }
+  | { type: 'CLEAR_HOLDER'; unitId: string }
+  /** The day picked, with `floorId`'s bookings for it — ignored once that floor is left. */
+  | { type: 'SET_DATE'; value: string; bookings: Booking[]; floorId?: string }
   | { type: 'SET_TIME_RANGE'; start: number; end: number }
+  /** The window on now, by the org's clock, one booking slot long (lib/orgTime slotNow). */
+  | { type: 'SET_WINDOW_NOW'; minutes: number }
   | { type: 'SET_BOOK_MODAL'; open: boolean }
   | { type: 'SET_BOOK_FIELD'; field: 'bookBy' | 'bookPurpose' | 'bookNotes'; value: string }
   | { type: 'SET_BOOK_FORM'; form: AppState['bookForm'] }
@@ -216,20 +271,27 @@ export type Action =
   | { type: 'ADD_BOOKING'; booking: Booking }
   | { type: 'CANCEL_BOOKING'; id: string }
   | { type: 'SET_SCHED_VIEW'; view: AppState['schedView'] }
-  | { type: 'SET_ROLE'; role: AppState['role'] }
-  | { type: 'TOGGLE_PERM'; action: keyof AppState['perms']; role: AppState['role'] }
-  | { type: 'RESET_PERMS' }
+  | { type: 'SET_VIEWER_ROLE'; role: AppState['viewerRole'] }
+  | { type: 'SET_SURFACE_ACCESS'; surface: Surface; value: SurfaceAccess }
+  | { type: 'SET_ACCESS'; access: AppState['access'] }
+  | { type: 'ORG_ROLES_LOADING' }
+  | { type: 'ORG_ROLES_LOADED'; roles: OrgRole[] }
+  | { type: 'RESET_ACCESS' }
   | { type: 'SET_ACTIVE_VIEW'; view: AppState['activeView'] }
   | { type: 'SET_PENDING_PLACEMENT'; placement: AppState['pendingPlacement'] }
   | { type: 'PLACE_EXISTING_UNIT'; unitId: string; geom: Unit['geom']; room: string | null }
-  | { type: 'APPLY_SETTINGS'; config: import('../lib/settingsStore').SettingsConfig }
+  /** The file store's settings blob (or this browser's copy). */
+  | { type: 'APPLY_SETTINGS'; config: SettingsConfig }
   | { type: 'SET_FLOORS_WITH_PLANS'; floorIds: string[] }
   | { type: 'SET_SETTINGS_TAB'; tab: AppState['settingsTab'] }
   | { type: 'SET_MODULE_COLOR'; key: string; hex: string }
   | { type: 'SET_COLOR_BY'; value: AppState['colorBy'] }
+  | { type: 'SET_COLOR_BY_VIEW'; value: AppState['colorByView'] }
   | { type: 'SET_PRINT_SCOPE'; value: AppState['printScope'] }
   | { type: 'SET_DEPARTMENT_COLOR'; department: string; hex: string }
+  | { type: 'REVERT_DEPARTMENT_COLORS'; previous: Record<string, string | undefined> }
   | { type: 'DEPARTMENTS_LOADED'; departments: { id: string; name: string }[] }
+  /** The file store's colour scheme (or this browser's copy). */
   | { type: 'DEPARTMENT_COLORS_LOADED'; colors: Record<string, string> }
   | { type: 'SET_MODULE_ENABLED'; module: ModuleKey; enabled: boolean }
   | { type: 'SET_SLOT_GRANULARITY'; minutes: number }
@@ -249,9 +311,30 @@ export type Action =
   | { type: 'SET_CAD_ANALYSIS'; key: string; groups: AppState['autoMapGroups'] }
   | { type: 'SET_FLOOR_IMAGE'; floorId: string; planId: PlanId; dataUrl: string }
   | { type: 'SET_FLOOR_PLAN_TYPES'; floorId: string; types: AppState['floorPlanTypes'][string] }
-  | { type: 'SET_FLOOR_IMAGE_LOADING'; value: boolean }
+  /** `floorId` when a floor's own image load raised or cleared it: ignored once that floor is left. */
+  | { type: 'SET_FLOOR_IMAGE_LOADING'; value: boolean; floorId?: string }
   | { type: 'SET_MY_DESK'; myDesk: AppState['myDesk'] }
   | { type: 'SET_LABEL_STYLE'; style: LabelStyle }
+  | { type: 'SET_FIRST_RESPONDERS'; responders: FirstResponder[] }
+  | { type: 'SET_RESPONDER_ROLES'; roles: ResponderRoleDef[] }
+  | { type: 'RESPONDERS_LOADED'; roles: ResponderRoleDef[]; responders: FirstResponder[] }
+  /** The app database's grid ({} when it holds none yet). */
+  | { type: 'ACCESS_LOADED'; access: AppState['access'] }
+  /** A grid save the database accepted. */
+  | { type: 'ACCESS_STORED' }
+  /**
+   * What the app database holds of the other settings (lib/sharedSettings), each null when it holds
+   * none — then the file store's copy stays that part's source. Also the colours alone, re-read on
+   * Refresh (`settings` and `print` null).
+   */
+  | {
+      type: 'SHARED_SETTINGS_LOADED';
+      settings: SettingsConfig | null;
+      print: SettingsConfig | null;
+      colors: DepartmentColorScheme | null;
+    }
+  /** A save of that part the database accepted: from now on the database holds it. */
+  | { type: 'SETTINGS_STORED'; part: 'settings' | 'print' | 'colors' }
   /**
    * A save finished. `units` is what was SENT (the snapshot taken when Save was pressed) and
    * `baseline` the saved snapshot it was diffed against; `retry` the ids whose write failed, kept
@@ -262,7 +345,21 @@ export type Action =
   | { type: 'SET_REFRESHING'; value: boolean }
   | { type: 'DISCARD_CHANGES' }
   | { type: 'SET_PENDING_MODE_SWITCH'; mode: AppState['mode'] | null }
+  | { type: 'SET_PLAN_LABEL'; kind: LabelledType; value: PlanLabel }
+  | { type: 'SET_PRINT_REGISTER'; kind: RegisterKind; value: RegisterPrint }
   | { type: 'RESET_DEMO'; units: Unit[]; assignments: AppState['assignments']; bookings: Booking[] };
+
+/**
+ * The view the plan may be in, given the viewer's rights. A view they lack is never entered:
+ * asking for it lands on the other one, and with neither the plan stays in its base view
+ * ('assign') with nothing to assign or book — the floor, its markers and a read-only People
+ * list. Edit is its own right (canEdit).
+ */
+export function permittedMode(views: PlanViews, wanted: AppMode): AppMode {
+  if (wanted === 'book' && !views.book) return 'assign';
+  if (wanted === 'assign' && !views.assign && views.book) return 'book';
+  return wanted;
+}
 
 function resetSelectionState(_s: AppState): Partial<AppState> {
   return { selected: null, multiSelected: [], placingUnitId: null, draft: [], calib: [], calibLen: '', dragOverId: null };
@@ -283,18 +380,119 @@ function poolEntryFor(u: Unit): Unit | null {
   return { ...u, geom: { kind: 'poly', pts: [] }, plan: 'custom', unplaced: true };
 }
 
+/**
+ * After who is looking, or what they may reach, has changed: keep them somewhere they are allowed to
+ * be. A tab they lost moves them to the first one they keep; Edit mode they lost drops them back to
+ * the plan; a view they lost (Assignment, Booking) moves the plan, and the phone's tabs, to one they
+ * hold, and closes a booking form they may no longer send. Resolving the viewer's role at boot is
+ * the usual trigger — it can arrive after someone is already standing on a tab, or in Edit.
+ *
+ * `planViews` is worked out here and nowhere else: it is the viewer's two rights, cached so every
+ * surface reads one answer, and every change to the role or the grid passes through here.
+ */
+function settleAccess(next: AppState): AppState {
+  const was = next.planViews;
+  const views: PlanViews = { assign: canAssign(next), book: canBook(next) };
+  const viewsChanged = views.assign !== was.assign || views.book !== was.book;
+  const activeView = clampView(next, next.activeView);
+  const mode = next.mode === 'edit' ? (canEdit(next) ? 'edit' : permittedMode(views, 'assign')) : permittedMode(views, next.mode);
+  // The phone's tab is a choice only while both views are held; otherwise it was forced, so it
+  // starts again from Book, the phone's own default.
+  const tabWanted = was.assign && was.book ? next.mobileTab : 'book';
+  const mobileTab = viewsChanged ? (permittedMode(views, tabWanted) as AppState['mobileTab']) : next.mobileTab;
+  // The form closes with the right it was opened under: the calendar's own, or the plan's.
+  const bookingGone = next.bookForm ? !bookingAllowed({ ...next, planViews: views }, next.bookForm) : next.bookModalOpen && !views.book;
+  if (!viewsChanged && activeView === next.activeView && mode === next.mode && !bookingGone) return next;
+  return {
+    ...next,
+    planViews: viewsChanged ? views : was,
+    activeView,
+    mode,
+    mobileTab,
+    ...(mode !== next.mode ? { tool: 'select' as const, ...resetSelectionState(next) } : {}),
+    ...(bookingGone ? { bookForm: null, bookModalOpen: false } : {}),
+  };
+}
+
+/**
+ * A settings blob's keys but for the print window's, applied over the state. Only the keys the
+ * blob carries: the blob may be one part of the settings (the app database keeps the print keys
+ * in a row of their own) and the other part may already be on screen.
+ */
+function applyGeneralSettings(state: AppState, c: SettingsConfig): AppState {
+  return {
+    ...state,
+    // The database's grid, once it holds one, is the grid; the blob's is from before the move.
+    access: state.accessStoredInDb ? state.access : (c.access ?? state.access),
+    moduleColors: c.moduleColors ?? state.moduleColors,
+    colorBy: c.colorBy ?? state.colorBy,
+    slotGranularity: c.slotGranularity ?? state.slotGranularity,
+    bookingModule: c.bookingModule ?? state.bookingModule,
+    customMarkers: c.customMarkers ?? state.customMarkers,
+    // Merged over the defaults, not replaced: a config stored before a module existed would
+    // otherwise leave the new one undefined and read as disabled.
+    enabledModules: c.enabledModules ? { ...DEFAULT_ENABLED_MODULES, ...c.enabledModules } : state.enabledModules,
+    // Each over the default; parking also from where v68–v69 kept it, before there were three.
+    planLabels:
+      c.planLabels || c.parkingLabel
+        ? (Object.fromEntries(
+            LABELLED_TYPES.map((k) => [k, { ...DEFAULT_PLAN_LABEL, ...((k === 'parking' ? (c.planLabels?.parking ?? c.parkingLabel) : c.planLabels?.[k]) ?? {}) }]),
+          ) as PlanLabels)
+        : state.planLabels,
+    // Over the defaults too: a config saved before the setting existed must not blank it.
+    labelStyle: c.labelStyle
+      ? { name: { ...DEFAULT_LABEL_STYLE.name, ...c.labelStyle.name }, detail: { ...DEFAULT_LABEL_STYLE.detail, ...c.labelStyle.detail } }
+      : state.labelStyle,
+    // Cleaned on the way in: the blob is a file, and a person with no known role must not be
+    // drawn as a responder (see sanitizeResponders). A config from before the setting keeps
+    // whatever is in state. Once the app database has answered for the responders, the blob
+    // has no say at all: the two load in parallel, and whichever arrived second would win.
+    ...(state.respondersInDb
+      ? {}
+      : (() => {
+          // Roles first: a person's roles are kept only if the role still exists.
+          const roles = c.responderRoles !== undefined ? sanitizeRoles(c.responderRoles) : state.responderRoles;
+          const ids = roles.map((r) => r.id);
+          return {
+            responderRoles: roles,
+            firstResponders: withRecordNames(sanitizeResponders(c.firstResponders !== undefined ? c.firstResponders : state.firstResponders, ids), state.employees),
+          };
+        })()),
+  };
+}
+
+/** A settings blob's print-window keys, applied over the state — only those it carries. */
+function applyPrintSettings(state: AppState, c: SettingsConfig): AppState {
+  return {
+    ...state,
+    // Each register over its default; parking also from where v68–v71 kept it, before there were four.
+    printRegisters:
+      c.printRegisters || c.parkingPrint
+        ? (Object.fromEntries(
+            REGISTER_KINDS.map((k) => [k, { ...DEFAULT_REGISTER_PRINTS[k], ...((k === 'parking' ? (c.printRegisters?.parking ?? c.parkingPrint) : c.printRegisters?.[k]) ?? {}) }]),
+          ) as AppState['printRegisters'])
+        : state.printRegisters,
+    printScope: c.printScope === 'detail' || c.printScope === 'view' || c.printScope === 'floor' ? c.printScope : state.printScope,
+  };
+}
+
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case 'SET_MODE':
-      return { ...state, mode: action.mode, tool: 'select', ...resetSelectionState(state) };
+      // Entering Edit needs the right to; leaving it never does, so no one is ever trapped in it.
+      if (action.mode === 'edit' && state.mode !== 'edit' && !canEdit(state)) return state;
+      return { ...state, mode: permittedMode(state.planViews, action.mode), tool: 'select', ...resetSelectionState(state) };
     case 'TOGGLE_EDIT':
-      return { ...state, mode: state.mode === 'edit' ? 'assign' : 'edit', tool: 'select', ...resetSelectionState(state) };
+      if (state.mode !== 'edit' && !canEdit(state)) return state;
+      return { ...state, mode: state.mode === 'edit' ? permittedMode(state.planViews, 'assign') : 'edit', tool: 'select', ...resetSelectionState(state) };
     case 'SET_TOOL':
       return { ...state, tool: action.tool, draft: [], calib: [], calibLen: '', placingUnitId: null, multiSelected: [] };
     case 'SET_MARKER_KIND':
       // Arming a library marker IS picking the amenity tool for that kind.
       return { ...state, markerKind: action.kind, tool: 'amenity', placingUnitId: null, multiSelected: [] };
     case 'ADD_CUSTOM_MARKER':
+      // Once per id: a marker added before the settings loaded is applied again after them.
+      if (state.customMarkers.some((m) => m.id === action.def.id)) return state;
       return { ...state, customMarkers: [...state.customMarkers, action.def] };
     case 'SET_MULTI_SELECTED':
       return { ...state, multiSelected: action.ids, selected: action.ids.length > 0 ? null : state.selected };
@@ -343,10 +541,26 @@ export function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         floorId: action.floorId,
+        // What the floor being left showed besides its data, for SELECT_FLOOR_FAILED to put back:
+        // a switch that fails returns to that floor with its record states, search and filters —
+        // and its day with that day's bookings, since a day picked meanwhile read the new floor's.
+        floorSwitchFrom: {
+          floorId: state.floorId,
+          recordStates: state.recordStates,
+          userZoomed: state.userZoomed,
+          navView: state.navView,
+          spaceSearch: state.spaceSearch,
+          spaceFilter: state.spaceFilter,
+          spaceDepartments: state.spaceDepartments,
+          date: state.date,
+          bookings: state.bookings,
+        },
+        recordStates: {},
         userZoomed: false,
         navView: 'spaces',
         spaceSearch: '',
         spaceFilter: 'all',
+        spaceDepartments: [],
         loading: true,
         // Switching floors: shimmer immediately (cleared once the new floor's image resolves), so
         // the new floor's markers never briefly render over the old/blank background.
@@ -361,7 +575,25 @@ export function reducer(state: AppState, action: Action): AppState {
       // `units` would list them but leave them un-placeable.
       const placed = action.units.filter((u) => !u.unplaced);
       const pooled = action.units.filter((u) => u.unplaced);
-      return { ...state, units: placed, savedUnits: placed, unplacedUnits: pooled, unsavedChanges: 0, assignments: action.assignments, bookings: action.bookings, loading: false };
+      // Bookings read for a day since changed (a day picked while this load ran — SET_DATE already
+      // applied that day's) are not this day's: the ones on screen stay.
+      const bookings = action.date && action.date !== state.date ? state.bookings : action.bookings;
+      return { ...state, units: placed, savedUnits: placed, unplacedUnits: pooled, unsavedChanges: 0, assignments: action.assignments, bookings, loading: false, floorSwitchFrom: null };
+    }
+    case 'SELECT_FLOOR_FAILED': {
+      // A failure for a floor already left says nothing about the one on screen.
+      if (action.floorId !== state.floorId) return state;
+      // A switch away from a floor that was on screen: back to it, its desks, holders and image
+      // all still here — rather than its markers drawn under the name of a floor that never loaded.
+      if (action.revertTo) {
+        const from = state.floorSwitchFrom?.floorId === action.revertTo ? state.floorSwitchFrom : null;
+        const { floorId: _left, ...shown } = from ?? { floorId: '' };
+        return { ...state, ...shown, floorId: action.revertTo, loading: false, floorImageLoading: false, floorSwitchFrom: null };
+      }
+      // This floor's own data (a Refresh): kept as it is.
+      if (action.keep) return { ...state, loading: false, floorImageLoading: false };
+      // Whatever is on screen is some other floor's — never shown, or saved, as this one's.
+      return { ...state, units: [], savedUnits: [], unplacedUnits: [], unsavedChanges: 0, assignments: {}, bookings: [], loading: false, floorImageLoading: false, floorSwitchFrom: null };
     }
     case 'FLOOR_UNITS_MORE': {
       if (action.floorId !== state.floorId) return state;
@@ -449,6 +681,7 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, assignments };
     }
     case 'SET_PLAN':
+      if (action.floorId && action.floorId !== state.floorId) return state;
       return { ...state, planId: action.planId, ...resetSelectionState(state) };
     case 'SET_REFRESHING':
       return { ...state, refreshing: action.value };
@@ -460,14 +693,25 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, userZoomed: action.value };
     case 'SET_SPACE_FILTER':
       return { ...state, spaceFilter: action.filter };
+    case 'SET_SPACE_DEPARTMENTS':
+      return { ...state, spaceDepartments: action.departments };
     case 'SET_SPACE_SEARCH':
       return { ...state, spaceSearch: action.value };
     case 'PORTFOLIO_LOADED':
-      return { ...state, portfolio: action.portfolio, employees: action.employees };
+      // Responders are links to these records; their names follow the records.
+      return {
+        ...state,
+        portfolio: action.portfolio,
+        employees: action.employees,
+        rosterStatus: action.employees.length ? 'ready' : state.rosterStatus,
+        firstResponders: withRecordNames(state.firstResponders, action.employees),
+      };
     case 'EMPLOYEES_LOADED':
       // The roster on its own — Refresh re-reads it without disturbing the portfolio tree, whose
       // buildings and floors are loaded lazily as they are expanded.
-      return { ...state, employees: action.employees };
+      return { ...state, employees: action.employees, rosterStatus: 'ready', firstResponders: withRecordNames(state.firstResponders, action.employees) };
+    case 'ROSTER_STATUS':
+      return { ...state, rosterStatus: action.status };
     case 'TREE_LOADING': {
       const treeLoading = { ...state.treeLoading };
       if (action.loading) treeLoading[action.id] = true;
@@ -488,11 +732,11 @@ export function reducer(state: AppState, action: Action): AppState {
         })),
       };
     case 'SET_PORTFOLIO_SEARCH':
-      return { ...state, portfolioSearch: action.query, portfolioSearching: action.query.trim().length > 0, ...(action.query.trim() ? {} : { portfolioSearchResults: [] }) };
+      return { ...state, portfolioSearch: action.query, portfolioSearching: action.query.trim().length > 0, portfolioSearchFailed: null, ...(action.query.trim() ? {} : { portfolioSearchResults: [] }) };
     case 'PORTFOLIO_SEARCH_RESULTS':
       // Ignore results for a query the user has already typed past.
       if (action.query !== state.portfolioSearch) return state;
-      return { ...state, portfolioSearchResults: action.results, portfolioSearching: false };
+      return { ...state, portfolioSearchResults: action.results, portfolioSearching: false, portfolioSearchFailed: action.failed ?? null };
     case 'ASSETS_LOADED':
       return { ...state, assets: action.assets };
 
@@ -502,10 +746,34 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, highlightUnitId: action.id };
     case 'SET_UNIT_BUSY':
       return { ...state, busyUnitId: action.id };
-    case 'RECORD_CHANGED':
-      return { ...state, recordNonce: state.recordNonce + 1 };
+    case 'RECORD_CHANGED': {
+      if (!action.ids?.length) return { ...state, recordNonce: state.recordNonce + 1 };
+      const recordVersions = { ...state.recordVersions };
+      for (const id of action.ids) recordVersions[id] = (recordVersions[id] ?? 0) + 1;
+      return { ...state, recordVersions };
+    }
     case 'ASSIGNMENTS_LOADED':
+      // A re-read that lands after the user moved to another floor is that floor's holders, not these.
+      if (action.floorId !== state.floorId) return state;
       return { ...state, assignments: action.assignments };
+    case 'RECORD_STATES': {
+      if (action.floorId !== state.floorId) return state;
+      if (action.ids) {
+        const recordStates = { ...state.recordStates };
+        for (const id of action.ids) delete recordStates[id];
+        return { ...state, recordStates: { ...recordStates, ...action.states } };
+      }
+      return { ...state, recordStates: action.merge ? { ...state.recordStates, ...action.states } : action.states };
+    }
+    case 'HOLDERS_LOADED': {
+      if (action.floorId !== state.floorId) return state;
+      const assignments = { ...state.assignments };
+      for (const id of action.unitIds) {
+        if (action.assignments[id]) assignments[id] = action.assignments[id];
+        else delete assignments[id];
+      }
+      return { ...state, assignments };
+    }
     case 'ADD_UNIT': {
       const units = [...state.units, action.unit];
       return { ...state, units, selected: action.unit.id, unsavedChanges: countUnsavedChanges(units, state.savedUnits) };
@@ -610,40 +878,60 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, assignments: action.assignments, dragOverId: null, dragContactId: null, selected: action.unitId };
     case 'VACATE':
       return { ...state, assignments: action.assignments };
+    // One holder off, computed here from the CURRENT map — a caller holding an older snapshot would
+    // otherwise overwrite whatever changed since it was taken.
+    case 'CLEAR_HOLDER': {
+      if (!(action.unitId in state.assignments)) return state;
+      const { [action.unitId]: _gone, ...rest } = state.assignments;
+      return { ...state, assignments: rest };
+    }
 
     case 'SET_DATE':
+      // Another floor's bookings for the day: the date stays as it was, with the bookings that match it.
+      if (action.floorId && action.floorId !== state.floorId) return state;
       return { ...state, date: action.value, bookings: action.bookings };
     case 'SET_TIME_RANGE':
       return { ...state, start: action.start, end: action.end };
+    case 'SET_WINDOW_NOW':
+      return { ...state, ...slotNow(action.minutes, state.slotGranularity) };
     case 'SET_BOOK_MODAL':
+      // Every way into the booking form — the plan, the sidebar, the calendar, a scanned QR code —
+      // passes through here or SET_BOOK_FORM, so the Booking right is asked once, here.
+      if (action.open && !state.planViews.book) return state;
       return { ...state, bookModalOpen: action.open, bookPurpose: action.open ? state.bookPurpose : '', bookNotes: action.open ? state.bookNotes : '' };
     case 'SET_BOOK_FIELD':
       return { ...state, [action.field]: action.value } as AppState;
     case 'SET_BOOK_FORM':
+      if (action.form && !bookingAllowed(state, action.form)) return state;
       return { ...state, bookForm: action.form, bookModalOpen: !!action.form };
     case 'UPDATE_BOOK_FORM':
       return { ...state, bookForm: state.bookForm ? { ...state.bookForm, ...action.patch } : state.bookForm };
     case 'SET_BOOKING_MODULE':
       return { ...state, bookingModule: action.module };
     case 'APPLY_SETTINGS': {
-      const c = action.config;
-      return {
-        ...state,
-        perms: c.perms ?? state.perms,
-        moduleColors: c.moduleColors ?? state.moduleColors,
-        colorBy: c.colorBy ?? state.colorBy,
-        slotGranularity: c.slotGranularity ?? state.slotGranularity,
-        bookingModule: c.bookingModule ?? state.bookingModule,
-        customMarkers: c.customMarkers ?? state.customMarkers,
-        // Merged over the defaults, not replaced: a config stored before a module existed would
-        // otherwise leave the new one undefined and read as disabled.
-        enabledModules: { ...DEFAULT_ENABLED_MODULES, ...(c.enabledModules ?? {}) },
-        // Over the defaults too: a config saved before the setting existed must not blank it.
-        labelStyle: c.labelStyle
-          ? { name: { ...DEFAULT_LABEL_STYLE.name, ...c.labelStyle.name }, detail: { ...DEFAULT_LABEL_STYLE.detail, ...c.labelStyle.detail } }
-          : state.labelStyle,
-      };
+      // The file store's copy. A part the app database holds is the database's alone: the copy
+      // is from before the move, or one any browser could have written over since. The blob lands
+      // after boot, and can carry the grid, so the view on screen is checked then.
+      const { settings, print } = splitSettings(action.config);
+      let next = state.settingsDb.settings ? state : applyGeneralSettings(state, settings);
+      if (!state.settingsDb.print) next = applyPrintSettings(next, print);
+      return settleAccess(next);
     }
+    case 'SHARED_SETTINGS_LOADED': {
+      // The app database answered, so these parts are saved through its function from now on; the
+      // parts it holds are applied and become theirs alone, whichever load lands last.
+      const was = state.settingsDb;
+      let next: AppState = {
+        ...state,
+        settingsDb: { answered: true, settings: was.settings || !!action.settings, print: was.print || !!action.print, colors: was.colors || !!action.colors },
+      };
+      if (action.settings) next = applyGeneralSettings(next, splitSettings(action.settings).settings);
+      if (action.print) next = applyPrintSettings(next, splitSettings(action.print).print);
+      if (action.colors) next = { ...next, departmentColors: Object.fromEntries(Object.entries(action.colors).map(([id, v]) => [id, v.color])) };
+      return settleAccess(next);
+    }
+    case 'SETTINGS_STORED':
+      return state.settingsDb[action.part] ? state : { ...state, settingsDb: { ...state.settingsDb, [action.part]: true } };
     case 'ADD_BOOKING':
       return {
         ...state,
@@ -659,36 +947,66 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'SET_SCHED_VIEW':
       return { ...state, schedView: action.view };
 
-    case 'SET_ROLE':
-      return { ...state, role: action.role };
-    case 'TOGGLE_PERM': {
-      const cur = state.perms[action.action];
-      const has = cur.includes(action.role);
-      const next = has ? cur.filter((r) => r !== action.role) : [...cur, action.role];
-      return { ...state, perms: { ...state.perms, [action.action]: next } };
+    // Resolving who is looking can hide the tab they are standing on, so the view is re-clamped
+    // against the new answer rather than left pointing at something they may no longer reach.
+    case 'SET_VIEWER_ROLE': {
+      const next = { ...state, viewerRole: action.role };
+      return settleAccess(next);
     }
-    case 'RESET_PERMS':
-      return { ...state, perms: { ...DEFAULT_PERMS } };
+    case 'SET_SURFACE_ACCESS': {
+      const next = { ...state, access: { ...state.access, [action.surface]: action.value } };
+      return settleAccess(next);
+    }
+    case 'SET_ACCESS': {
+      const next = { ...state, access: action.access };
+      return settleAccess(next);
+    }
+    case 'ORG_ROLES_LOADING':
+      return { ...state, orgRolesLoading: true };
+    case 'ORG_ROLES_LOADED':
+      return { ...state, orgRoles: action.roles, orgRolesLoading: false };
+    case 'RESET_ACCESS':
+      return settleAccess({ ...state, access: {} });
+    case 'SET_PLAN_LABEL':
+      return { ...state, planLabels: { ...state.planLabels, [action.kind]: action.value } };
+    case 'SET_PRINT_REGISTER':
+      return { ...state, printRegisters: { ...state.printRegisters, [action.kind]: action.value } };
 
-    case 'SET_ACTIVE_VIEW':
+    case 'SET_ACTIVE_VIEW': {
+      // Clamped, not trusted: this is also the landing point for a deep link, which can name a tab
+      // this viewer's role does not reach.
+      const view = clampView(state, action.view);
       // Idempotent so the hash<->state sync in FloorplanContext can dispatch freely on every
       // hashchange without triggering render churn (or a dispatch->hash->dispatch loop).
-      if (state.activeView === action.view) return state;
-      return { ...state, activeView: action.view };
+      if (state.activeView === view) return state;
+      return { ...state, activeView: view };
+    }
     case 'SET_SETTINGS_TAB':
       return { ...state, settingsTab: action.tab };
     case 'SET_MODULE_COLOR':
       return { ...state, moduleColors: { ...state.moduleColors, [action.key]: action.hex } };
     case 'SET_COLOR_BY':
       return { ...state, colorBy: action.value };
+    case 'SET_COLOR_BY_VIEW':
+      return { ...state, colorByView: action.value };
     case 'SET_PRINT_SCOPE':
       return { ...state, printScope: action.value };
     case 'SET_DEPARTMENT_COLOR':
       return { ...state, departmentColors: { ...state.departmentColors, [action.department]: action.hex } };
+    case 'REVERT_DEPARTMENT_COLORS': {
+      // A colour save that was refused: each department back to what it showed before (none = default).
+      const departmentColors = { ...state.departmentColors };
+      for (const [id, hex] of Object.entries(action.previous)) {
+        if (hex) departmentColors[id] = hex;
+        else delete departmentColors[id];
+      }
+      return { ...state, departmentColors };
+    }
     case 'DEPARTMENTS_LOADED':
       return { ...state, departments: action.departments };
     case 'DEPARTMENT_COLORS_LOADED':
-      return { ...state, departmentColors: action.colors };
+      // The file store's scheme — not once the app database holds one (SHARED_SETTINGS_LOADED).
+      return state.settingsDb.colors ? state : { ...state, departmentColors: action.colors };
     case 'SET_MODULE_ENABLED': {
       const enabledModules = { ...state.enabledModules, [action.module]: action.enabled };
       if (action.enabled) return { ...state, enabledModules };
@@ -738,7 +1056,7 @@ export function reducer(state: AppState, action: Action): AppState {
       };
 
     case 'SET_MOBILE_TAB':
-      return { ...state, mobileTab: action.tab, mobSel: null };
+      return { ...state, mobileTab: permittedMode(state.planViews, action.tab) as AppState['mobileTab'], mobSel: null };
     case 'SET_MOB_SEL':
       return { ...state, mobSel: action.id, mobAssignEdit: action.id ? state.mobAssignEdit : false };
     case 'SET_MOB_FLOOR_OPEN':
@@ -777,11 +1095,41 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'SET_FLOOR_PLAN_TYPES':
       return { ...state, floorPlanTypes: { ...state.floorPlanTypes, [action.floorId]: action.types } };
     case 'SET_FLOOR_IMAGE_LOADING':
+      // A floor left behind finishing its image load must not lift the skeleton over the next one's.
+      if (action.floorId && action.floorId !== state.floorId) return state;
       return { ...state, floorImageLoading: action.value };
     case 'SET_MY_DESK':
       return { ...state, myDesk: action.myDesk };
     case 'SET_LABEL_STYLE':
       return { ...state, labelStyle: action.style };
+    case 'SET_FIRST_RESPONDERS':
+      return { ...state, firstResponders: withRecordNames(sanitizeResponders(action.responders, state.responderRoles.map((r) => r.id)), state.employees) };
+    case 'SET_RESPONDER_ROLES': {
+      // A deleted role comes off everyone who held it; a person left with no role is no longer listed.
+      const roles = sanitizeRoles(action.roles);
+      return { ...state, responderRoles: roles, firstResponders: sanitizeResponders(state.firstResponders, roles.map((r) => r.id)) };
+    }
+    case 'ACCESS_LOADED': {
+      // The function answered, so saves go to it. Its grid replaces the blob's only when it holds
+      // one: until an admin saves once, the org's grid is still the blob's.
+      const stored = Object.keys(action.access).length > 0;
+      return settleAccess({ ...state, accessInDb: true, ...(stored ? { access: action.access, accessStoredInDb: true } : {}) });
+    }
+    case 'ACCESS_STORED':
+      // An emptied grid (reset to defaults) leaves the database holding none — the blob, written
+      // with the same {} by the settings save, is the grid's home again.
+      return { ...state, accessStoredInDb: Object.keys(state.access).length > 0 };
+    case 'RESPONDERS_LOADED': {
+      // The app database's answer, cleaned like the blob's (see responderDataFrom). It is the
+      // source from here on.
+      const roles = sanitizeRoles(action.roles);
+      return {
+        ...state,
+        respondersInDb: true,
+        responderRoles: roles,
+        firstResponders: withRecordNames(sanitizeResponders(action.responders, roles.map((r) => r.id)), state.employees),
+      };
+    }
     case 'SET_SAVING':
       return { ...state, saving: action.value };
     case 'MARK_SAVED': {
@@ -862,12 +1210,6 @@ export function reducer(state: AppState, action: Action): AppState {
   }
 }
 
-export function initialViewForStage(w: number, h: number) {
-  return fitView(w, h);
-}
-
 export function clampMinutes(v: number): number {
   return clamp(v, 0, 1439);
 }
-
-export { seedBookings };

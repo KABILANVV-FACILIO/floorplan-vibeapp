@@ -1,10 +1,16 @@
 import axios from 'axios';
 import { callHostInterface } from './hostInterface';
 import { bridgeApiPath, currentHostKind } from './hostKind';
+import { readPatiently, refusedForRate, sayFacilioBusy } from './rateLimit';
 
 const devMode = import.meta.env.VITE_DEV_MODE === 'true';
 const envBaseURL = import.meta.env.VITE_FACILIO_API_BASE_URL;
-const token = import.meta.env.VITE_FACILIO_TOKEN;
+/**
+ * The developer's bearer token — read under the dev server only. A shell variable beats every .env
+ * file in Vite, so a token exported in the shell while running `vite build` would otherwise be
+ * written into the public bundle; `import.meta.env.DEV` is false there, and the literal is dropped.
+ */
+const token = import.meta.env.DEV ? import.meta.env.VITE_FACILIO_TOKEN : undefined;
 
 /**
  * Connected-app mode: the app is served INSIDE a Facilio org (connected-app tab/iframe). Real
@@ -27,6 +33,66 @@ function hostParam(name: string): string | null {
 
 /** True when this page is inside an iframe — i.e. the Facilio web page is hosting it. */
 const isEmbedded = typeof window !== 'undefined' && window.self !== window.top;
+
+/**
+ * Facilio's own web hosts, region by region — the same regions lib/vibe lists for the vibe hosts
+ * (US `.com`, `.co.uk`, `.ae`, `.com.au`, Azure `.us`, Azure AE `.co.ae`, stage `.in`). The whole
+ * suffix is matched, never a label alone: `facilio.com.example.org` is not Facilio.
+ */
+const FACILIO_WEB_HOST = /(^|\.)facilio\.(com|in|ae|us|co\.ae|co\.uk|com\.au)$/i;
+
+/**
+ * The origin of the page this one is framed in, as the browser reports it — never as the URL says.
+ * `ancestorOrigins` where the browser has it, else the referrer (an iframe's is the parent page,
+ * trimmed to its origin across origins). Null for a page that is not framed.
+ */
+function embeddingOrigin(): string | null {
+  if (!isEmbedded) return null;
+  try {
+    const ancestors = (window.location as Location & { ancestorOrigins?: DOMStringList }).ancestorOrigins;
+    if (ancestors && ancestors.length) return ancestors[0];
+  } catch {
+    /* not exposed — the referrer below */
+  }
+  try {
+    return document.referrer ? new URL(document.referrer).origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The host page's origin from `?origin=`, when it can be trusted: an https Facilio host, or exactly
+ * the origin of the page actually embedding this one (an org on its own domain). Anything else —
+ * another site, a malformed value — answers null, and the caller falls back to the page's own
+ * origin, as it does when the parameter is absent. Never throws: a bad value used to take
+ * `new URL()` down at module load, and the whole app with it.
+ */
+export function trustedHostOrigin(raw: string | null | undefined, embedder: string | null = embeddingOrigin()): string | null {
+  if (!raw) return null;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+  if (embedder && url.origin === embedder) return url.origin;
+  if (url.protocol === 'https:' && FACILIO_WEB_HOST.test(url.hostname)) return url.origin;
+  // eslint-disable-next-line no-console
+  console.warn(`[host] ignoring origin=${url.origin}: not a Facilio host, nor the page embedding this one`);
+  return null;
+}
+
+/** A URL's origin, or null for one that does not parse — never a throw at module load. */
+function originOf(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * True inside the Facilio MOBILE app, which hosts connected apps in a React Native WebView rather
@@ -57,10 +123,28 @@ export const isConnectedApp = isEmbedded || isMobileHost || !!hostParam('capp_id
 // When embedded, the iframe's OWN origin is the vibe host, not the org — so record-summary links
 // must be built from the parent origin the host handed us, falling back to same-origin for a
 // classic connected app served from inside the org itself.
-const absoluteBaseURL = isConnectedApp ? envBaseURL || `${hostParam('origin') ?? window.location.origin}/api` : envBaseURL;
+//
+// The `origin=` on the URL is anyone's to write, though: a link to the app with a crafted value
+// would point every "open the record" link at another site, so it is taken only when it is a
+// Facilio host, or the page that actually embeds this one (see trustedHostOrigin).
+const absoluteBaseURL = isConnectedApp ? envBaseURL || `${trustedHostOrigin(hostParam('origin')) ?? window.location.origin}/api` : envBaseURL;
 
 /** True in connected-app mode (SDK bridge), or in dev mode with base URL + token set. */
 export const isFacilioApiConfigured = isConnectedApp || (devMode && !!envBaseURL && !!token);
+
+/*
+ * One line, once, saying how this page was opened and what that allows. Whether desk positions
+ * can be saved turns entirely on it — inside Facilio or the mobile app they can, from a page with no
+ * host they cannot — and without this line a "Save did nothing" report could only be guessed at.
+ */
+if (typeof window !== 'undefined') {
+  // eslint-disable-next-line no-console
+  console.info(
+    `[host] connected app: ${isConnectedApp ? 'YES' : 'NO'} ` +
+      `(in a frame: ${isEmbedded}, mobile app: ${isMobileHost}, capp_id: ${hostParam('capp_id') ?? '—'}) — ` +
+      `Facilio API ${isFacilioApiConfigured ? 'ON: desk positions save to Facilio' : 'OFF: desk positions save to this browser only'}`
+  );
+}
 
 if (!isFacilioApiConfigured && devMode) {
   // eslint-disable-next-line no-console
@@ -69,7 +153,7 @@ if (!isFacilioApiConfigured && devMode) {
   );
 }
 
-export const apiOrigin: string | null = absoluteBaseURL ? new URL(absoluteBaseURL).origin : null;
+export const apiOrigin: string | null = originOf(absoluteBaseURL);
 
 /**
  * Builds a link to a record's summary page in the real Facilio web app (e.g.
@@ -95,8 +179,7 @@ const devInstance =
     ? (() => {
         const instance = axios.create({ baseURL: devBaseURL });
         instance.interceptors.request.use((config) => {
-          config.headers = config.headers ?? {};
-          (config.headers as Record<string, string>)['x-api-key'] = token!;
+          config.headers.set('x-api-key', token!);
           return config;
         });
         return instance;
@@ -366,12 +449,34 @@ export interface FacilioApiListResult<T = any> extends FacilioApiResult<T[]> {
   list: T[] | null;
 }
 
-async function crudFetchAll(moduleName: string, params: Record<string, unknown> = {}): Promise<FacilioApiListResult> {
-  if (isConnectedApp) {
-    const app = await facilioAppReady();
-    return app.api.fetchAll(moduleName, params);
-  }
-  return devFetchAll(moduleName, params);
+/**
+ * A module's list, a page at a time. Not read patiently (lib/rateLimit readPatiently): the paged
+ * reads built on it keep the pages they have and do their own waiting (fetchAllPaged). A refusal
+ * for rate is still said, so whoever asked is not left with a bare failure.
+ *
+ * `fresh`: past the host page's cache. In connected mode `api.fetchAll` is answered by the host,
+ * whose API layer keeps every GET's answer for 5 s (facilio-api's queryCache) — a re-read just
+ * after a write, with the same filter, could be handed the answer from before it, as record reads
+ * were (see crudFetchRecord). A fresh read takes the raw request path instead, like those.
+ */
+async function crudFetchAll(moduleName: string, params: Record<string, unknown> = {}, opts?: { fresh?: boolean }): Promise<FacilioApiListResult> {
+  const res: FacilioApiListResult = isConnectedApp
+    ? opts?.fresh
+      ? await rawFetchAll(moduleName, params)
+      : await (await facilioAppReady()).api.fetchAll(moduleName, params)
+    : await devFetchAll(moduleName, params);
+  if (refusedForRate(res)) sayFacilioBusy();
+  return res;
+}
+
+/** A module's list over the raw request path (customGet), shaped as `api.fetchAll` answers it. */
+async function rawFetchAll(moduleName: string, params: Record<string, unknown>): Promise<FacilioApiListResult> {
+  // `moduleName` rides the query as it does on the SDK's and dev mode's reads of the same endpoint.
+  const env = v3Envelope(await customGet(`v3/modules/${moduleName}`, { ...params, moduleName }, { once: true }));
+  if (env.error) return { ...env, list: null };
+  // The raw v3 body nests the rows at `data.<module>` (see getAssets); the SDK's at `<module>`.
+  const list = env.data?.[moduleName] ?? env[moduleName];
+  return { ...env, error: null, list: Array.isArray(list) ? list : null };
 }
 
 /**
@@ -382,14 +487,22 @@ async function crudFetchAll(moduleName: string, params: Record<string, unknown> 
  * holder while the org already had the new one. The raw path has no cache. The v3 envelope
  * (`{ code, data: { <module>: … } }`) is returned as the SDK would return it, so `recordOf` reads
  * both alike.
+ *
+ * `once`: asked once, a refusal for rate answered as it came rather than waited out — for a read
+ * whose caller has its own schedule and may have moved on by the end of the window (the vacate
+ * re-check, lib/facilioApiDataSource waitForDeskVacated).
  */
-async function crudFetchRecord<T = any>(moduleName: string, params: { id: string | number; [k: string]: unknown }): Promise<FacilioApiResult<T>> {
+async function crudFetchRecord<T = any>(
+  moduleName: string,
+  params: { id: string | number; [k: string]: unknown },
+  opts?: { once?: boolean },
+): Promise<FacilioApiResult<T>> {
   if (isConnectedApp) {
     const { id, ...rest } = params;
-    const env = v3Envelope(await customGet(`v3/modules/${moduleName}/${id}`, rest));
+    const env = v3Envelope(await customGet(`v3/modules/${moduleName}/${id}`, rest, opts?.once ? { once: true } : undefined));
     return env as FacilioApiResult<T>;
   }
-  return devFetchRecord<T>(moduleName, params);
+  return opts?.once ? devFetchRecord<T>(moduleName, params) : readPatiently(() => devFetchRecord<T>(moduleName, params));
 }
 
 async function crudCreateRecord<T = any>(moduleName: string, params: { data: Record<string, unknown> }): Promise<FacilioApiResult<T>> {
@@ -435,7 +548,7 @@ async function crudFetchAllRelatedList<T = any>(
     const list = (env[opts.relatedModuleName] ?? env.data?.[opts.relatedModuleName] ?? null) as T[] | null;
     return { ...env, error: null, list };
   }
-  return devFetchAllRelatedList<T>(opts, params);
+  return readPatiently(() => devFetchAllRelatedList<T>(opts, params));
 }
 
 async function connectedUploadSingleFile(file: File): Promise<{ fileId: number } | { error: Error }> {
@@ -498,13 +611,19 @@ async function bridgeInvoke(path: string, options: { method: 'GET' | 'POST' | 'P
   return typeof raw === 'string' ? JSON.parse(raw) : raw;
 }
 
-export async function customGet(path: string, params?: Record<string, unknown>, opts?: { devAbsoluteUrl?: string }): Promise<any> {
-  if (isConnectedApp) {
-    const query = params && Object.keys(params).length ? `?${new URLSearchParams(params as Record<string, string>).toString()}` : '';
-    return bridgeInvoke(`${path}${query}`, { method: 'GET' });
-  }
-  const res = await devInstance!.get(opts?.devAbsoluteUrl ?? path, { params });
-  return res.data;
+export async function customGet(path: string, params?: Record<string, unknown>, opts?: { devAbsoluteUrl?: string; once?: boolean }): Promise<any> {
+  // Every GET over the bridge — record reads and related lists included — waits out a refusal for
+  // rate and asks again, saying "busy" meanwhile, rather than failing (lib/rateLimit readPatiently).
+  // `once`: a read with a fallback of its own, which should take it rather than wait.
+  const read = async () => {
+    if (isConnectedApp) {
+      const query = params && Object.keys(params).length ? `?${new URLSearchParams(params as Record<string, string>).toString()}` : '';
+      return bridgeInvoke(`${path}${query}`, { method: 'GET' });
+    }
+    const res = await devInstance!.get(opts?.devAbsoluteUrl ?? path, { params });
+    return res.data;
+  };
+  return opts?.once ? read() : readPatiently(read);
 }
 
 /**
@@ -602,5 +721,6 @@ export async function fetchFilePreview(fileId: number, opts?: { original?: boole
     params: opts?.original ? { fetchOriginal: true } : undefined,
     responseType: 'blob',
   });
-  return { dataUrl: null, blob: res.data, contentType: res.headers?.['content-type'] };
+  const contentType = res.headers?.['content-type'];
+  return { dataUrl: null, blob: res.data, contentType: typeof contentType === 'string' ? contentType : undefined };
 }

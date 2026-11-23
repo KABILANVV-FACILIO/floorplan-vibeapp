@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { isBookable, mergeWithOrgPool, unitById } from '../../state/selectors';
@@ -9,6 +9,7 @@ import { isFacilioApiConfigured } from '../../lib/facilioApi';
 import { bookingFormsForType, fetchBookingFormById, fetchBookingFormList, fetchOrgBookableResources, fetchOrgBookingsForRange, pickDefaultBookingForm, resolveFormResourceTypes } from '../../lib/facilioApiDataSource';
 import type { BookingFormFieldMeta, BookingFormMeta, BookingFormSummary } from '../../lib/facilioApiDataSource';
 import { isRoomLike } from '../../lib/types';
+import { IncompleteListError } from '../../lib/rateLimit';
 import type { Employee, Unit, UnitType } from '../../lib/types';
 import { Modal, ModalFooter, ModalHeader } from '../primitives/Modal';
 import { Select } from '../primitives/Select';
@@ -102,6 +103,8 @@ export function typeFromFormFields(fields: { lookupModule?: string }[]): UnitTyp
 
 /** A booking step of half an hour on the pickers — the resolution, not a length. */
 const STEP_MIN = 30;
+/** How long a save may hold the form shut before it lets the user close it (see onSubmit). */
+const SAVE_HOLD_MS = 60_000;
 /** How far ahead a booking may start or end. */
 const HORIZON_DAYS = 365;
 
@@ -196,6 +199,8 @@ function BookingFormInner() {
   const [formTypes, setFormTypes] = useState<Map<number, UnitType | null>>(new Map());
   const [formId, setFormId] = useState<number | null>(null);
   const [formMeta, setFormMeta] = useState<BookingFormMeta | null>(null);
+  /** The lookup fields already named in the console as skipped, for the form that is loaded. */
+  const skipLogged = useRef<{ form: BookingFormMeta | null; names: Set<string> }>({ form: null, names: new Set() });
   const [formLoading, setFormLoading] = useState<boolean>(isFacilioApiConfigured);
 
   // Step 1: the module's form list, then the default for this unit type.
@@ -290,17 +295,6 @@ function BookingFormInner() {
   /** A form picker is offered only where the context can't decide: the All-spaces switch. */
   const canPickForm = !!target.allowTypeSwitch;
 
-  /**
-   * The RESOURCE field on the loaded form, from its own metadata — rendered as the lookup and
-   * named on the create payload. NOTE: every hook stays above the `if (!unit)` bail-out below.
-   */
-  const formResourceField = useMemo(() => {
-    if (!formMeta || !unit) return null;
-    const hit = [...formMeta.fields].filter(isResourceField).sort((a, b) => resourceFieldRank(a) - resourceFieldRank(b))[0];
-    return hit?.name ?? null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [formMeta, unit?.type, isFacility]);
-
   // The loaded form is the authority on what it books: re-derive the type from its fields.
   useEffect(() => {
     if (!canPickForm || !formMeta) return;
@@ -312,25 +306,35 @@ function BookingFormInner() {
 
   // This resource's existing bookings over every day the window touches — the clash line.
   const [conflicts, setConflicts] = useState<{ date: string; start: number; end: number; name?: string }[]>([]);
+  /** The read stopped part-way: the clashes found are shown, and the line says others may be missing. */
+  const [conflictsPartial, setConflictsPartial] = useState(false);
   useEffect(() => {
     if (!isFacilioApiConfigured || !unit || !resourceId) {
       setConflicts([]);
+      setConflictsPartial(false);
       return;
     }
     const winStart = absMin(slotDate, startMin);
     const winEnd = absMin(endDate, endMin);
     let alive = true;
+    const clashes = (rows: { unitId: string; date: string; start: number; end: number; name?: string }[]) =>
+      rows
+        .filter((b) => b.unitId === unit.id && absMin(b.date, b.start) < winEnd && absMin(b.date, b.end) > winStart)
+        .map((b) => ({ date: b.date, start: b.start, end: b.end, name: b.name }));
     const timer = window.setTimeout(() => {
-      fetchOrgBookingsForRange(slotDate, endDate < slotDate ? slotDate : endDate, { resourceField: isRoomLike(unit.type) ? 'space' : 'desk', resourceIds: [unit.id] })
+      // Strict: a read that stopped part-way is said, rather than its bookings taken for all of them.
+      fetchOrgBookingsForRange(slotDate, endDate < slotDate ? slotDate : endDate, { resourceField: isRoomLike(unit.type) ? 'space' : 'desk', resourceIds: [unit.id], strict: true })
         .then((rows) => {
           if (!alive) return;
-          setConflicts(
-            rows
-              .filter((b) => b.unitId === unit.id && absMin(b.date, b.start) < winEnd && absMin(b.date, b.end) > winStart)
-              .map((b) => ({ date: b.date, start: b.start, end: b.end, name: b.name }))
-          );
+          setConflicts(clashes(rows));
+          setConflictsPartial(false);
         })
-        .catch(() => alive && setConflicts([]));
+        .catch((err: unknown) => {
+          if (!alive) return;
+          const partial = err instanceof IncompleteListError;
+          setConflicts(partial ? clashes(err.rows as { unitId: string; date: string; start: number; end: number; name?: string }[]) : []);
+          setConflictsPartial(partial);
+        });
     }, 350);
     return () => {
       alive = false;
@@ -387,6 +391,10 @@ function BookingFormInner() {
     if (isRoom) return lm === 'rooms' ? 0 : lm === 'space' || lm === 'basespace' ? 2 : 1;
     return lm in RESOURCE_LOOKUP_TYPE ? 0 : 1;
   }
+  /**
+   * The RESOURCE field on the loaded form, from its own metadata — rendered as the lookup and
+   * named on the create payload. Read below `isRoom`: the predicates close over it.
+   */
   const primaryResourceFieldName = formMeta ? ([...formMeta.fields].filter(isResourceField).sort((a, b) => resourceFieldRank(a) - resourceFieldRank(b))[0]?.name ?? null) : null;
 
   /** Org fields rendered generically → typed extras for the API. */
@@ -475,24 +483,44 @@ function BookingFormInner() {
       return;
     }
     setSubmitting(true);
-    const ok = await actions.submitBooking({
-      unitId: unit.id,
-      date: slotDate,
-      start: startMin,
-      end: endMin,
-      ...(endDate !== slotDate ? { endDate } : {}),
-      name: name.trim() || `${unit.label} booking`,
-      description: description.trim(),
-      host,
-      reservedBy,
-      noOfAttendees: Number(noOfAttendees) || 1,
-      internalAttendees,
-      externalAttendees,
-      formId: formMeta?.id,
-      extras: extraValues,
-      resourceField: formResourceField ?? undefined,
+    // The form is held shut while it saves (see close), so whatever the save does the hold must
+    // come off: a save that threw used to skip it and leave a form that could not be closed until
+    // the page was reloaded. A throw is said the way every other failure here is — a toast — and
+    // the form stays open on what was typed.
+    // A save that never answers would hold the form shut for good: after SAVE_HOLD_MS the hold
+    // comes off with a notice, and the save, if it lands later, still shows on the calendar.
+    let ok = false;
+    let holdTimer: ReturnType<typeof setTimeout> | undefined;
+    const heldTooLong = new Promise<'held'>((resolve) => {
+      holdTimer = setTimeout(() => resolve('held'), SAVE_HOLD_MS);
     });
-    setSubmitting(false);
+    try {
+      const saved = actions.submitBooking({
+        unitId: unit.id,
+        date: slotDate,
+        start: startMin,
+        end: endMin,
+        ...(endDate !== slotDate ? { endDate } : {}),
+        name: name.trim() || `${unit.label} booking`,
+        description: description.trim(),
+        host,
+        reservedBy,
+        noOfAttendees: Number(noOfAttendees) || 1,
+        internalAttendees,
+        externalAttendees,
+        formId: formMeta?.id,
+        extras: extraValues,
+        resourceField: primaryResourceFieldName ?? undefined,
+      });
+      const outcome = await Promise.race([saved, heldTooLong]);
+      if (outcome === 'held') actions.showToast('The booking has not been confirmed yet. Check the calendar before booking again.');
+      else ok = outcome;
+    } catch (err) {
+      actions.showToast(`Could not save the booking — ${(err as Error)?.message ?? 'something went wrong'}`);
+    } finally {
+      clearTimeout(holdTimer);
+      setSubmitting(false);
+    }
     if (ok) actions.closeBookingForm();
   }
 
@@ -514,6 +542,11 @@ function BookingFormInner() {
         Already booked{' '}
         {conflicts.map((c, i) => `${i ? ', ' : ''}${c.date !== slotDate || endDate !== slotDate ? `${c.date} ` : ''}${fmtTime(c.start)}–${fmtTime(c.end)}`).join('')} — pick another time or another{' '}
         {isRoom ? 'space' : 'desk'}.
+        {conflictsPartial && ' Some bookings could not be loaded, so there may be others.'}
+      </div>
+    ) : conflictsPartial ? (
+      <div role="status" style={{ marginTop: 5, font: '500 11.5px/1.4 var(--font-sans)', color: 'var(--warning-700)' }}>
+        Some bookings could not be loaded — this time may already be taken.
       </div>
     ) : null;
 
@@ -619,13 +652,15 @@ function BookingFormInner() {
       case 'name':
         return (
           <Field key={f.name} label={f.label || 'Name'} required={f.required}>
-            <input className={card.input} value={name} placeholder="Enter your text here" onChange={(e) => setName(e.target.value)} />
+            {(id) => <input id={id} className={card.input} value={name} placeholder="Enter your text here" onChange={(e) => setName(e.target.value)} />}
           </Field>
         );
       case 'description':
         return (
           <Field key={f.name} label={f.label || 'Description'} required={f.required}>
-            <textarea className={card.input} style={{ height: 72, padding: '8px 10px', resize: 'vertical' }} value={description} placeholder="Type your description here" onChange={(e) => setDescription(e.target.value)} />
+            {(id) => (
+              <textarea id={id} className={card.input} style={{ height: 72, padding: '8px 10px', resize: 'vertical' }} value={description} placeholder="Type your description here" onChange={(e) => setDescription(e.target.value)} />
+            )}
           </Field>
         );
       case 'host':
@@ -643,7 +678,7 @@ function BookingFormInner() {
       case 'noOfAttendees':
         return (
           <Field key={f.name} label={f.label || 'Number Of Attendees'} required={f.required}>
-            <input className={card.input} type="number" min={1} value={noOfAttendees} placeholder="Input numerical value" onChange={(e) => setNoOfAttendees(e.target.value)} />
+            {(id) => <input id={id} className={card.input} type="number" min={1} value={noOfAttendees} placeholder="Input numerical value" onChange={(e) => setNoOfAttendees(e.target.value)} />}
           </Field>
         );
       case 'bookingStartTime':
@@ -700,25 +735,31 @@ function BookingFormInner() {
       );
     }
     // A lookup the app can't resolve never becomes a free-text box (a label typed into a lookup
-    // writes garbage) — it is skipped, named once in the console.
+    // writes garbage) — it is skipped, named once in the console: once per form, not on every
+    // render, which a keystroke anywhere in the form triggers.
     if (/LOOKUP/i.test(f.type)) {
-      // eslint-disable-next-line no-console
-      console.info(`[booking-form] unmapped lookup field skipped: ${f.name} (type ${f.type}, module ${f.lookupModule ?? '?'})`);
+      if (skipLogged.current.form !== formMeta) skipLogged.current = { form: formMeta, names: new Set() };
+      if (!skipLogged.current.names.has(f.name)) {
+        skipLogged.current.names.add(f.name);
+        // eslint-disable-next-line no-console
+        console.info(`[booking-form] unmapped lookup field skipped: ${f.name} (type ${f.type}, module ${f.lookupModule ?? '?'})`);
+      }
       return null;
     }
     const set = (v: string) => setExtras((x) => ({ ...x, [f.name]: v }));
     const val = extras[f.name] ?? '';
-    let control: ReactNode;
-    if (f.type === 'TEXTAREA') control = <textarea className={card.input} style={{ height: 64, padding: '8px 10px', resize: 'vertical' }} value={val} onChange={(e) => set(e.target.value)} />;
-    else if (f.type === 'NUMBER' || f.type === 'DECIMAL') control = <input className={card.input} type="number" value={val} onChange={(e) => set(e.target.value)} />;
+    // Text controls take the field's id, so the label names them; the others carry their own.
+    let control: ReactNode | ((id: string) => ReactNode);
+    if (f.type === 'TEXTAREA') control = (id: string) => <textarea id={id} className={card.input} style={{ height: 64, padding: '8px 10px', resize: 'vertical' }} value={val} onChange={(e) => set(e.target.value)} />;
+    else if (f.type === 'NUMBER' || f.type === 'DECIMAL') control = (id: string) => <input id={id} className={card.input} type="number" value={val} onChange={(e) => set(e.target.value)} />;
     else if (f.type === 'DATE') control = <DatePicker value={val} onChange={set} fullWidth aria-label={f.label || f.name} />;
     else if (f.type === 'DECISION_BOX')
       control = (
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, font: '400 12.5px/1 var(--font-sans)', color: 'var(--ink-700)' }}>
-          <input type="checkbox" checked={val === '1'} onChange={(e) => set(e.target.checked ? '1' : '')} /> Yes
+          <input type="checkbox" checked={val === '1'} onChange={(e) => set(e.target.checked ? '1' : '')} aria-label={f.label || f.name} /> Yes
         </label>
       );
-    else control = <input className={card.input} value={val} placeholder="Enter your text here" onChange={(e) => set(e.target.value)} />;
+    else control = (id: string) => <input id={id} className={card.input} value={val} placeholder="Enter your text here" onChange={(e) => set(e.target.value)} />;
     return (
       <Field key={f.name} label={f.label || f.name} required={f.required}>
         {control}
@@ -737,8 +778,14 @@ function BookingFormInner() {
     return nodes;
   }
 
+  // While the booking is being made the form stays put: closed mid-save (Esc, the X, a click
+  // outside), it could be opened and submitted again before the first booking existed.
+  const close = () => {
+    if (!submitting) actions.closeBookingForm();
+  };
+
   return (
-    <Modal onClose={actions.closeBookingForm} width={560}>
+    <Modal onClose={close} width={560}>
       <ModalHeader
         title={isFacility ? 'Booking' : 'Space Booking'}
         subtitle={
@@ -766,7 +813,7 @@ function BookingFormInner() {
             </span>
           )
         }
-        onClose={actions.closeBookingForm}
+        onClose={close}
       />
       <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14, maxHeight: '64vh', overflowY: 'auto' }}>
         {canPickForm && formsForCurrentType.length > 1 && formId == null ? (
@@ -787,10 +834,12 @@ function BookingFormInner() {
             {!isFacility && (
               <>
                 <Field label="Name" required>
-                  <input className={card.input} value={name} placeholder="Enter your text here" onChange={(e) => setName(e.target.value)} />
+                  {(id) => <input id={id} className={card.input} value={name} placeholder="Enter your text here" onChange={(e) => setName(e.target.value)} />}
                 </Field>
                 <Field label="Description">
-                  <textarea className={card.input} style={{ height: 72, padding: '8px 10px', resize: 'vertical' }} value={description} placeholder="Type your description here" onChange={(e) => setDescription(e.target.value)} />
+                  {(id) => (
+                    <textarea id={id} className={card.input} style={{ height: 72, padding: '8px 10px', resize: 'vertical' }} value={description} placeholder="Type your description here" onChange={(e) => setDescription(e.target.value)} />
+                  )}
                 </Field>
                 <Field label="Host" required>
                   <Select value={host || null} options={contactOptions} onChange={setHost} placeholder="Select an option" fullWidth aria-label="Host" />
@@ -805,7 +854,7 @@ function BookingFormInner() {
             {resourceRow}
 
             <Field label="Number Of Attendees" required>
-              <input className={card.input} type="number" min={1} value={noOfAttendees} placeholder="Input numerical value" onChange={(e) => setNoOfAttendees(e.target.value)} />
+              {(id) => <input id={id} className={card.input} type="number" min={1} value={noOfAttendees} placeholder="Input numerical value" onChange={(e) => setNoOfAttendees(e.target.value)} />}
             </Field>
 
             {timeWindow}
@@ -839,14 +888,21 @@ function BookingFormInner() {
   );
 }
 
-function Field({ label, required, children }: { label: string; required?: boolean; children: ReactNode }) {
+/**
+ * A labelled row of the form. A text box is passed as a function of the row's id, so the label is
+ * tied to it (`htmlFor`) and a screen reader announces the field by its name rather than by its
+ * placeholder; the pickers (Select, DatePicker) carry their own `aria-label` and come as they are.
+ */
+function Field({ label, required, children }: { label: string; required?: boolean; children: ReactNode | ((id: string) => ReactNode) }) {
+  const id = useId();
+  const tied = typeof children === 'function';
   return (
     <div>
-      <label className={card.label}>
+      <label className={card.label} htmlFor={tied ? id : undefined}>
         {required && <span style={{ color: 'var(--danger-500)', marginRight: 3 }}>*</span>}
         {label}
       </label>
-      {children}
+      {tied ? children(id) : children}
     </div>
   );
 }

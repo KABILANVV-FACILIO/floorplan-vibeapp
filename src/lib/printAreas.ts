@@ -196,19 +196,47 @@ export function planLabelledDetailAreas(points: DeskPoint[], opts: LabelledAreaO
   return (best ?? plan(steps[last])).sort((a, b) => a.cy - b.cy || a.cx - b.cx);
 }
 
-/** Median nearest-neighbour distance — the plan's own spacing between desks. */
-export function deskPitch(points: DeskPoint[]): number {
-  if (points.length < 2) return 100;
-  const nn = points.map((p, i) => {
+/** Each desk's distance to its nearest neighbour (a desk on the very same spot aside). */
+export function nearestDistances(points: DeskPoint[]): Map<string, number> {
+  const out = new Map<string, number>();
+  points.forEach((p, i) => {
     let best = Infinity;
     for (let j = 0; j < points.length; j++) {
       if (j === i) continue;
       const d = Math.hypot(points[j].x - p.x, points[j].y - p.y);
       if (d > 0 && d < best) best = d;
     }
-    return best;
-  }).filter(Number.isFinite).sort((a, b) => a - b);
+    if (Number.isFinite(best)) out.set(p.id, best);
+  });
+  return out;
+}
+
+/** Median nearest-neighbour distance — the plan's own spacing between desks. */
+export function deskPitch(points: DeskPoint[]): number {
+  if (points.length < 2) return 100;
+  const nn = [...nearestDistances(points).values()].sort((a, b) => a - b);
   return nn.length ? nn[Math.floor(nn.length / 2)] : 100;
+}
+
+/** How far past the closest quarter's spacing the chips' pitch may reach (see chipPitch). */
+const CHIP_PITCH_OF_CLOSEST = 1.25;
+
+/**
+ * The spacing chips are sized to: the floor's typical gap, but no more than a little past the gap
+ * of its closest quarter of spaces. A floor whose spaces sit evenly (the closest quarter within
+ * 80% of the typical gap) gets its median, as before. A floor of a few spaces far apart and a
+ * tight row of others — a test floor of 8, the median 257px and the row 50px apart — sized every
+ * chip to the far gap, and the row's chips, and their cards, piled onto each other. A quarter of
+ * the floor must sit that close to count, so one stray pair can't shrink everything (chipSizeNear
+ * handles a pair).
+ */
+export function chipPitch(points: DeskPoint[], nearest?: Map<string, number>): number {
+  if (points.length < 2) return 100;
+  // `nearest` when the caller has already worked it out for these points (nearestDistances is
+  // every desk against every other — on a 400-desk floor, not something to do twice).
+  const nn = [...(nearest ?? nearestDistances(points)).values()].sort((a, b) => a - b);
+  if (!nn.length) return 100;
+  return Math.min(nn[Math.floor(nn.length / 2)], nn[Math.floor(nn.length / 4)] * CHIP_PITCH_OF_CLOSEST);
 }
 
 /** Single-linkage groups: desks within `link` of any desk already in a group join it. */

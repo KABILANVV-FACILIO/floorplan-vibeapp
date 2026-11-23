@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { useFloorplanData } from '../state/FloorplanContext';
 import { panelMaxHeight } from '../lib/geometry';
@@ -16,6 +16,11 @@ export function usePanelDrag(id: 'context' | 'portfolio' | 'details', width: num
   const { state, actions } = useFloorplanData();
   const dragRef = useRef<DragSession | null>(null);
   const suppressClickRef = useRef(false);
+  /** Takes a drag's window listeners off again — on release, or if the panel goes mid-drag. */
+  const detachRef = useRef<(() => void) | null>(null);
+  // Inside the Facilio frame a release outside it never arrives; a panel unmounted mid-drag must
+  // not leave the window moving it on every later mouse move.
+  useEffect(() => () => detachRef.current?.(), []);
 
   const pos = actions.panelPos(id, width);
   const open = state.panels[id].open;
@@ -33,8 +38,7 @@ export function usePanelDrag(id: 'context' | 'portfolio' | 'details', width: num
   }
 
   function onMouseUp() {
-    window.removeEventListener('mousemove', onMouseMove);
-    window.removeEventListener('mouseup', onMouseUp);
+    detachRef.current?.();
     if (dragRef.current?.moved) {
       suppressClickRef.current = true;
       setTimeout(() => (suppressClickRef.current = false), 0);
@@ -47,8 +51,14 @@ export function usePanelDrag(id: 'context' | 'portfolio' | 'details', width: num
     e.preventDefault();
     e.stopPropagation();
     dragRef.current = { sx: e.clientX, sy: e.clientY, ox: pos.x, oy: pos.y, moved: false };
+    detachRef.current?.();
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
+    detachRef.current = () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      detachRef.current = null;
+    };
   }
 
   return {

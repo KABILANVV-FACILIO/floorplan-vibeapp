@@ -65,6 +65,10 @@ export function Tooltip() {
   }, [unitId, unitType]);
 
   const [reading, setReading] = useState(false);
+  // This record's own version (bumped by a write to it, on any surface) and the plan-wide one (a
+  // change whose records are not known) — the record is re-read when either moves, and not when
+  // some other desk on the plan is assigned or vacated.
+  const recordVersion = unitId ? (state.recordVersions[unitId] ?? 0) : 0;
   useEffect(() => {
     // Reset FIRST, on every path. Returning early here without clearing left the flag raised from
     // the previous unit — a card that then rendered a loader with nothing in flight to end it.
@@ -89,9 +93,9 @@ export function Tooltip() {
       live = false;
       clearTimeout(giveUp);
     };
-    // `recordNonce` re-reads the record after ANY write to it — a transition fired here, or the
-    // same one fired in the sidebar, which is showing the very record this card is about.
-  }, [unitId, unitType, placeable, state.recordNonce]);
+    // Re-read after any write to THIS record — a transition fired here, or the same one fired in
+    // the sidebar, which is showing the very record this card is about.
+  }, [unitId, unitType, placeable, recordVersion, state.recordNonce]);
 
   /*
    * The record is either being READ or being CHANGED — either way the value on screen is not the
@@ -193,7 +197,7 @@ export function Tooltip() {
             {primary}
           </div>
         </div>
-        <button className={styles.close} data-tip="Close" onClick={() => actions.selectUnit(null)}>
+        <button className={styles.close} data-tip="Close" aria-label="Close" onClick={() => actions.selectUnit(null)}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M18 6L6 18M6 6l12 12" />
           </svg>
@@ -258,7 +262,10 @@ export function Tooltip() {
           sits on the plan — its geometry, its label, its type — and a "Mark as In-active" button
           under an outline you are tracing is a record-lifecycle action in the middle of a layout
           task, one press from being fired by accident. */}
-      {state.mode !== 'edit' && (state.mode !== 'book' || bookable) && (
+      {/* Without the Assignment right (Roles & access › Floorplans) none of them, in either view:
+          they are the desk record's own flow — Vacate, Re-assign — and booking is the Book button
+          below. With neither right the card only says what the space is. */}
+      {state.mode !== 'edit' && state.planViews.assign && (state.mode !== 'book' || bookable) && (
         <StateflowActions
           unit={unit}
           showState={false}

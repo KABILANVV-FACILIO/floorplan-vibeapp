@@ -1,6 +1,9 @@
+import { useState } from 'react';
 import type { DragEvent as ReactDragEvent } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
-import { contactName, moduleEnabled } from '../../state/selectors';
+import { activateOnKey } from '../../lib/keyboard';
+import { contactName, floorDepartments, moduleEnabled, unitDepartment, unitPlanLabel } from '../../state/selectors';
+import { departmentDisplayName } from '../../lib/displayNames';
 import { unitSortCompare } from '../../lib/geometry';
 import { unitStatus } from '../../lib/unitStatus';
 import { Chip } from '../primitives/Chip';
@@ -65,13 +68,32 @@ export function SpacesList() {
   const allUnits = isEdit ? [...state.units, ...state.unplacedUnits] : state.units;
   const units = allUnits.filter((u) => moduleEnabled(state, u.type));
 
-  const counts: Record<string, number> = { all: units.length };
-  for (const u of units) counts[u.type] = (counts[u.type] || 0) + 1;
+  /**
+   * Departments present on THIS floor: a desk's own `department`, else its holder's (see
+   * unitDepartment). The ones ticked filter this list and dim the rest of the plan; none ticked is
+   * every department. A floor with no department anywhere shows the type chips alone.
+   */
+  const departments = floorDepartments(state);
+  // A ticked department that vanished (floor switch, module toggle) must not silently narrow the
+  // list to nothing — the list reads as empty with no visible cause.
+  const picked = state.spaceDepartments.filter((d) => departments.includes(d));
+  const inDept = (u: Unit) => !picked.length || picked.includes(unitDepartment(state, u) ?? '');
+  const [deptOpen, setDeptOpen] = useState(false);
+  const deptName = (d: string) => departmentDisplayName(d) || d;
+  const toggleDept = (d: string) => actions.setSpaceDepartments(picked.includes(d) ? picked.filter((x) => x !== d) : [...picked, d]);
+
+  // Counts follow the department, so a chip never promises rows the list won't show.
+  const scoped = units.filter(inDept);
+  const counts: Record<string, number> = { all: scoped.length };
+  for (const u of scoped) counts[u.type] = (counts[u.type] || 0) + 1;
 
   const q = state.spaceSearch.trim().toLowerCase();
   const filtered = units
+    .filter(inDept)
     .filter((u) => state.spaceFilter === 'all' || u.type === state.spaceFilter)
-    .filter((u) => !q || u.label.toLowerCase().includes(q) || (u.room ?? '').toLowerCase().includes(q) || (u.secondary ?? '').toLowerCase().includes(q))
+    // By the label the plan shows too (a Desk Code, a stall number — see unitPlanLabel), so what you
+    // read on the plan is what you can search for.
+    .filter((u) => !q || u.label.toLowerCase().includes(q) || unitPlanLabel(state, u).toLowerCase().includes(q) || (u.room ?? '').toLowerCase().includes(q) || (u.secondary ?? '').toLowerCase().includes(q))
     .sort(unitSortCompare);
 
   return (
@@ -91,9 +113,10 @@ export function SpacesList() {
             value={state.spaceSearch}
             onChange={(e) => actions.setSpaceSearch(e.target.value)}
             placeholder={isEdit ? 'Search available spaces' : 'Search this floor'}
+            aria-label={isEdit ? 'Search available spaces' : 'Search spaces on this floor'}
           />
           {state.spaceSearch && (
-            <button className={styles.clearBtn} data-tip="Clear" onClick={() => actions.setSpaceSearch('')}>
+            <button type="button" className={styles.clearBtn} data-tip="Clear" aria-label="Clear the search" onClick={() => actions.setSpaceSearch('')}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
                 <path d="M18 6L6 18M6 6l12 12" />
               </svg>
@@ -107,6 +130,57 @@ export function SpacesList() {
             </Chip>
           ))}
         </div>
+        {departments.length > 0 && (
+          // As the People list's Department picker: opens in place, a tick applies at once.
+          <button
+            type="button"
+            className={[styles.deptBtn, picked.length || deptOpen ? styles.deptBtnOn : ''].join(' ')}
+            aria-expanded={deptOpen}
+            onClick={() => setDeptOpen((o) => !o)}
+          >
+            <span className={styles.deptBtnLabel}>Department</span>
+            <span className={styles.deptBtnValue}>
+              {picked.length === 0 ? 'All' : picked.length === 1 ? deptName(picked[0]) : `${deptName(picked[0])} +${picked.length - 1}`}
+            </span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden style={{ transform: deptOpen ? 'rotate(180deg)' : undefined }}>
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+        )}
+        {departments.length > 0 && deptOpen && (
+          <div className={styles.deptPicker}>
+            <div className={styles.choiceList} role="group" aria-label="Departments">
+              {departments.map((d) => {
+                const on = picked.includes(d);
+                return (
+                  <button key={d} type="button" className={[styles.choice, on ? styles.choiceOn : ''].join(' ')} aria-pressed={on} onClick={() => toggleDept(d)}>
+                    <span className={[styles.check, on ? styles.checkOn : ''].join(' ')} aria-hidden>
+                      {on && (
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M5 12l5 5 9-10" />
+                        </svg>
+                      )}
+                    </span>
+                    <span className={styles.choiceLabel}>{deptName(d)}</span>
+                    <span className={styles.choiceCount}>{units.filter((u) => unitDepartment(state, u) === d).length}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className={styles.deptPickerFoot}>
+              {picked.length > 0 ? (
+                <button type="button" className={styles.linkBtn} onClick={() => actions.setSpaceDepartments([])}>
+                  Show all departments
+                </button>
+              ) : (
+                <span className={styles.deptHint}>None ticked shows every department</span>
+              )}
+              <button type="button" className={styles.linkBtn} onClick={() => setDeptOpen(false)}>
+                Done
+              </button>
+            </div>
+          </div>
+        )}
       </div>
       <div className={styles.list}>
         {state.loading ? (
@@ -154,9 +228,22 @@ function SpaceRow({ unit }: { unit: Unit }) {
   const traceable = unplaced && isEdit && isRoomLike(unit.type);
   // Click-to-arm alternative to dragging: arm the record, then click the plan to place it.
   const placing = state.placingUnitId === unit.id;
+  const onActivate = unplaced
+    ? draggable || traceable
+      ? () => actions.setPlacingUnit(placing ? null : unit.id)
+      : undefined
+    : // A placed record is on the plan: centre on it and select it, so clicking the row and
+      // clicking the marker land in the same place.
+      () => actions.focusUnit(unit.id, state.stage.w, state.stage.h);
   return (
     <div
       className={[styles.row, selected ? styles.rowSelected : ''].join(' ')}
+      // A row that does something is reachable with Tab and works with Enter or Space, as a click.
+      role={onActivate ? 'button' : undefined}
+      tabIndex={onActivate ? 0 : undefined}
+      aria-pressed={onActivate && unplaced ? placing : undefined}
+      aria-current={selected ? 'true' : undefined}
+      onKeyDown={onActivate ? activateOnKey(onActivate) : undefined}
       style={
         unplaced || traceable
           ? placing
@@ -177,15 +264,7 @@ function SpaceRow({ unit }: { unit: Unit }) {
             }
           : undefined
       }
-      onClick={
-        unplaced
-          ? draggable || traceable
-            ? () => actions.setPlacingUnit(placing ? null : unit.id)
-            : undefined
-          // A placed record is on the plan: centre on it and select it, so clicking the row and
-          // clicking the marker land in the same place.
-          : () => actions.focusUnit(unit.id, state.stage.w, state.stage.h)
-      }
+      onClick={onActivate}
       data-tip={
         draggable
           ? 'Drag onto the floorplan, or click and then click the map'
@@ -221,3 +300,4 @@ function SpaceRow({ unit }: { unit: Unit }) {
     </div>
   );
 }
+

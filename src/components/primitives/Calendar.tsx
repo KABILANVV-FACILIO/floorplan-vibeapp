@@ -3,13 +3,13 @@ import { orgNow } from '../../lib/orgTime';
 import styles from './Calendar.module.css';
 
 /**
- * The app's month calendar — the ONE grid behind every date picker in the app.
+ * The app's month calendar, as the mobile date sheet (`MobileDatePicker`) renders it.
  *
- * There were two: a grid inline-styled inside `DatePicker` (which nothing rendered) and a second
- * one inside the mobile sheet, each with its own month arithmetic and its own idea of what a
- * disabled day looks like. Meanwhile three forms still used the browser's `<input type="date">`,
- * so the app shipped three different calendars depending on where you clicked. This is the one
- * both pickers now render, and the native inputs were replaced with them.
+ * Not yet the only one: `DatePicker` — the field the desktop forms use — still draws its own grid,
+ * because its datetime mode edits a draft beside HH / MM columns and lays the grid out as a phone
+ * sheet, neither of which this has a shape for. The two agree on what matters (the org's today,
+ * disabled days outside min/max, full-date names for screen readers); a change to how a day looks
+ * or reads belongs in both until DatePicker can render this one.
  *
  * Presentational and controlled: it owns which month is on screen, and nothing else.
  */

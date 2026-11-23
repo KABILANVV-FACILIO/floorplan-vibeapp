@@ -20,6 +20,13 @@ describe('bookingSegmentsFromRow', () => {
     expect(segs![0].segCount).toBeUndefined();
   });
 
+  it("carries the row's host, when it names one, beside who reserved it", () => {
+    const [seg] = bookingSegmentsFromRow({ id: 7, desk: { id: 41 }, bookingStartTime: at('2026-10-05', 9 * 60), bookingEndTime: at('2026-10-05', 10 * 60), reservedBy: { id: 3 }, host: { id: 812 } }, TZ)!;
+    expect(seg).toMatchObject({ by: '3', host: '812' });
+    const [none] = bookingSegmentsFromRow({ id: 8, desk: { id: 41 }, bookingStartTime: at('2026-10-05', 9 * 60), reservedBy: { id: 3 } }, TZ)!;
+    expect(none).not.toHaveProperty('host');
+  });
+
   it('splits a booking that runs past midnight into one segment per day, all with the same id', () => {
     const segs = bookingSegmentsFromRow({ id: 8, desk: { id: 41 }, bookingStartTime: at('2026-10-05', 17 * 60 + 30), bookingEndTime: at('2026-10-08', 17 * 60 + 30) }, TZ)!;
     expect(segs.map((s) => [s.date, s.start, s.end, s.segIndex, s.segCount])).toEqual([

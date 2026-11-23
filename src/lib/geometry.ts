@@ -1,5 +1,5 @@
 import { IMG_H, IMG_W } from './mockData';
-import type { PointGeom, PolyGeom, Unit, UnitGeom } from './types';
+import type { PolyGeom, Unit } from './types';
 
 export interface ViewTransform {
   tx: number;
@@ -160,13 +160,6 @@ export function pointInPoly(pt: { x: number; y: number }, pts: [number, number][
     if (intersect) inside = !inside;
   }
   return inside;
-}
-
-export function isPointGeom(g: UnitGeom): g is PointGeom {
-  return g.kind === 'point';
-}
-export function isPolyGeom(g: UnitGeom): g is PolyGeom {
-  return g.kind === 'poly';
 }
 
 /** Natural sort (numeric-aware) — "WS-2" sorts before "WS-10". */

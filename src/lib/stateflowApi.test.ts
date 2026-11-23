@@ -44,6 +44,7 @@ const api = await import('./stateflowApi');
 beforeEach(() => {
   calls.length = 0;
   connected = true;
+  api.forgetFlowReads();
   patchImpl = () => ({ code: 0, data: {} });
   updateImpl = () => ({ error: null });
 });
@@ -118,6 +119,41 @@ describe('executing a transition', () => {
     expect(calls.map((c) => c.kind)).toEqual(['PATCH']);
   });
 
+  it('does NOT re-send by the other road when Facilio refused the PATCH for rate, failed it (5xx) or let it time out', async () => {
+    const failures: unknown[] = [
+      Object.assign(new Error('You have reached the maximum number of allowed requests for this API.'), { code: 6 }),
+      { response: { status: 429 } },
+      Object.assign(new Error('Service Unavailable'), { status: 503 }),
+      new Error('Request failed with status code 502'),
+      new Error('invokeFacilioAPI timed out'),
+      Object.assign(new Error('aborted'), { name: 'TimeoutError' }),
+    ];
+    for (const failure of failures) {
+      calls.length = 0;
+      patchImpl = () => {
+        throw failure;
+      };
+      await expect(api.executeStateTransition('desks', 42, 5)).rejects.toBe(failure);
+      expect(calls.map((c) => c.kind)).toEqual(['PATCH']);
+    }
+  });
+
+  it('still falls back when the error merely names a record whose id looks like a status', async () => {
+    patchImpl = () => {
+      throw new Error('invokeFacilioAPI: PATCH /api/v3/action/desks/503/transition is not supported');
+    };
+    await api.executeStateTransition('desks', 503, 5);
+    expect(calls.map((c) => c.kind)).toEqual(['PATCH', 'updateRecord']);
+  });
+
+  it('still falls back when the bridge says it does not implement the verb (501)', async () => {
+    patchImpl = () => {
+      throw Object.assign(new Error('Not Implemented'), { status: 501 });
+    };
+    await api.executeStateTransition('desks', 42, 5);
+    expect(calls.map((c) => c.kind)).toEqual(['PATCH', 'updateRecord']);
+  });
+
   it('reports a rejected fallback instead of resolving silently', async () => {
     patchImpl = () => {
       throw new Error('nope');
@@ -185,5 +221,84 @@ describe('approval flow', () => {
       path: 'v3/approval/action/spacebooking/99/approval',
       body: { id: 99, approvalTransitionId: 3, data: {} },
     });
+  });
+});
+
+/**
+ * One desk click mounted two readers of the same record's flow (the plan's card and the side
+ * panel), each sending its own `getAvailableState`, against one per-minute limit. `readFlow`
+ * shares them: a read on its way, and an answer for a few seconds after — for the same version only.
+ */
+describe('readFlow — one read for every surface showing the record', () => {
+  const okBody = { responseCode: 0, result: { currentState: { displayName: 'Vacant' }, states: [{ id: 5, name: 'Assign' }] } };
+  const gets = () => calls.filter((c) => c.kind === 'GET').length;
+
+  it('two surfaces asking at once share one request', async () => {
+    getBody = okBody;
+    const [a, b] = await Promise.all([api.readFlow('desks', 11, '0.0'), api.readFlow('desks', 11, '0.0')]);
+    expect(gets()).toBe(1);
+    expect(a).toEqual(b);
+    expect(a.transitions.map((t) => t.name)).toEqual(['Assign']);
+  });
+
+  it('a surface mounting a moment after the first answer is handed that answer, not a new request', async () => {
+    getBody = okBody;
+    await api.readFlow('desks', 12, '0.0');
+    await api.readFlow('desks', 12, '0.0');
+    expect(gets()).toBe(1);
+  });
+
+  it('a new version is a new read', async () => {
+    getBody = okBody;
+    await api.readFlow('desks', 13, '0.0');
+    await api.readFlow('desks', 13, '0.1');
+    expect(gets()).toBe(2);
+  });
+
+  it('other records are read for themselves', async () => {
+    getBody = okBody;
+    await Promise.all([api.readFlow('desks', 14, 0), api.readFlow('desks', 15, 0), api.readFlow('lockers', 14, 0)]);
+    expect(gets()).toBe(3);
+  });
+
+  it('an answer is handed on for a few seconds only', async () => {
+    getBody = okBody;
+    const now = vi.spyOn(Date, 'now');
+    try {
+      now.mockReturnValue(1_000_000);
+      await api.readFlow('desks', 16, 0);
+      now.mockReturnValue(1_004_000);
+      await api.readFlow('desks', 16, 0);
+      expect(gets()).toBe(1);
+      now.mockReturnValue(1_006_000);
+      await api.readFlow('desks', 16, 0);
+      expect(gets()).toBe(2);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('a read that failed is never handed on — the next ask goes to the org', async () => {
+    getBody = { responseCode: 1, message: 'busy' };
+    await expect(api.readFlow('desks', 17, 0)).rejects.toThrow('busy');
+    getBody = okBody;
+    await expect(api.readFlow('desks', 17, 0)).resolves.toMatchObject({ currentStateName: 'Vacant' });
+    expect(gets()).toBe(2);
+  });
+
+  it('a transition on the record drops its held flow, even at the same version', async () => {
+    getBody = okBody;
+    await api.readFlow('desks', 18, 0);
+    await api.executeStateTransition('desks', 18, 5);
+    await api.readFlow('desks', 18, 0);
+    expect(gets()).toBe(2);
+  });
+
+  it('an approval on the record drops its held flow too', async () => {
+    getBody = okBody;
+    await api.readFlow('spacebooking', 19, 0);
+    await api.executeApprovalTransition('spacebooking', 19, 3);
+    await api.readFlow('spacebooking', 19, 0);
+    expect(gets()).toBe(2);
   });
 });

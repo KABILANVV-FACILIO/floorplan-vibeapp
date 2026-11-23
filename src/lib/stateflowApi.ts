@@ -1,4 +1,5 @@
 import { customGet, customPatch, customPost, facilioApi, isConnectedApp, isFacilioApiConfigured } from './facilioApi';
+import { refusedForRate } from './rateLimit';
 
 /**
  * Module-agnostic stateflow + approval-flow client, mirroring the real Facilio web client
@@ -136,13 +137,119 @@ export async function fetchAvailableStates(moduleName: string, recordId: number)
 }
 
 /**
+ * How long a flow just read is handed to another surface asking for the same record at the same
+ * version, instead of asking the org again. Long enough to cover the plan's card and the side
+ * panel mounting a moment apart for one click; short enough that nothing is remembered for long.
+ */
+const FLOW_REUSE_MS = 5000;
+
+/**
+ * A record's flow, read once for every surface showing it.
+ *
+ * Every `getAvailableState` call shares one per-minute limit, and one desk click mounted two
+ * readers of the same record (the plan's card and the side panel), each asking for itself; booking
+ * cards for one booking did the same. Here a read on its way is shared, and an answer that has just
+ * landed is handed on for a few seconds — but only for the same `version`: a record that changed
+ * gets a new version from the caller, and a new version is always a new read. A read that failed
+ * is never handed on, so Retry asks again. A transition on the record drops what is held for it
+ * (see forget), so nothing read before a move is served after it.
+ *
+ * Built by a factory so tests can put a reader around their own `fetchAvailableStates` — a call
+ * from inside this module would never reach a mocked export.
+ */
+export function createFlowReader(fetch: (moduleName: string, recordId: number) => Promise<FlowState> = fetchAvailableStates, reuseMs = FLOW_REUSE_MS) {
+  /** By record: the version it was read at, the read, and when it answered (null while on its way). */
+  const held = new Map<string, { version: string; read: Promise<FlowState>; at: number | null }>();
+
+  function read(moduleName: string, recordId: number, version: number | string = 0): Promise<FlowState> {
+    const key = `${moduleName}:${recordId}`;
+    const v = String(version);
+    const now = Date.now();
+    // Answers past their few seconds go as soon as anyone asks again; nothing needs a timer.
+    for (const [k, e] of held) if (e.at !== null && now - e.at >= reuseMs) held.delete(k);
+    const have = held.get(key);
+    if (have && have.version === v) return have.read;
+    // A different version replaces what is held: the record changed, so the old answer is not its.
+    const entry = { version: v, read: undefined as unknown as Promise<FlowState>, at: null as number | null };
+    entry.read = fetch(moduleName, recordId).then(
+      (flow) => {
+        if (held.get(key) === entry) entry.at = Date.now();
+        return flow;
+      },
+      (err) => {
+        if (held.get(key) === entry) held.delete(key);
+        throw err;
+      },
+    );
+    held.set(key, entry);
+    return entry.read;
+  }
+
+  /** Drop what is held for one record (after a transition on it), or for every record. */
+  function forget(moduleName?: string, recordId?: number): void {
+    if (moduleName === undefined || recordId === undefined) held.clear();
+    else held.delete(`${moduleName}:${recordId}`);
+  }
+
+  return { read, forget };
+}
+
+const flowReader = createFlowReader();
+
+/**
+ * The record's flow at `version` — shared with every other surface asking for the same record at
+ * the same version (see createFlowReader). Callers keep their own "latest read wins" guard: this
+ * shares requests, it does not decide which answer a surface shows.
+ */
+export const readFlow = flowReader.read;
+/** Drop the held flow of one record, or of all of them. */
+export const forgetFlowReads = flowReader.forget;
+
+/** HTTP statuses that say the org is down or slow — 501 (Not Implemented) is a verb the path lacks, and is not one. */
+const UPSTREAM_STATUS = new Set([500, 502, 503, 504]);
+// Phrases only, never a bare number: a record id echoed in the error's path (`…/desks/503/…`) is
+// not a status, and would keep that record from the fallback for good.
+const UPSTREAM_TEXT = /status code 5(00|02|03|04)\b|internal server error|bad gateway|service unavailable|gateway time-?out|time(d)?[\s-]?out/i;
+
+/**
+ * Whether a PATCH failed because of the org rather than the path: Facilio refusing for rate,
+ * erroring (5xx) or not answering in time. The fallback below sends the same transition again by
+ * another road to the same org, which would be refused, fail or time out just the same — and a
+ * timed-out PATCH may yet have landed, so sending it twice could run the step twice.
+ *
+ * Nothing on record says what the host bridge throws for a verb it lacks, so the fallback is kept
+ * for every OTHER failure, as before; only these are kept from it.
+ */
+function failedUpstream(err: unknown): boolean {
+  if (refusedForRate(err)) return true;
+  const o = (err && typeof err === 'object' ? err : null) as { name?: unknown; status?: unknown; code?: unknown; message?: unknown; response?: { status?: unknown } } | null;
+  const status = Number(o?.status ?? o?.response?.status);
+  if (UPSTREAM_STATUS.has(status)) return true;
+  if (o?.name === 'TimeoutError' || o?.code === 'ECONNABORTED' || o?.code === 'ETIMEDOUT') return true;
+  return UPSTREAM_TEXT.test(String(o?.message ?? err ?? ''));
+}
+
+/**
  * Executes one state transition. Primary path is the real client's PATCH; in connected mode,
  * where the SDK bridge's PATCH support is unverified, a thrown transport error falls back to a
  * plain module update carrying `stateTransitionId` — the exact payload clientV2's own permalink
- * transition page sends via updateRecord, so the server-side behavior is proven.
+ * transition page sends via updateRecord, so the server-side behavior is proven. A PATCH the org
+ * refused for rate, failed with a 5xx or let time out is NOT re-sent that way (failedUpstream).
  */
 export async function executeStateTransition(moduleName: string, recordId: number, transitionId: number, data?: Record<string, unknown>): Promise<void> {
   assertConfigured();
+  // The record's held flow goes before the move and again after it, whatever the move did —
+  // landed, failed, or timed out having landed: a flow read before or during it is not the
+  // record's any more.
+  forgetFlowReads(moduleName, recordId);
+  try {
+    await sendStateTransition(moduleName, recordId, transitionId, data);
+  } finally {
+    forgetFlowReads(moduleName, recordId);
+  }
+}
+
+async function sendStateTransition(moduleName: string, recordId: number, transitionId: number, data?: Record<string, unknown>): Promise<void> {
   const payload = { id: recordId, stateTransitionId: transitionId, data: data ?? {} };
   let body: any;
   try {
@@ -152,7 +259,7 @@ export async function executeStateTransition(moduleName: string, recordId: numbe
     // when the server answered properly and REFUSED the transition, and retrying that through
     // updateRecord would re-send a move the org just rejected — and, if the second path happened
     // to succeed, report a refusal as a success. Caught by the "non-zero v3 code" test.
-    if (!isConnectedApp) throw err;
+    if (!isConnectedApp || failedUpstream(err)) throw err;
     // eslint-disable-next-line no-console
     console.warn(`[stateflow] PATCH transition failed in connected mode — falling back to updateRecord`, err);
     const res = await facilioApi.updateRecord(moduleName, { id: recordId, data: data ?? {}, stateTransitionId: transitionId } as any);
@@ -173,10 +280,16 @@ export async function fetchApprovalTransitions(moduleName: string, recordId: num
 /** Executes one approval action. No non-PATCH fallback exists in clientV2 — a transport failure surfaces to the caller. */
 export async function executeApprovalTransition(moduleName: string, recordId: number, approvalTransitionId: number, data?: Record<string, unknown>): Promise<void> {
   assertConfigured();
-  const body = await customPatch(`v3/approval/action/${moduleName}/${recordId}/approval`, {
-    id: recordId,
-    approvalTransitionId,
-    data: data ?? {},
-  });
-  unwrap(body);
+  // An approval moves the record's state too, so its held flow goes (see executeStateTransition).
+  forgetFlowReads(moduleName, recordId);
+  try {
+    const body = await customPatch(`v3/approval/action/${moduleName}/${recordId}/approval`, {
+      id: recordId,
+      approvalTransitionId,
+      data: data ?? {},
+    });
+    unwrap(body);
+  } finally {
+    forgetFlowReads(moduleName, recordId);
+  }
 }

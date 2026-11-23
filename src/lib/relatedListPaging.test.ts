@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
  * A floor's desks, lockers, parking stalls, rooms and plan markers are read through the org's
  * relatedList endpoint, which answers 50 rows unless asked for a page. These pin the loader: the
  * count and the first page come together, the floor can be drawn from that first page, and every
- * other page follows — all at once when the count says how many, one by one when it can't.
+ * other page follows — two at a time when the count says how many, one by one when it can't.
  */
 
 vi.mock('./facilioApi', () => ({
@@ -36,10 +36,12 @@ describe('the first page, then the rest', () => {
     expect(await load.rest).toHaveLength(734);
   });
 
-  it('asks for every remaining page at once when the count says how many', async () => {
+  it('reads the remaining pages two at a time when the count says how many, keeping their order', async () => {
+    // Every page is the same URI to Facilio's limiter (100 a minute): a big floor must not spend
+    // the whole minute in one second. 2,600 rows at 500 a page is page 1 and five more.
     let inFlight = 0;
     let most = 0;
-    const honest = server(1234);
+    const honest = server(2600);
     const fetchPage = vi.fn(async (page: number, perPage: number) => {
       inFlight++;
       most = Math.max(most, inFlight);
@@ -47,10 +49,11 @@ describe('the first page, then the rest', () => {
       inFlight--;
       return honest(page, perPage);
     });
-    const load = await loadRelated(OPTS, { fetchPage, fetchCount: async () => 1234, perPage: 500 });
-    await load.rest;
-    expect(fetchPage).toHaveBeenCalledTimes(3);
-    expect(most).toBe(2); // pages 2 and 3 together, after page 1
+    const load = await loadRelated(OPTS, { fetchPage, fetchCount: async () => 2600, perPage: 500 });
+    const rest = await load.rest;
+    expect(fetchPage).toHaveBeenCalledTimes(6);
+    expect(most).toBe(2); // never more than two in flight (page 1 first, then its count, then the rest two at a time)
+    expect([...load.first, ...rest].map((r) => r.id)).toEqual(rows(0, 2600).map((r) => r.id));
   });
 
   it('makes one request when everything fits the first page', async () => {
@@ -60,6 +63,23 @@ describe('the first page, then the rest', () => {
     expect(load.first).toHaveLength(37);
     expect(await load.rest).toEqual([]);
     expect(fetchPage).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks no count when the first page is not full — it was the whole list', async () => {
+    const fetchCount = vi.fn(async () => 300);
+    const load = await loadRelated(OPTS, { fetchPage: server(300), fetchCount, perPage: 500 });
+    expect(fetchCount).not.toHaveBeenCalled();
+    expect(load).toMatchObject({ total: 300, hasMore: false });
+    expect(load.first).toHaveLength(300);
+  });
+
+  it('asks the count once a full first page is in, and still pages on', async () => {
+    const fetchPage = server(1100);
+    const fetchCount = vi.fn(async () => 1100);
+    const load = await loadRelated(OPTS, { fetchPage, fetchCount, perPage: 500 });
+    expect(fetchCount).toHaveBeenCalledTimes(1);
+    expect(await load.rest).toHaveLength(600);
+    expect(fetchPage).toHaveBeenCalledTimes(3);
   });
 
   it('pages on one by one when the count is unavailable', async () => {
@@ -93,5 +113,28 @@ describe('everything, awaited (for saving)', () => {
   it('reports a failed first page as a failure', async () => {
     const failing = vi.fn(async () => ({ error: { code: 1, message: 'nope' }, list: null }));
     expect((await fetchAllRelatedPaged(OPTS, { fetchPage: failing, fetchCount: async () => null, perPage: 500 })).error).toBeTruthy();
+  });
+
+  it('reports a full first page and a failed second one as a failure — never the first page as the whole list', async () => {
+    const fetchPage = vi.fn(async (page: number) => (page === 1 ? { error: null, list: rows(0, 500) } : { error: { code: 1, message: 'nope' }, list: null }));
+    const res = await fetchAllRelatedPaged(OPTS, { fetchPage, perPage: 500 });
+    expect(res.list).toBeNull();
+    expect(res.error?.message).toMatch(/incomplete/);
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the refusal for rate visible on a list that stopped part-way', async () => {
+    const fetchPage = vi.fn(async (page: number) =>
+      page === 1 ? { error: null, list: rows(0, 500) } : { error: { code: 6, message: 'You have reached the maximum number of allowed requests for this API.' }, list: null },
+    );
+    const res = await fetchAllRelatedPaged(OPTS, { fetchPage, perPage: 500 });
+    expect(res.error?.code).toBe(6);
+  });
+
+  it('shows what came for a list that is only displayed (allowPartial)', async () => {
+    const fetchPage = vi.fn(async (page: number) => (page === 1 ? { error: null, list: rows(0, 500) } : { error: { code: 1, message: 'nope' }, list: null }));
+    const res = await fetchAllRelatedPaged(OPTS, { fetchPage, perPage: 500 }, { allowPartial: true });
+    expect(res.error).toBeNull();
+    expect(res.list).toHaveLength(500);
   });
 });

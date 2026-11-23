@@ -67,3 +67,12 @@
   padding: 2px 6px;
   flex-shrink: 0;
 }
+
+/* Rows are reachable with Tab; show where the keyboard is. */
+.row:focus {
+  outline: none;
+}
+.row:focus-visible {
+  outline: 2px solid var(--blue-500);
+  outline-offset: -2px;
+}

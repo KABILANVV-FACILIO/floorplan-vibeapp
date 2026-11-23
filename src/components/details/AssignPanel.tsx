@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent as ReactDragEvent } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
-import { contactName, initials, isAssignable, unitById, visibleUnits } from '../../state/selectors';
+import { contactName, departmentColorIds, initials, isAssignable, spacesByPerson, unitById, visibleUnits } from '../../state/selectors';
 import { byDepartmentName, departmentDisplayName, employeeNumber, personDisplayName } from '../../lib/displayNames';
 import { TYPE_META } from '../../lib/types';
 import type { Unit } from '../../lib/types';
 import { facilioRecordUrl, isFacilioApiConfigured } from '../../lib/facilioApi';
+import { activateOnKey } from '../../lib/keyboard';
 import { fetchEmployeeFilterFields } from '../../lib/facilioApiDataSource';
 import { DEMO_FILTER_FIELDS } from '../../lib/employeeFilters';
 import type { AppliedFilter, FilterFieldDef } from '../../lib/employeeFilters';
-import { departmentColor, departmentKey, departmentsIn } from '../../lib/departmentColors';
+import { departmentColor, departmentKey } from '../../lib/departmentColors';
 import { Button } from '../primitives/Button';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
 import { SkeletonBlock, SkeletonRows } from '../primitives/Skeleton';
@@ -17,21 +18,87 @@ import { useDelayedFlag } from '../../hooks/useDelayedFlag';
 import { useLivePeople } from '../../hooks/useLivePeople';
 import { LocalAssign } from './LocalAssign';
 import { StateflowActions } from './StateflowActions';
-import { FilterIcon, PeopleFilterPanel } from './PeopleFilterPanel';
+import { FilterIcon, LookupChoices, PeopleFilterPanel } from './PeopleFilterPanel';
 import type { LookupChoice } from './PeopleFilterPanel';
 import card from './Card.module.css';
 import styles from './AssignPanel.module.css';
 
+/**
+ * The Assignment view's side panel: the selected space, then the People list. Without the
+ * Assignment right (Roles & access › Floorplans) it is the same panel read-only — who holds the
+ * space, and a People list to search and filter, with nothing to assign and nothing to drag.
+ */
 export function AssignPanel() {
-  const { state, actions } = useFloorplanData();
+  const { state } = useFloorplanData();
   const sel = unitById(state, state.selected);
+  const assignOn = state.planViews.assign;
+
+  return (
+    <div className={styles.stack}>
+      {sel && sel.type !== 'amenity' && (
+        <div className={card.card}>
+          <div className={card.cardHead}>
+            <h3 className={card.cardTitle}>
+              {sel.label} <span className={styles.typeTag}>{TYPE_META[sel.type].name}</span>
+            </h3>
+          </div>
+          <div className={card.cardBody}>
+            {isAssignable(sel) ? (
+              <>
+                <Holder unitId={sel.id} />
+                {/* The same buttons the plan's popover offers — the org's flow decides them, so
+                    the two surfaces must not disagree about what you can do to this record, and
+                    Assign/Allocate open the people picker here exactly as they do there. The
+                    app's own controls stand in only where the org offers no flow at all. */}
+                {assignOn ? <StateflowActions unit={sel} fallback={<LocalAssign unit={sel} />} /> : !state.assignments[sel.id] && <p className={card.helper}>Nobody holds this.</p>}
+              </>
+            ) : (
+              // A space that is booked rather than assigned has nobody to show here, but it still
+              // has the org's transitions — the same ones its popover offers.
+              assignOn && <StateflowActions unit={sel} />
+            )}
+          </div>
+        </div>
+      )}
+      {sel && sel.type === 'amenity' && (
+        <div className={card.card}>
+          <div className={card.cardHead}>
+            <h3 className={card.cardTitle}>{sel.label}</h3>
+          </div>
+          <div className={card.cardBody}>
+            {sel.secondary && <p className={card.helper}>{sel.secondary}</p>}
+          </div>
+        </div>
+      )}
+      {!sel && (
+        <div className={card.card}>
+          <div className={card.cardBody}>
+            <p className={card.helper}>{assignOn ? 'Select a desk, locker, or parking stall on the plan to assign it.' : 'Select a desk, locker, or parking stall on the plan to see who holds it.'}</p>
+          </div>
+        </div>
+      )}
+
+      <PeopleCard />
+    </div>
+  );
+}
+
+/**
+ * The People list: search, a Department picker and the Filter panel, over the org's own list.
+ * People are dragged onto the plan to assign them only with the Assignment right; without it
+ * nothing drags. Either way a row whose person has a space on this plan shows it — a click, or
+ * Enter / Space on the focused row — and the icon at the row's end opens their employee record.
+ */
+export function PeopleCard({ fixed = false }: { /** A set height, for a panel that scrolls as a whole (the Booking view's). */ fixed?: boolean } = {}) {
+  const { state, actions } = useFloorplanData();
+  const assignOn = state.planViews.assign;
   const [dragId, setDragId] = useState<string | null>(null);
   const dragGhostRef = useRef<HTMLDivElement | null>(null);
 
-  // The org's own list, filtered AT THE ORG as you type — the same read the People page and the
-  // assign picker make. This panel used to match `state.employees` in the browser, so typing here
-  // sent nothing to the API: a person outside the roster loaded at boot was unfindable from the
-  // one list that sits beside the plan.
+  // The app's roster with nothing typed, filtered AT THE ORG as you type — the same as the People
+  // page and the assign picker. This panel used to match `state.employees` in the browser only, so
+  // typing here sent nothing to the API: a person outside the roster loaded at boot was unfindable
+  // from the one list that sits beside the plan.
   //
   // The Filter panel narrows the same request: its ticked fields go out in the SAME `filters`
   // payload as the search (see employeeFilters.buildEmployeeFilters). Session-only, this surface
@@ -56,10 +123,12 @@ export function AssignPanel() {
     people: contacts,
     loading: peopleLoading,
     failed: filterFailed,
-  } = useLivePeople(state.contactSearch, state.employees, { filters, filterFields: filterFields ?? [] });
+    loadFailed: peopleLoadFailed,
+    retry: retryPeople,
+  } = useLivePeople(state.contactSearch, state.employees, { filters, filterFields: filterFields ?? [], rosterStatus: state.rosterStatus, reloadRoster: actions.reloadRoster });
 
   // Department colours exactly as the plan draws them: the same function, fed the same ids.
-  const planDeptIds = useMemo(() => departmentsIn(state.units).map((d) => d.id), [state.units]);
+  const planDeptIds = departmentColorIds(state);
   const deptIdByName = useMemo(() => new Map(state.departments.map((d) => [departmentKey(d.name), d.id])), [state.departments]);
   const deptColorForName = (name?: string) => {
     if (!name) return undefined;
@@ -71,9 +140,9 @@ export function AssignPanel() {
         .sort(byDepartmentName)
         .map((d) => ({ value: d.id, label: departmentDisplayName(d.name), color: departmentColor(d.id, state.departmentColors, planDeptIds) }));
     }
-    // Against the org, department values must be record ids (PickListOperators match ids). If the
-    // department list didn't load at boot, answer nothing here and let the panel read the
-    // department records itself (fetchLookupOptions), rather than offer names the org can't match.
+    // Against the org, department values must be record ids (PickListOperators match ids). The
+    // panel lists them from the org's picklist; these only lend it their plan colours. Without
+    // the department list there are no colours, never names the org can't match.
     if (isFacilioApiConfigured) return [];
     // The demo roster has department names but no department records: filter by name.
     const names = [...new Set(state.employees.map((e) => e.department).filter((n): n is string => !!n))].sort();
@@ -82,11 +151,42 @@ export function AssignPanel() {
   const activeFilters = filters.length;
   const filtersUsable = !!filterFields && filterFields.length > 0;
 
+  /**
+   * The Department picker under the search — the org's own Department field, so it is the SAME
+   * filter the Filter panel ticks ("Department is …"): one entry in `filters`, one request, one
+   * count on the Filter button. Ticking applies at once; there is nothing to confirm.
+   */
+  const deptField = filterFields?.find((f) => f.kind === 'lookup' && (f.lookupModule === 'department' || f.name === 'department')) ?? null;
+  const [deptOpen, setDeptOpen] = useState(false);
+  const deptFilter = deptField ? filters.find((f) => f.field === deptField.name) : undefined;
+  // "Department isn't …" can only be set in the Filter panel; the picker shows "is" alone.
+  const deptPicked = deptFilter && deptFilter.operatorId === 36 ? deptFilter.values : [];
+  const deptColor = useMemo(() => new Map(departmentChoices.map((c) => [c.value, c.color])), [departmentChoices]);
+  const deptName = (v: string) => deptFilter?.labels?.[v] ?? departmentChoices.find((c) => c.value === v)?.label ?? v;
+  function toggleDepartment(v: string, label: string) {
+    if (!deptField) return;
+    const values = deptPicked.includes(v) ? deptPicked.filter((x) => x !== v) : [...deptPicked, v];
+    const rest = filters.filter((f) => f.field !== deptField.name);
+    setFilters(values.length ? [...rest, { field: deptField.name, operatorId: 36, values, labels: { ...(deptFilter?.labels ?? {}), [v]: label } }] : rest);
+  }
+  function clearDepartments() {
+    if (deptField) setFilters(filters.filter((f) => f.field !== deptField.name));
+  }
+
   // A disabled module leaves no trace anywhere, so a holding of one is not listed against the
   // person either — it would name a unit the rest of the app has stopped showing.
-  function unitsHeldBy(contactId: string) {
-    return visibleUnits(state).filter((u) => state.assignments[u.id] === contactId).map((u) => u.label);
-  }
+  // Both per-person lookups are built once per change, in one pass each, and every row reads its
+  // own: scanning every space on the plan once per row, for the whole roster, slowed the panel.
+  const heldLabels = useMemo(() => {
+    const out = new Map<string, string[]>();
+    for (const u of visibleUnits(state)) {
+      const holder = state.assignments[u.id];
+      if (holder) out.set(holder, [...(out.get(holder) ?? []), u.label]);
+    }
+    return out;
+  }, [state]);
+  const unitsHeldBy = (contactId: string): string[] => heldLabels.get(contactId) ?? [];
+  const spaceByPerson = useMemo(() => spacesByPerson(state), [state]);
 
   function onDragStart(e: ReactDragEvent, contactId: string, name: string) {
     e.dataTransfer.setData('text/plain', contactId);
@@ -124,83 +224,114 @@ export function AssignPanel() {
   }
 
   return (
-    <div className={styles.stack}>
-      {sel && sel.type !== 'amenity' && (
-        <div className={card.card}>
-          <div className={card.cardHead}>
-            <h3 className={card.cardTitle}>
-              {sel.label} <span className={styles.typeTag}>{TYPE_META[sel.type].name}</span>
-            </h3>
-          </div>
-          <div className={card.cardBody}>
-            {isAssignable(sel) ? (
-              <>
-                <Holder unitId={sel.id} />
-                {/* The same buttons the plan's popover offers — the org's flow decides them, so
-                    the two surfaces must not disagree about what you can do to this record, and
-                    Assign/Allocate open the people picker here exactly as they do there. The
-                    app's own controls stand in only where the org offers no flow at all. */}
-                <StateflowActions unit={sel} fallback={<LocalAssign unit={sel} />} />
-              </>
-            ) : (
-              // A space that is booked rather than assigned has nobody to show here, but it still
-              // has the org's transitions — the same ones its popover offers.
-              <StateflowActions unit={sel} />
-            )}
-          </div>
+    <div className={[card.card, styles.peopleCard, fixed ? styles.peopleCardFixed : ''].join(' ')}>
+      <div className={card.cardHead}>
+        <h3 className={card.cardTitle}>People</h3>
+      </div>
+      <div className={styles.peopleSearchWrap}>
+        <div className={styles.peopleToolbar}>
+          <input
+            id="people-search"
+            className={card.input}
+            placeholder="Name, HRMS ID or email"
+            aria-label="Search people by name, HRMS ID or email"
+            value={state.contactSearch}
+            onChange={(e) => actions.setContactSearch(e.target.value)}
+          />
+          <button
+            type="button"
+            className={[styles.filterBtn, activeFilters || filterOpen ? styles.filterBtnOn : ''].join(' ')}
+            aria-expanded={filterOpen}
+            aria-label={activeFilters ? `Filter, ${activeFilters} applied` : 'Filter'}
+            disabled={!filtersUsable}
+            data-tip={filterFields === null ? 'Loading filters…' : !filtersUsable ? 'Filters aren’t available for this org' : undefined}
+            onClick={() => {
+              setFilterOpen((o) => !o);
+              setDeptOpen(false);
+            }}
+          >
+            <FilterIcon />
+            Filter
+            {activeFilters > 0 && <span className={styles.filterBadge}>{activeFilters}</span>}
+          </button>
         </div>
-      )}
-      {sel && sel.type === 'amenity' && (
-        <div className={card.card}>
-          <div className={card.cardHead}>
-            <h3 className={card.cardTitle}>{sel.label}</h3>
-          </div>
-          <div className={card.cardBody}>
-            {sel.secondary && <p className={card.helper}>{sel.secondary}</p>}
-          </div>
-        </div>
-      )}
-      {!sel && (
-        <div className={card.card}>
-          <div className={card.cardBody}>
-            <p className={card.helper}>Select a desk, locker, or parking stall on the plan to assign it.</p>
-          </div>
-        </div>
-      )}
-
-      <div className={[card.card, styles.peopleCard].join(' ')}>
-        <div className={card.cardHead}>
-          <h3 className={card.cardTitle}>People</h3>
-        </div>
-        <div className={styles.peopleSearchWrap}>
-          <div className={styles.peopleToolbar}>
-            <input
-              id="people-search"
-              className={card.input}
-              placeholder="Name, HRMS ID or email"
-              aria-label="Search people by name, HRMS ID or email"
-              value={state.contactSearch}
-              onChange={(e) => actions.setContactSearch(e.target.value)}
+        {deptField && (
+          <button
+            type="button"
+            className={[styles.deptBtn, deptPicked.length || deptOpen ? styles.deptBtnOn : ''].join(' ')}
+            aria-expanded={deptOpen}
+            onClick={() => {
+              setDeptOpen((o) => !o);
+              setFilterOpen(false);
+            }}
+          >
+            <span className={styles.deptBtnLabel}>Department</span>
+            <span className={styles.deptBtnValue}>
+              {deptPicked.length === 0
+                ? 'All'
+                : deptPicked.length === 1
+                  ? departmentDisplayName(deptName(deptPicked[0])) || deptName(deptPicked[0])
+                  : `${departmentDisplayName(deptName(deptPicked[0])) || deptName(deptPicked[0])} +${deptPicked.length - 1}`}
+            </span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden style={{ transform: deptOpen ? 'rotate(180deg)' : undefined }}>
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+        )}
+        {deptField && deptOpen && (
+          <div className={styles.deptPicker}>
+            <LookupChoices
+              field={deptField}
+              selected={deptPicked}
+              labels={deptFilter?.labels}
+              colorOf={(id) => deptColor.get(id)}
+              localChoices={departmentChoices}
+              onToggle={toggleDepartment}
             />
-            <button
-              type="button"
-              className={[styles.filterBtn, activeFilters || filterOpen ? styles.filterBtnOn : ''].join(' ')}
-              aria-expanded={filterOpen}
-              aria-label={activeFilters ? `Filter, ${activeFilters} applied` : 'Filter'}
-              disabled={!filtersUsable}
-              data-tip={filterFields === null ? 'Loading filters…' : !filtersUsable ? 'Filters aren’t available for this org' : undefined}
-              onClick={() => setFilterOpen((o) => !o)}
-            >
-              <FilterIcon />
-              Filter
-              {activeFilters > 0 && <span className={styles.filterBadge}>{activeFilters}</span>}
+            <div className={styles.deptPickerFoot}>
+              {deptPicked.length > 0 ? (
+                <button type="button" className={styles.linkBtn} onClick={clearDepartments}>
+                  Show all departments
+                </button>
+              ) : (
+                <span />
+              )}
+              <button type="button" className={styles.linkBtn} onClick={() => setDeptOpen(false)}>
+                Done
+              </button>
+            </div>
+          </div>
+        )}
+        {/* Clearing never depends on opening the panel: with a filter on, the line says so and clears it. */}
+        {activeFilters > 0 && (
+          <div className={styles.filterLine}>
+            <span>
+              {activeFilters} {activeFilters === 1 ? 'filter' : 'filters'} applied
+            </span>
+            <button type="button" className={styles.linkBtn} onClick={() => setFilters([])}>
+              Clear
             </button>
           </div>
-          <p className={styles.dragHint}>Drag a person onto a desk, locker, or parking stall to assign it.</p>
-        </div>
-        <div className={styles.peopleBody}>
+        )}
+        {assignOn && <p className={styles.dragHint}>Drag a person onto a desk, locker, or parking stall to assign it.</p>}
+      </div>
+      {/* While the Filter panel is open it takes the list's place in the layout, rather than
+          covering it: laid over the list, it was only as tall as the list, and a filter that left
+          one person showed the panel's search alone, with Clear all and Apply out of reach. */}
+      <div className={styles.peopleBody}>
+        {!(filterOpen && filterFields) && (
           <div className={styles.peopleList}>
-            {((state.loading && state.employees.length === 0) || (activeFilters > 0 && peopleLoading)) && <SkeletonRows rows={6} avatar />}
+            {((state.loading && state.employees.length === 0) || peopleLoading) && <SkeletonRows rows={6} avatar />}
+            {/* The roster read at boot failed (or a search could not be made) and left no one to
+                list: say so, with Retry, rather than an empty panel. */}
+            {activeFilters === 0 && peopleLoadFailed && contacts.length === 0 && (
+              <div className={styles.listNote} role="alert">
+                <b>Couldn’t load people.</b>
+                <button type="button" className={styles.linkBtn} onClick={retryPeople}>
+                  Retry
+                </button>
+              </div>
+            )}
             {activeFilters > 0 && filterFailed && (
               <div className={styles.listNote}>
                 <b>Couldn’t filter people right now.</b>
@@ -224,16 +355,29 @@ export function AssignPanel() {
               // Mock demo ids look like "c1".."c14" and have no real record to open — only
               // real (numeric) employee ids from the real backend get a working summary-page link.
               const recordUrl = /^\d+$/.test(contact.id) ? facilioRecordUrl('employee', contact.id) : null;
+              // A click on the row shows their desk, stall or room on this plan, as a click on it
+              // would; their record opens from the icon at the end alone.
+              const space = spaceByPerson.get(contact.id) ?? null;
+              const showSpace = space ? () => actions.focusUnit(space.id, state.stage.w, state.stage.h) : undefined;
               return (
                 <div
                   key={contact.id}
                   className={styles.personRow}
-                  draggable
-                  onDragStart={(e) => onDragStart(e, contact.id, contact.name)}
-                  onDragEnd={onDragEnd}
-                  onClick={() => recordUrl && window.open(recordUrl, '_blank', 'noopener,noreferrer')}
-                  style={{ opacity: dragId === contact.id ? 0.45 : 1, cursor: recordUrl ? 'pointer' : 'grab' }}
-                  data-tip={recordUrl ? 'Open employee record' : undefined}
+                  // Dragging a person onto a desk IS assigning them, so without the right nothing drags.
+                  draggable={assignOn}
+                  onDragStart={assignOn ? (e) => onDragStart(e, contact.id, contact.name) : undefined}
+                  onDragEnd={assignOn ? onDragEnd : undefined}
+                  onClick={showSpace}
+                  // A row that shows a space is a button for the keyboard too. Enter on the record
+                  // icon inside it is the icon's own (activateOnKey ignores keys from children).
+                  role={showSpace ? 'button' : undefined}
+                  tabIndex={showSpace ? 0 : undefined}
+                  aria-label={space ? `Show ${personDisplayName(contact.name)}'s ${space.label} on the plan` : undefined}
+                  onKeyDown={showSpace ? activateOnKey(showSpace) : undefined}
+                  // Where a row can be dragged, it keeps the grab cue — the drag is what assigning
+                  // is, and a pointer hid it; a click still shows the space.
+                  style={{ opacity: dragId === contact.id ? 0.45 : 1, cursor: assignOn ? 'grab' : space ? 'pointer' : 'default' }}
+                  data-tip={space ? `Show ${space.label} on the plan` : undefined}
                 >
                   <span className={styles.avatar}>
                     {initials(contact.name)}
@@ -247,28 +391,39 @@ export function AssignPanel() {
                   </div>
                   {held.length > 0 && <span className={styles.heldBadge}>{held.join(', ')}</span>}
                   {recordUrl && (
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={styles.openIcon}>
-                      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                      <path d="M15 3h6v6M10 14L21 3" />
-                    </svg>
+                    <button
+                      type="button"
+                      className={styles.openBtn}
+                      aria-label={`Open ${personDisplayName(contact.name)}'s employee record`}
+                      data-tip="Open employee record"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        window.open(recordUrl, '_blank', 'noopener,noreferrer');
+                      }}
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={styles.openIcon}>
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                        <path d="M15 3h6v6M10 14L21 3" />
+                      </svg>
+                    </button>
                   )}
                 </div>
               );
             })}
           </div>
-          {filterOpen && filterFields && (
-            <PeopleFilterPanel
-              fields={filterFields}
-              applied={filters}
-              departmentChoices={departmentChoices}
-              onApply={(next) => {
-                setFilters(next);
-                setFilterOpen(false);
-              }}
-              onClose={() => setFilterOpen(false)}
-            />
-          )}
-        </div>
+        )}
+        {filterOpen && filterFields && (
+          <PeopleFilterPanel
+            fields={filterFields}
+            applied={filters}
+            departmentChoices={departmentChoices}
+            onApply={(next) => {
+              setFilters(next);
+              setFilterOpen(false);
+            }}
+            onClose={() => setFilterOpen(false)}
+          />
+        )}
       </div>
     </div>
   );

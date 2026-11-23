@@ -16,6 +16,11 @@ const DetailsIcon = (
 
 const MODE_LABEL: Record<string, string> = { edit: 'Edit view', assign: 'Assignment view', book: 'Booking view' };
 
+/** The panel's title: the plan's base view without the Assignment right is just the People list. */
+function panelTitle(mode: string, assignOn: boolean): string {
+  return mode === 'assign' && !assignOn ? 'People' : MODE_LABEL[mode];
+}
+
 export function DetailsPanel() {
   const { state } = useFloorplanData();
   const drag = usePanelDrag('details', PANEL_WIDTH);
@@ -28,7 +33,7 @@ export function DetailsPanel() {
         open={drag.open}
         width={PANEL_WIDTH}
         maxHeight={drag.maxH}
-        title={MODE_LABEL[state.mode]}
+        title={panelTitle(state.mode, state.planViews.assign)}
         icon={DetailsIcon}
         zIndex={41}
         onHeaderDown={drag.onHeaderDown}

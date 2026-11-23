@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
-import { floorMeta, isBookable, visibleUnits } from '../../state/selectors';
+import { canSee, floorMeta, isBookable, visibleUnits } from '../../state/selectors';
 import { isRoomLike } from '../../lib/types';
 import { fitView, fmtTime, polygonCentroid, zoomAt } from '../../lib/geometry';
 import type { ViewTransform } from '../../lib/geometry';
@@ -14,10 +14,15 @@ import { MobileSpacesSheet } from './MobileSpacesSheet';
 import { MobileMyBookings } from './MobileMyBookings';
 import { MobileDatePicker } from './MobileDatePicker';
 import { FloorplanSkeleton } from '../canvas/FloorplanSkeleton';
-import { markerStyle } from '../../lib/unitStatus';
+import { EmptyFloorArt } from '../primitives/EmptyFloorArt';
+import { parseISO } from '../primitives/Calendar';
+import { hasTemporarilyVacantDesk, markerStyle, moduleColor } from '../../lib/unitStatus';
 import { MARKER_ICONS } from '../canvas/markerIcons';
 import { contactName, myAssignedUnit } from '../../state/selectors';
 import { departmentDisplayName } from '../../lib/displayNames';
+import { responderRolesFor, respondersOnFloor, rolesOnFloor } from '../../lib/firstResponders';
+import { ResponderBadges, ResponderGlyph } from '../canvas/ResponderBadge';
+import type { ResponderRoleDef } from '../../lib/types';
 import { floorImageKey } from '../../lib/types';
 import type { Unit } from '../../lib/types';
 import styles from './MobileApp.module.css';
@@ -26,6 +31,18 @@ import styles from './MobileApp.module.css';
 interface MobileAppProps {
   mode: 'page' | 'docked' | 'fullscreen';
   onClose?: () => void;
+}
+
+/**
+ * The Facilio Builds phone app's bridge, when the page runs inside it: it asks `onBack` before it
+ * goes Back, and a `true` answer means the page handled it. Absent anywhere else.
+ */
+type ShellWindow = Window & { FacilioShell?: { onBack?: () => unknown } };
+
+/** The selected day at local midnight — never `new Date('YYYY-MM-DD')`, which is midnight UTC
+ *  and so the evening before anywhere west of Greenwich. */
+function dayOf(iso: string): Date {
+  return parseISO(iso) ?? new Date();
 }
 
 export function MobileApp({ mode, onClose }: MobileAppProps) {
@@ -39,20 +56,58 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
   const [dateOpen, setDateOpen] = useState(false);
   const myBookingsCount = state.bookings.filter((b) => b.by === state.bookBy).length;
 
+  /**
+   * Back in the Facilio Builds phone app closes what is open on top — the scanner, then a picker or
+   * sheet, then the space's own sheet — before it leaves the app, as Back does in a native one.
+   * Without it, Back with a sheet open left the app altogether. The handler is set once and reads
+   * what is open through this ref, so it always sees the current screen.
+   */
+  const closeTopRef = useRef<() => boolean>(() => false);
+  closeTopRef.current = () => {
+    if (qrOpen) setQrOpen(false);
+    else if (dateOpen) setDateOpen(false);
+    else if (state.mobTimePick) actions.setMobTimePick(null);
+    else if (state.mobFloorOpen) actions.setMobFloorOpen(false);
+    else if (myBookingsOpen) setMyBookingsOpen(false);
+    else if (spacesOpen) setSpacesOpen(false);
+    else if (state.mobSel) {
+      actions.setMobSel(null);
+      actions.setMobAssignEdit(false);
+    } else return false;
+    return true;
+  };
+  useEffect(() => {
+    // Outside the phone app there is no shell to answer, and nothing is set.
+    const shell = (window as ShellWindow).FacilioShell;
+    if (!shell) return;
+    const previous = shell.onBack;
+    const onBack = () => closeTopRef.current();
+    shell.onBack = onBack;
+    return () => {
+      if (shell.onBack === onBack) shell.onBack = previous;
+    };
+  }, []);
+
   const mobileUnits = visibleUnits(state);
   const rooms = mobileUnits.filter((u) => isRoomLike(u.type) && u.geom.kind === 'poly');
   const markers = mobileUnits.filter((u) => !isRoomLike(u.type) && u.geom.kind === 'point');
 
-  const legend =
-    state.mobileTab === 'assign'
+  const onFloorResponders = respondersOnFloor(state);
+  const legend: { label: string; color: string; glyph?: ResponderRoleDef }[] = [
+    ...(state.mobileTab === 'assign'
       ? [
-          { label: 'Free', color: 'var(--success-500)' },
-          { label: 'Assigned', color: 'var(--blue-500)' },
+          // The colours the markers are drawn in (Settings › Desks), so the key matches the plan.
+          { label: 'Vacant', color: moduleColor(state, 'workstation', 'free') },
+          ...(hasTemporarilyVacantDesk(state, mobileUnits) ? [{ label: 'Temporarily vacant', color: moduleColor(state, 'workstation', 'tempVacant') }] : []),
+          { label: 'Assigned', color: moduleColor(state, 'workstation', 'assigned') },
         ]
       : [
           { label: 'Available', color: 'var(--success-500)' },
           { label: 'Booked', color: 'var(--danger-500)' },
-        ];
+        ]),
+    // The badges the dots carry, keyed only for a role someone on this floor holds.
+    ...rolesOnFloor(onFloorResponders, state.responderRoles).map((r) => ({ label: r.name, color: r.color, glyph: r })),
+  ];
 
   const outerClass = mode === 'page' ? styles.page : mode === 'fullscreen' ? styles.fullscreen : styles.docked;
 
@@ -67,7 +122,7 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
             </svg>
             Mobile preview
           </span>
-          <button className={styles.chromeClose} onClick={onClose} data-tip="Close mobile preview">
+          <button type="button" className={styles.chromeClose} onClick={onClose} data-tip="Close mobile preview" aria-label="Close mobile preview">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d="M18 6L6 18M6 6l12 12" />
             </svg>
@@ -105,8 +160,10 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
                   Locate
                 </button>
               ) : (
-                <span className={styles.dateStatic}>{new Date(state.date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+                <span className={styles.dateStatic}>{dayOf(state.date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span>
               )}
+              {/* Your own bookings, from the calendar — so the Bookings right, as the web tab is. */}
+              {canSee(state, 'bookings') && (
               <button className={styles.qrBtn} onClick={() => setMyBookingsOpen(true)} data-tip="My bookings" aria-label="My bookings">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="3" y="4" width="18" height="17" rx="2" />
@@ -115,6 +172,7 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
                 </svg>
                 {myBookingsCount > 0 && <span className={styles.iconBadge}>{myBookingsCount}</span>}
               </button>
+              )}
               <button className={styles.qrBtn} onClick={() => setQrOpen(true)} data-tip="Scan a space QR" aria-label="Scan a space QR">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="3" y="3" width="7" height="7" rx="1" />
@@ -125,14 +183,17 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
               </button>
             </div>
 
-            <div className={styles.tabs}>
-              <button className={state.mobileTab === 'book' ? styles.tabActive : styles.tab} onClick={() => actions.setMobileTab('book')}>
-                Book
-              </button>
-              <button className={state.mobileTab === 'assign' ? styles.tabActive : styles.tab} onClick={() => actions.setMobileTab('assign')}>
-                Assign
-              </button>
-            </div>
+            {/* Only when this role holds both views (Roles & access › Floorplans). */}
+            {state.planViews.book && state.planViews.assign && (
+              <div className={styles.tabs}>
+                <button className={state.mobileTab === 'book' ? styles.tabActive : styles.tab} onClick={() => actions.setMobileTab('book')}>
+                  Book
+                </button>
+                <button className={state.mobileTab === 'assign' ? styles.tabActive : styles.tab} onClick={() => actions.setMobileTab('assign')}>
+                  Assign
+                </button>
+              </div>
+            )}
 
             {state.mobileTab === 'book' && (
               <div className={styles.slotPicker}>
@@ -144,7 +205,7 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
                   <div className={styles.slotDateText}>
                     <span className={styles.slotFieldLabel}>Date</span>
                     <span className={styles.slotDateValue}>
-                      {new Date(state.date).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
+                      {dayOf(state.date).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
                     </span>
                   </div>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ink-400)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -168,13 +229,19 @@ export function MobileApp({ mode, onClose }: MobileAppProps) {
               <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
                 <FloorplanSkeleton />
               </div>
+            ) : !canSee(state, 'map') ? (
+              // The mobile app IS the floorplan — there is no other tab to send someone to.
+              <div className={styles.noPlan}>
+                <EmptyFloorArt size={140} />
+                <div className={styles.noPlanTitle}>Floorplans aren't available to your role</div>
+                <div className={styles.noPlanSub}>Ask your workplace admin if you need access.</div>
+              </div>
             ) : hasPlan ? (
               <MobileMap rooms={rooms} markers={markers} legend={legend} onOpenSpaces={() => setSpacesOpen(true)} />
             ) : (
+              // No edit hint: the mobile app has no edit mode, so there is nothing to point an editor at.
               <div className={styles.noPlan}>
-                <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="var(--ink-300)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M9 3L4 5v16l5-2 6 2 5-2V3l-5 2-6-2z M9 3v16M15 5v16" />
-                </svg>
+                <EmptyFloorArt size={140} />
                 <div className={styles.noPlanTitle}>No floorplan for this floor</div>
                 <div className={styles.noPlanSub}>Choose another floor from the switcher above.</div>
               </div>
@@ -208,7 +275,7 @@ function MobileMap({
 }: {
   rooms: Unit[];
   markers: Unit[];
-  legend: { label: string; color: string }[];
+  legend: { label: string; color: string; glyph?: ResponderRoleDef }[];
   onOpenSpaces: () => void;
 }) {
   const { state, actions } = useFloorplanData();
@@ -218,6 +285,9 @@ function MobileMap({
   viewRef.current = view;
   const gesture = useRef<{ mode: 'pan' | 'pinch'; startView: ViewTransform; sx: number; sy: number; startDist?: number; midX?: number; midY?: number } | null>(null);
   const lastTap = useRef(0);
+  /** Takes a mouse pan's window listeners off again — on release, or if the plan goes mid-pan. */
+  const detachPanRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => detachPanRef.current?.(), []);
 
   // Fit-to-card on mount and whenever the floor/plan changes; ResizeObserver keeps the initial
   // fit correct once the card actually has a measured size.
@@ -318,9 +388,12 @@ function MobileMap({
     function up() {
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
+      detachPanRef.current = null;
     }
+    detachPanRef.current?.();
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
+    detachPanRef.current = up;
   }
 
   function zoomBtn(factor: number) {
@@ -400,7 +473,10 @@ function MobileMap({
           return (
             <button
               key={m.id}
+              type="button"
               className={styles.marker}
+              // The label under the dot waits for the zoom; the name is always there to be read out.
+              aria-label={contact ? `${m.label}, ${contact}` : m.label}
               style={{
                 left: `${m.geom.x * 100}%`,
                 top: `${m.geom.y * 100}%`,
@@ -423,10 +499,13 @@ function MobileMap({
                   // still using the web's bg/border colors.
                   borderRadius: '999px',
                   boxShadow: selected ? '0 0 0 3px rgba(0,89,214,0.35)' : 'var(--shadow-xs)',
+                  position: 'relative',
                 }}
               >
                 {/* initials when assigned, otherwise the type/amenity glyph */}
                 {ms.occText ?? (ms.icon ? MARKER_ICONS[ms.icon] : null)}
+                {/* The same badges as the web plan: a first aider's cross, a warden's W. */}
+                <ResponderBadges roles={responderRolesFor(state, m)} chip={22} />
               </span>
               {showLabel && (
                 <span className={styles.markerLabel}>
@@ -448,14 +527,14 @@ function MobileMap({
       <div className={styles.legend}>
         {legend.map((l) => (
           <span key={l.label} className={styles.legendChip}>
-            <span className={styles.legendDot} style={{ background: l.color }} />
+            {l.glyph ? <ResponderGlyph role={l.glyph} size={12} /> : <span className={styles.legendDot} style={{ background: l.color }} />}
             {l.label}
           </span>
         ))}
       </div>
       <div className={styles.zoomBtns}>
-        <button className={styles.zoomBtn} onClick={() => zoomBtn(1.4)} data-tip="Zoom in">+</button>
-        <button className={styles.zoomBtn} onClick={() => zoomBtn(1 / 1.4)} data-tip="Zoom out">−</button>
+        <button type="button" className={styles.zoomBtn} onClick={() => zoomBtn(1.4)} data-tip="Zoom in" aria-label="Zoom in">+</button>
+        <button type="button" className={styles.zoomBtn} onClick={() => zoomBtn(1 / 1.4)} data-tip="Zoom out" aria-label="Zoom out">−</button>
       </div>
     </div>
   );

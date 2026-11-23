@@ -1,6 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { PrintViewer } from './PrintViewer';
+import { ErrorBoundary } from '../primitives/ErrorBoundary';
+import { useFloorplanData } from '../../state/FloorplanContext';
 
 type OpenPrint = (opts?: { print?: boolean }) => void;
 
@@ -27,6 +29,7 @@ function isPrintShortcut(e: KeyboardEvent): boolean {
  * key press and still prints the live page (see PrintSheet).
  */
 export function PrintController({ children }: { children: ReactNode }) {
+  const { actions } = useFloorplanData();
   const [open, setOpen] = useState(false);
   // Bumped for each request to print; 0 means "just show the viewer".
   const [printRequest, setPrintRequest] = useState(0);
@@ -52,13 +55,25 @@ export function PrintController({ children }: { children: ReactNode }) {
     <PrintCtx.Provider value={openPrint}>
       {children}
       {open && (
-        <PrintViewer
-          printRequest={printRequest}
-          onClose={() => {
+        // An overlay: failed, it closes and says so rather than leaving an empty dialog or a blank app.
+        // Mounted only while open, so the next open starts with a fresh boundary.
+        <ErrorBoundary
+          silent
+          label="the print preview"
+          onError={(message) => {
+            actions.showToast(`Something went wrong showing the print preview — ${message}`, 6000);
             setOpen(false);
             setPrintRequest(0);
           }}
-        />
+        >
+          <PrintViewer
+            printRequest={printRequest}
+            onClose={() => {
+              setOpen(false);
+              setPrintRequest(0);
+            }}
+          />
+        </ErrorBoundary>
       )}
     </PrintCtx.Provider>
   );

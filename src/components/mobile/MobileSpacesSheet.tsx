@@ -70,6 +70,7 @@ export function MobileSpacesSheet({ open, onClose }: { open: boolean; onClose: (
         <input
           className={styles.search}
           placeholder="Search spaces or rooms"
+          aria-label="Search spaces or rooms on this floor"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -102,8 +103,9 @@ function SpaceRow({ unit, onShow, onClose }: { unit: Unit; onShow: () => void; o
   const contactId = state.assignments[unit.id];
   const bookTab = state.mobileTab === 'book';
 
-  const canBook = bookTab && isBookable(unit) && status.key !== 'booked';
-  const canAssign = !bookTab && isAssignable(unit) && !contactId;
+  // Each only with its right (Roles & access › Floorplans).
+  const canBook = bookTab && state.planViews.book && isBookable(unit) && status.key !== 'booked';
+  const canAssign = !bookTab && state.planViews.assign && isAssignable(unit) && !contactId;
 
   return (
     <div className={styles.row}>

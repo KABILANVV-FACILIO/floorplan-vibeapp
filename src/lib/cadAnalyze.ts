@@ -1,5 +1,5 @@
 import type { UnitType } from './types';
-import { cadCanvasToLightSnapshot, cadWorkerUrls } from './cadPreview';
+import { cadCanvasToLightSnapshot, cadWorkerUrls, destroyViewer } from './cadPreview';
 
 /**
  * Opens a DWG/DXF once and produces BOTH the rendered preview snapshot and
@@ -71,8 +71,11 @@ export async function analyzeCadFile(file: File): Promise<CadAnalysis> {
   container.style.height = `${CANVAS_H}px`;
   document.body.appendChild(container);
 
+  // Destroyed however this ends: a file that fails to parse or draw used to leave the viewer, its
+  // workers and its graphics context running, and each failed try added another.
+  let manager: ReturnType<typeof AcApDocManager.createInstance> | null = null;
   try {
-    const manager = AcApDocManager.createInstance({
+    manager = AcApDocManager.createInstance({
       container,
       width: CANVAS_W,
       height: CANVAS_H,
@@ -109,10 +112,9 @@ export async function analyzeCadFile(file: File): Promise<CadAnalysis> {
     };
 
     const groups = collectGroups(manager.curDocument.database, toNorm);
-
-    await manager.destroy();
     return { previewUrl, groups };
   } finally {
+    await destroyViewer(manager);
     container.remove();
   }
 }

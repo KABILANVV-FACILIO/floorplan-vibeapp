@@ -24,13 +24,22 @@ function buildStamp(): string {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const apiTarget = env.VITE_FACILIO_API_BASE_URL;
+  // A shell variable beats every .env file, so a developer token exported in the shell reaches a
+  // production build too. lib/facilioApi reads it under the dev server only, so it is not bundled;
+  // say so, rather than leave someone wondering why the deployed app ignores it.
+  if (mode === 'production' && env.VITE_FACILIO_TOKEN) {
+    // eslint-disable-next-line no-console
+    console.warn('[build] VITE_FACILIO_TOKEN is set but is never bundled into a production build (dev server only).');
+  }
   return {
     define: { __BUILD_STAMP__: JSON.stringify(buildStamp()) },
     plugins: [react()],
     // `npm test` — jsdom so DOM behaviour (the tooltip layer, components, hooks) can be asserted.
     test: {
       environment: 'jsdom',
-      include: ['src/**/*.test.{ts,tsx}'],
+      include: ['src/**/*.test.{ts,tsx}', 'functions/**/*.test.ts'],
+      // The functions' runtime package is not installed here; their tests mock it (see the stub).
+      alias: { '@facilio/studio-functions': new URL('./functions/studioFunctionsStub.ts', import.meta.url).pathname },
     },
     server: {
       port: 9090,

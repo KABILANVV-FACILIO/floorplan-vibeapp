@@ -1,21 +1,74 @@
 /* The grey desk the page sits on, sized so header + page + footer fit the dialog's 88vh. */
-/* Pages stack top to bottom; the area scrolls through them, one page fitting in view at a time. */
+/* Pages stack top to bottom; the area scrolls through them, one page fitting in view at a time —
+   and both ways once zoomed past the fit. Positioned, so the frame's offsets are measured from it. */
 .area {
+  position: relative;
   display: flex;
   align-items: flex-start;
-  justify-content: center;
   box-sizing: border-box;
-  padding: 24px 0;
+  padding: 24px;
   height: min(calc(8.5in + 48px), calc(88vh - 140px));
   min-height: 240px;
   background: var(--ink-050);
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: auto;
 }
 
+/* Centred while it fits; past that the auto margins give way, so the left edge stays in reach. */
 .frame {
   position: relative;
   flex: none;
+  margin: 0 auto;
+}
+
+/* The grey area, with the zoom buttons over its corner — they stay put while the pages scroll. */
+.view {
+  position: relative;
+}
+.zoomBar {
+  position: absolute;
+  right: 22px;
+  bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: #fff;
+  border: 1px solid var(--ink-200);
+  border-radius: 8px;
+  box-shadow: var(--shadow-md);
+}
+.zoomBtn,
+.zoomPct {
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+.zoomBtn {
+  width: 28px;
+  display: grid;
+  place-items: center;
+  color: var(--ink-700);
+}
+.zoomPct {
+  min-width: 50px;
+  font: 500 12px/1 var(--font-sans);
+  color: var(--ink-900);
+  font-variant-numeric: tabular-nums;
+}
+.zoomBtn:hover:not(:disabled),
+.zoomPct:hover {
+  background: var(--ink-050);
+}
+.zoomBtn:disabled {
+  color: var(--ink-300);
+  cursor: default;
+}
+.zoomBtn:focus-visible,
+.zoomPct:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 
 .paper {
@@ -31,41 +84,7 @@
   color: var(--danger-600);
 }
 
-/* Plan: Current view | Whole floor — at the start of the footer, the actions at its end. */
-.scope {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
+/* Print settings at the start of the footer, the actions at its end. */
+.settingsBtn {
   margin-right: auto;
-  padding: 2px;
-  border: 1px solid var(--ink-200);
-  border-radius: 7px;
-  background: var(--ink-050);
-}
-.scopeLabel {
-  padding: 0 8px 0 6px;
-  font: 500 11px/1 var(--font-sans);
-  color: var(--ink-500);
-}
-.scopeBtn {
-  height: 26px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  font: 500 12px/1 var(--font-sans);
-  color: var(--ink-600);
-  cursor: pointer;
-}
-.scopeBtn:hover {
-  color: var(--ink-900);
-}
-.scopeBtn[aria-pressed='true'] {
-  background: #fff;
-  color: var(--blue-600);
-  box-shadow: 0 1px 2px rgba(40, 54, 72, 0.12);
-}
-.scopeBtn:focus-visible {
-  outline: none;
-  box-shadow: var(--shadow-focus);
 }

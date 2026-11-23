@@ -24,10 +24,15 @@ self.addEventListener('fetch', (event) => {
   const path = url.pathname.replace(/\/+$/, '') || '/';
   if (event.request.mode === 'navigate' && url.origin === self.location.origin && ROUTE_PATHS.has(path)) {
     event.respondWith(
-      fetch('/', { credentials: 'include' }).then((res) =>
-        // Force the HTML content type — never let an upstream octet-stream turn into a download.
-        new Response(res.body, { status: res.status, headers: { 'content-type': 'text/html; charset=utf-8' } })
-      )
+      fetch('/', { credentials: 'include' }).then((res) => {
+        // The root page's own headers (a CSP, a frame policy, caching) go with it to the deep link —
+        // only the content type is forced, so an upstream octet-stream never turns into a download.
+        const headers = new Headers(res.headers);
+        headers.set('content-type', 'text/html; charset=utf-8');
+        // The body handed on is already decoded: the wire's encoding and length no longer describe it.
+        for (const h of ['content-encoding', 'content-length', 'transfer-encoding']) headers.delete(h);
+        return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+      })
     );
   }
 });

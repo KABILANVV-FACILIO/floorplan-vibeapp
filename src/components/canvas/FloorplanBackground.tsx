@@ -24,6 +24,8 @@ export function FloorplanBackground({ imageUrl }: { imageUrl?: string }) {
     return (
       <img
         src={imageUrl}
+        // The drawing under the plan; what is on it is told by the markers and rooms over it.
+        alt=""
         draggable={false}
         // contain, not cover: uploads rarely match the frame's 1492×1054
         // aspect, and cover silently crops the overflow (a squarer plan lost

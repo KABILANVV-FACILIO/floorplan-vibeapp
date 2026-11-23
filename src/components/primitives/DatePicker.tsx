@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { orgNow } from '../../lib/orgTime';
 
@@ -7,6 +8,14 @@ import { orgNow } from '../../lib/orgTime';
  * showing the friendly date + a popup mini-calendar. min/max days render disabled, so the
  * booking window (e.g. "today .. one week") is VISIBLE instead of silently rejected — the
  * browser-default picker communicated none of that.
+ *
+ * It draws its own month grid rather than the shared `Calendar`: the datetime mode edits a draft
+ * beside HH / MM columns and lays the grid out as a phone sheet, which `Calendar` has no shape for.
+ *
+ * From the keyboard: the popup is portalled to <body>, outside any dialog it was opened from, so a
+ * dialog's Tab trap could never reach it. Opening it now moves the focus onto the selected day (or
+ * the first one that can be picked); Tab stays inside it, the arrow keys move between days, and
+ * closing it — a pick, Save, Escape — hands the focus back to the field.
  */
 export function DatePicker({
   value,
@@ -61,7 +70,13 @@ export function DatePicker({
   const [viewYear, setViewYear] = useState(selected.getFullYear());
   const [viewMonth, setViewMonth] = useState(selected.getMonth());
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
+  /** Closes the popup and puts the focus back on the field — for a close the keyboard can make. */
+  const closeToField = () => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
   // FLOATING placement (portal + fixed): inside a modal/panel an absolutely-positioned popup
   // pushed the form down / clipped against the scroll edge — this overlays instead, flipping
   // above the trigger when the viewport bottom is close.
@@ -100,6 +115,19 @@ export function DatePicker({
     });
   }, [placed]);
 
+  // Into the popup as it opens: the selected day, else the first day that can be picked, else
+  // anything in it that takes the focus.
+  useLayoutEffect(() => {
+    if (!placed) return;
+    const pop = popRef.current;
+    if (!pop) return;
+    const target =
+      pop.querySelector<HTMLElement>('[data-day][aria-pressed="true"]:not(:disabled)') ??
+      pop.querySelector<HTMLElement>('[data-day]:not(:disabled)') ??
+      pop.querySelector<HTMLElement>('button:not(:disabled)');
+    target?.focus();
+  }, [placed]);
+
   // Re-anchor the visible month whenever the popup opens on a new value.
   useEffect(() => {
     if (open) {
@@ -116,14 +144,18 @@ export function DatePicker({
       if (rootRef.current?.contains(t) || popRef.current?.contains(t)) return;
       setOpen(false);
     };
+    // Capture phase, stopped here: Escape closes the picker, not the booking form around it.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      setOpen(false);
+      triggerRef.current?.focus();
     };
     document.addEventListener('mousedown', onDoc);
-    document.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', onKey, true);
     return () => {
       document.removeEventListener('mousedown', onDoc);
-      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('keydown', onKey, true);
     };
   }, [open]);
 
@@ -167,14 +199,49 @@ export function DatePicker({
       if (draftIso !== value) onChange(draftIso);
       if (draftMin !== minutes) onMinutesChange?.(draftMin);
     }
-    setOpen(false);
+    closeToField();
   };
+
+  /**
+   * Tab cycles inside the popup (a dialog the keyboard can't otherwise get back out of, being
+   * outside the dialog it was opened from), and the arrow keys walk the days: a day either side,
+   * a week up or down. Stopped here, so the dialog behind never also acts on the key.
+   */
+  function onPopKeyDown(e: ReactKeyboardEvent) {
+    const pop = popRef.current;
+    if (!pop) return;
+    if (e.key === 'Tab') {
+      e.stopPropagation();
+      const items = [...pop.querySelectorAll<HTMLElement>('button:not(:disabled)')];
+      if (!items.length) return;
+      const at = items.indexOf(document.activeElement as HTMLElement);
+      if (e.shiftKey && at <= 0) {
+        e.preventDefault();
+        items[items.length - 1].focus();
+      } else if (!e.shiftKey && at === items.length - 1) {
+        e.preventDefault();
+        items[0].focus();
+      }
+      return;
+    }
+    const step = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : e.key === 'ArrowUp' ? -7 : e.key === 'ArrowDown' ? 7 : 0;
+    const day = (document.activeElement as HTMLElement | null)?.dataset?.day;
+    if (!step || !day) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const days = [...pop.querySelectorAll<HTMLButtonElement>('[data-day]')];
+    const next = days[days.findIndex((b) => b.dataset.day === day) + step];
+    if (next && !next.disabled) next.focus();
+  }
 
   return (
     <div ref={rootRef} style={{ position: 'relative', ...(fullWidth ? { width: '100%' } : {}) }}>
       <button
+        ref={triggerRef}
         type="button"
         aria-label={ariaLabel ?? 'Date'}
+        aria-haspopup="dialog"
+        aria-expanded={open}
         disabled={disabled}
         onClick={() => {
           if (disabled) return;
@@ -216,10 +283,13 @@ export function DatePicker({
         <>
         {pos.narrow && (
           // Sheet backdrop: a tap outside closes, like the floating popup's outside-click.
-          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 319, background: 'rgba(40,54,72,0.32)' }} />
+          <div onClick={closeToField} style={{ position: 'fixed', inset: 0, zIndex: 319, background: 'rgba(40,54,72,0.32)' }} />
         )}
         <div
           ref={popRef}
+          role="dialog"
+          aria-label={`Choose ${(ariaLabel ?? 'date').toLowerCase()}`}
+          onKeyDown={onPopKeyDown}
           style={
             pos.narrow
               ? {
@@ -279,6 +349,10 @@ export function DatePicker({
                   key={i}
                   type="button"
                   disabled={!ok}
+                  data-day={iso}
+                  aria-pressed={isSel}
+                  // The whole date read out — "14" alone says nothing of which month it is in.
+                  aria-label={parseISO(iso)!.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
                   onClick={() => {
                     if (isDateTime) {
                       setDraftIso(iso);
@@ -286,7 +360,7 @@ export function DatePicker({
                       return;
                     }
                     onChange(iso);
-                    setOpen(false);
+                    closeToField();
                   }}
                   style={{
                     width: pos.narrow ? '100%' : 32,

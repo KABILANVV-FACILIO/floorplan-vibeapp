@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { CARD_PAD_X, CHIP_MAX_SCALE, CHIP_PX, DEFAULT_LABEL_TYPOGRAPHY, cardOffset, chipScreenSize, planMarkerLabels, planRoomLabels, scaleTypography, typographyOf } from './labelLayout';
+import { CARD_PAD_X, CHIP_FOOTPRINT_OF_PITCH, CHIP_MAX_SCALE, CHIP_MIN_PX, CHIP_PX, DEFAULT_LABEL_TYPOGRAPHY, cardHeight, cardOffset, chipScreenSize, chipSizeNear, longerLineShare, planMarkerLabels, planRoomLabels, scaleTypography, typographyOf } from './labelLayout';
 import type { LabelPlacement, MarkerLabelInput, RoomLabelInput } from './labelLayout';
+import { chipPitch, deskPitch, nearestDistances } from './printAreas';
 
 /**
  * Labels used to be gated on the zoom alone, which says nothing about whether a label fits: a bank
@@ -89,11 +90,36 @@ describe('a card is drawn only where it fits', () => {
 });
 
 describe('the card fits its text', () => {
-  it('runs as wide as a long name needs, up to 180px', () => {
+  it('sets a long name a size down on two lines, the card about as wide as the code instead of 180px', () => {
     const plan = planMarkerLabels([desk('E-1-WS77', 0.5, 0.5, { sub: 'Abdulrahman Abdullah Khalaf AlAnazi', dept: 'Finance' })], opts);
     const p = plan.get('E-1-WS77')!;
-    expect(p.w).toBeGreaterThan(120);
-    expect(p.w).toBeLessThanOrEqual(180);
+    expect(p).toMatchObject({ sub: true, subSmall: true, subLines: 2 });
+    expect(p.w).toBeLessThan(120);
+    expect(p.h).toBe(cardHeight(true, 1, DEFAULT_LABEL_TYPOGRAPHY, 2, true));
+  });
+
+  it("keeps a name that fits at its own size, on one line — a short code doesn't make it long", () => {
+    const p = planMarkerLabels([desk('d2', 0.5, 0.5, { sub: 'Amrithya', dept: 'Project Implementation' })], opts).get('d2')!;
+    expect(p.subSmall).toBeUndefined();
+    expect(p.subLines).toBeUndefined();
+  });
+
+  it('keeps a medium name at full size on one line in a narrow card, with no blank line reserved under it', () => {
+    // Boxed in so that only the 100px card fits below the chip: the holder (105px, full size — not
+    // long enough to be set a size down) is wider than that card's text. It is cut with "…" on one
+    // line; a second line used to be reserved under it and left blank.
+    const at = (dx: number, dy: number, id: string) => desk(id, 0.5 + dx / 1000, 0.5 + dy / 1000);
+    const inputs = [desk('A', 0.5, 0.5, { sub: 'Holder', nameW: 30, subW: 105 }), at(64, 29, 'r'), at(-64, 29, 'l'), at(0, -40, 'u'), at(40, 0, 'e'), at(-40, 0, 'w')];
+    const p = planMarkerLabels(inputs, opts).get('A')!;
+    expect(p).toMatchObject({ name: true, sub: true, w: 100 });
+    expect(p.subSmall).toBeUndefined();
+    expect(p.subLines).toBeUndefined();
+    expect(p.h).toBe(cardHeight(true, 0, DEFAULT_LABEL_TYPOGRAPHY));
+  });
+
+  it('breaks a long name at the word that evens its two lines most', () => {
+    expect(longerLineShare('Mariam Rashed Ali Belwatir AlMazrouei')).toBeCloseTo(19 / 37, 5); // "Mariam Rashed Ali" / "Belwatir AlMazrouei"
+    expect(longerLineShare('Amrithya')).toBe(1);
   });
 
   it('runs a long department to a second line rather than cutting it', () => {
@@ -286,8 +312,8 @@ describe('the type the labels are drawn in', () => {
 
 describe('chipScreenSize', () => {
   it('holds the readable size on a whole-floor view, tracks the drawing zooming in, and stops at the cap', () => {
-    const footprint = 20; // plan px — a share of this floor's desk pitch
-    expect(chipScreenSize(0.4, footprint)).toBe(CHIP_PX); // 8px would be a speck
+    const footprint = 20; // plan px — a share of this floor's desk pitch (44 plan px)
+    expect(chipScreenSize(0.7, footprint)).toBe(CHIP_PX); // 14px would be a speck; 31px apart, 24 fits
     expect(chipScreenSize(1.2, footprint)).toBe(CHIP_PX); // exactly the floor
     expect(chipScreenSize(2, footprint)).toBe(40);
     expect(chipScreenSize(3, footprint)).toBe(60);
@@ -301,6 +327,16 @@ describe('chipScreenSize', () => {
       expect(s).toBeGreaterThanOrEqual(last);
       last = s;
     }
+  });
+
+  it('gives way where the spaces sit closer than a chip, so neighbours never cover each other', () => {
+    // A car park on a whole-floor view: stalls 16px apart on screen.
+    const footprint = 40 * CHIP_FOOTPRINT_OF_PITCH;
+    const size = chipScreenSize(0.4, footprint);
+    expect(size).toBeLessThan(16);
+    expect(size).toBeGreaterThan(12);
+    // And never below a mark you can still see and click.
+    expect(chipScreenSize(0.05, footprint)).toBe(CHIP_MIN_PX);
   });
 
   it('is the constant size when the floor has no pitch to speak of', () => {
@@ -343,5 +379,104 @@ describe('the labels grow with the drawing', () => {
     expect(big.fontPx).toBe(22);
     expect(big.h).toBeGreaterThan(base.h);
     expect(big.w).toBeGreaterThan(base.w);
+  });
+});
+
+describe('chipSizeNear: a few desks set close on a sparse floor', () => {
+  // A small test floor: spaces some 300 plan px apart, and three desks set 40 px apart (ENEC, 2026-11-17).
+  const pts = [
+    { id: 'a', x: 100, y: 100 }, { id: 'b', x: 400, y: 120 }, { id: 'c', x: 700, y: 90 }, { id: 'd', x: 120, y: 420 },
+    { id: 'e', x: 720, y: 430 }, { id: 'f', x: 420, y: 700 }, { id: 'g', x: 800, y: 720 },
+    { id: 'k1', x: 400, y: 400 }, { id: 'k2', x: 400, y: 440 }, { id: 'k3', x: 400, y: 480 },
+  ];
+  const zoom = 0.86;
+  const nearest = nearestDistances(pts);
+  const size = chipScreenSize(zoom, deskPitch(pts) * CHIP_FOOTPRINT_OF_PITCH);
+
+  it('draws the floor\'s chip bigger than the gap between the close three — the overlap that was reported', () => {
+    expect(size).toBeGreaterThan(40 * zoom);
+  });
+
+  it('shrinks just those three to under their gap, and leaves every other chip the floor\'s size', () => {
+    for (const id of ['k1', 'k2', 'k3']) {
+      const own = chipSizeNear(size, zoom, nearest.get(id));
+      expect(own).toBeLessThan(40 * zoom);
+      expect(own).toBeGreaterThanOrEqual(CHIP_MIN_PX);
+    }
+    for (const id of ['a', 'b', 'c', 'd', 'e', 'f', 'g']) expect(chipSizeNear(size, zoom, nearest.get(id))).toBe(size);
+  });
+
+  it('leaves a chip that clears its neighbour alone, however much nearer than the floor\'s spacing', () => {
+    expect(chipSizeNear(30, 1, 31)).toBe(30);
+    expect(chipSizeNear(30, 1, 29)).toBe(29 * 0.9);
+  });
+
+  it('never grows a chip, and keeps a mark you can click however close two desks sit', () => {
+    expect(chipSizeNear(20, 1, 500)).toBe(20);
+    expect(chipSizeNear(40, 1, 2)).toBe(CHIP_MIN_PX);
+    expect(chipSizeNear(40, 1, undefined)).toBe(40);
+  });
+});
+
+describe('chipPitch: a few spaces far apart and a tight column (Test Floor 1)', () => {
+  // ENEC's Test Floor 1, read off its print preview (2026-11-17): four spaces 200–300 plan px from
+  // anything, and four desks in a column 50 px apart. Its median gap is the far one.
+  const pts = [
+    { id: 'test4', x: 213, y: 331 }, { id: 'hot', x: 508, y: 425 }, { id: 'test', x: 823, y: 365 }, { id: 'test1', x: 198, y: 792 },
+    { id: 'c1', x: 530, y: 680 }, { id: 'c2', x: 530, y: 735 }, { id: 'c3', x: 530, y: 785 }, { id: 'c4', x: 530, y: 835 },
+  ];
+  const column = ['c1', 'c2', 'c3', 'c4'];
+  const nearest = nearestDistances(pts);
+  const sizeAt = (zoom: number) => chipScreenSize(zoom, chipPitch(pts) * CHIP_FOOTPRINT_OF_PITCH);
+
+  it('sized by the median, the chips at 53% were over twice the column\'s gap — the overlap that was reported', () => {
+    expect(deskPitch(pts)).toBeGreaterThan(200);
+    expect(chipScreenSize(0.53, deskPitch(pts) * CHIP_FOOTPRINT_OF_PITCH)).toBeGreaterThan(2 * 50 * 0.53);
+  });
+
+  it('follows the column instead: a little past its 50px, not the far gap', () => {
+    expect(chipPitch(pts)).toBeCloseTo(50 * 1.25, 5);
+  });
+
+  it('draws every chip 24px zoomed out, as the print does, with room between the column\'s', () => {
+    expect(sizeAt(0.53)).toBe(CHIP_PX);
+    for (const id of column) expect(chipSizeNear(sizeAt(0.53), 0.53, nearest.get(id))).toBe(CHIP_PX);
+  });
+
+  it('grows with the drawing zoomed in, the column still clear of each other, up to the most a chip grows', () => {
+    expect(sizeAt(1.36)).toBeGreaterThan(CHIP_PX);
+    expect(sizeAt(1.36)).toBeLessThan(50 * 1.36 * 0.6);
+    expect(sizeAt(2.82)).toBe(CHIP_PX * CHIP_MAX_SCALE);
+  });
+
+  it('gives an evenly laid floor its median, as before', () => {
+    // Rows and columns 28px apart, each desk a few px off its spot, as a drawn floor is.
+    const grid = Array.from({ length: 60 }, (_, i) => {
+      const [c, r] = [i % 10, Math.floor(i / 10)];
+      return { id: `g${i}`, x: c * 28 + ((c * 7 + r * 3) % 9) - 4, y: r * 28 + ((c * 5 + r * 2) % 9) - 4 };
+    });
+    const nn = [...nearestDistances(grid).values()].sort((a, b) => a - b);
+    expect(nn[Math.floor(nn.length / 4)]).toBeLessThan(0.9 * nn[Math.floor(nn.length / 2)]);
+    expect(chipPitch(grid)).toBe(deskPitch(grid));
+  });
+
+  it('is not moved by one stray pair: a quarter of the floor must sit that close', () => {
+    const floor = Array.from({ length: 10 }, (_, i) => ({ id: `s${i}`, x: (i % 5) * 200, y: Math.floor(i / 5) * 200 }));
+    floor.push({ id: 'p1', x: 400, y: 600 }, { id: 'p2', x: 410, y: 600 });
+    expect(chipPitch(floor)).toBe(deskPitch(floor));
+  });
+});
+
+describe('the desk spacing, worked out once', () => {
+  it('chipPitch gives the same answer from nearest distances already worked out as from the points', () => {
+    const pts = [
+      { id: 'a', x: 0, y: 0 },
+      { id: 'b', x: 50, y: 0 },
+      { id: 'c', x: 50, y: 60 },
+      { id: 'd', x: 300, y: 300 },
+      { id: 'e', x: 330, y: 300 },
+    ];
+    expect(chipPitch(pts, nearestDistances(pts))).toBe(chipPitch(pts));
+    expect(chipPitch(pts.slice(0, 1), new Map())).toBe(chipPitch(pts.slice(0, 1)));
   });
 });

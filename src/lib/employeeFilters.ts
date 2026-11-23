@@ -37,13 +37,51 @@ export interface AppliedFilter {
   field: string;
   operatorId: number;
   values: string[];
+  /**
+   * The names of the picked records (lookups), so a reopened panel says "Omar Al Marri" rather than
+   * an id. Display only — never sent.
+   */
+  labels?: Record<string, string>;
 }
-
-/** Shown first, in this order, when the org has them — the ones people filter by. */
-const PINNED = ['department', 'designation', 'hrmsEmployeeId'];
 
 const TEXT_TYPES = new Set(['STRING', 'BIG_STRING', 'LARGE_TEXT', 'EMAIL', 'PHONE', 'URL_FIELD']);
 const LOOKUP_TYPES = new Set(['LOOKUP', 'MULTI_LOOKUP']);
+
+const op = (operatorId: number, label: string, valueNeeded = true): FilterOperatorDef => ({ operatorId, label, valueNeeded });
+
+/**
+ * The operators each data type answers to, as the org lists them (`criteria-operators`, read from
+ * ENEC CAFM on 2026-11-08), default first. The fields list does NOT carry these: a field's own
+ * `operators` are only its extras — Line Manager lists just "Logged In User", and Department,
+ * Designation and HRMS Employee ID list none. Reading only the field's own list dropped those
+ * three from the panel and left Line Manager with no way to pick a manager.
+ *
+ * A curated subset: "My Teams" and "associated" need editors this panel does not have.
+ */
+const TYPE_OPERATORS: Record<string, FilterOperatorDef[]> = {
+  STRING: [op(5, 'contains'), op(3, 'is'), op(4, "isn't"), op(7, 'starts with'), op(1, 'is empty', false), op(2, 'is not empty', false)],
+  LOOKUP: [op(36, 'is'), op(37, "isn't"), op(1, 'is empty', false), op(2, 'is not empty', false)],
+  MULTI_LOOKUP: [op(90, 'contains'), op(91, "doesn't contain"), op(104, 'is empty', false), op(105, 'is not empty', false)],
+  BOOLEAN: [op(15, 'is')],
+  ENUM: [op(54, 'is'), op(55, "isn't"), op(1, 'is empty', false), op(2, 'is not empty', false)],
+  SYSTEM_ENUM: [op(54, 'is'), op(55, "isn't"), op(1, 'is empty', false), op(2, 'is not empty', false)],
+};
+for (const t of TEXT_TYPES) TYPE_OPERATORS[t] ??= TYPE_OPERATORS.STRING;
+
+/** Operators that need an editor this panel has no form of (a space tree, a team picker, a relation). */
+const UNSUPPORTED_OPERATORS = new Set([38, 142, 144, 145]);
+
+/**
+ * Lookups whose records cannot be listed to pick from — the user directory, addresses, the space
+ * tree, workflow states — and the employee module's field-service and system fields, which say
+ * nothing about where anyone sits. The org's custom fields are never hidden.
+ */
+const UNLISTABLE_LOOKUPS = new Set(['users', 'location', 'basespace', 'space', 'ticketstatus']);
+const HIDDEN_FIELDS = new Set([
+  'avatarColor', 'currentLocation', 'trackGeoLocation', 'checkedIn', 'dispatchable', 'labour', 'isLabour', 'peopleType',
+  'language', 'timezone', 'territories', 'startLocation', 'endLocation', 'sysCreatedBy', 'sysModifiedBy', 'locatedSpace',
+  'address', 'moduleState', 'approvalStatus',
+]);
 
 /**
  * The org's filterable employee fields, reduced to the ones the panel can edit.
@@ -55,39 +93,81 @@ const LOOKUP_TYPES = new Set(['LOOKUP', 'MULTI_LOOKUP']);
 export function mapFilterFields(raw: unknown): FilterFieldDef[] {
   if (!Array.isArray(raw)) return [];
   const out: FilterFieldDef[] = [];
+  const seen = new Set<string>();
   for (const f of raw as any[]) {
     const name = typeof f?.name === 'string' ? f.name : null;
-    if (!name || name === 'name') continue;
+    if (!name || name === 'name' || HIDDEN_FIELDS.has(name) || seen.has(name)) continue;
     const dataType = String(f.dataType ?? '').toUpperCase();
     const options = Array.isArray(f.options) && f.options.length
       ? f.options.map((o: any) => ({ value: String(o.value ?? o.id ?? ''), label: String(o.label ?? o.value ?? '') })).filter((o: { value: string }) => o.value !== '')
       : undefined;
-    const lookupModule = typeof f.lookupModule?.name === 'string' ? f.lookupModule.name : undefined;
+    const lookupModule =
+      typeof f.lookupModule?.name === 'string' ? f.lookupModule.name : typeof f.lookupModule === 'string' ? f.lookupModule : typeof f.lookupModuleName === 'string' ? f.lookupModuleName : undefined;
 
     let kind: FilterFieldKind | null = null;
     if (options?.length) kind = 'options';
-    else if (LOOKUP_TYPES.has(dataType) && lookupModule && !f.isSpecialType) kind = 'lookup';
+    else if (LOOKUP_TYPES.has(dataType) && lookupModule && !f.isSpecialType && !UNLISTABLE_LOOKUPS.has(lookupModule)) kind = 'lookup';
     else if (TEXT_TYPES.has(dataType)) kind = 'text';
     if (!kind) continue;
 
-    const operators: FilterOperatorDef[] = (Array.isArray(f.operators) ? f.operators : [])
+    // The type's own operators first, then whatever the field adds (Line Manager's "Logged In
+    // User"), each id once. An org whose field list does carry the full set loses nothing.
+    const byId = new Map<number, FilterOperatorDef>();
+    for (const o of TYPE_OPERATORS[dataType] ?? (kind === 'options' ? TYPE_OPERATORS.ENUM : [])) byId.set(o.operatorId, o);
+    for (const o of Array.isArray(f.operators) ? f.operators : []) {
       // A "special" operator (a lookup's sub-criteria, say) needs an editor this panel doesn't have.
-      .filter((o: any) => typeof o?.operatorId === 'number' && !o.specialOperator && !o.isSpecialOperator)
-      .map((o: any) => ({
-        operatorId: o.operatorId,
-        label: String(o.displayName ?? o.operator ?? o.operatorId),
-        valueNeeded: o.valueNeeded !== false,
-      }));
+      if (typeof o?.operatorId !== 'number' || o.specialOperator || o.isSpecialOperator || UNSUPPORTED_OPERATORS.has(o.operatorId)) continue;
+      if (!byId.has(o.operatorId)) byId.set(o.operatorId, op(o.operatorId, String(o.displayName ?? o.operator ?? o.operatorId), o.valueNeeded !== false));
+    }
+    const operators = [...byId.values()];
     if (!operators.length) continue;
 
+    seen.add(name);
     out.push({ name, label: String(f.displayName ?? name), kind, operators, options, lookupModule });
   }
-  return out.sort((a, b) => rank(a.name) - rank(b.name) || a.label.localeCompare(b.label));
+  const idField = employeeIdField(out);
+  const rank = (f: FilterFieldDef) => {
+    if (f.name === 'department' || (f.kind === 'lookup' && f.lookupModule === 'department')) return 0;
+    if (isLineManager(f)) return 1;
+    if (f.name === 'designation') return 2;
+    if (f.name === idField) return 3;
+    if (f.kind === 'lookup' && f.lookupModule === 'site') return 4;
+    if (f.kind === 'lookup' && f.lookupModule === 'desks') return 5;
+    return 6;
+  };
+  return out.sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label));
 }
 
-function rank(name: string): number {
-  const i = PINNED.indexOf(name);
-  return i < 0 ? PINNED.length : i;
+/** The org's line-manager lookup, by what it is called — its API name is the org's own. */
+export function isLineManager(f: FilterFieldDef): boolean {
+  return f.kind === 'lookup' && /line\s*manager|reporting\s*(to|manager)/i.test(f.label);
+}
+
+/**
+ * The org's HRMS Employee ID field. A custom field, so its API name is the org's own: ENEC's is
+ * `hrms_employee_id_employee`, and asking for any other name fails the whole request ("Field
+ * 'hrmsEmployeeId' does not exist"). Found by its label; "Line Manager HRMS Id" is someone else's.
+ */
+export function employeeIdField(fields: FilterFieldDef[]): string | null {
+  const text = fields.filter((f) => f.kind === 'text' && !/manager/i.test(f.label) && !/manager/i.test(f.name));
+  const hit =
+    text.find((f) => /hrms/i.test(f.label) && /(employee|emp)\s*(id|no|number)/i.test(f.label)) ??
+    text.find((f) => /^hrms_?(employee|emp)_?id/i.test(f.name));
+  return hit?.name ?? null;
+}
+
+/**
+ * Where a lookup's choices are searched. A people lookup (Line Manager) points at `people`, which
+ * also holds every tenant and vendor contact; the people it names are employees (ENEC's managers
+ * are employee records, same id), so it is searched in `employee`.
+ */
+export function lookupSearchModule(f: FilterFieldDef): string | undefined {
+  return f.lookupModule === 'people' ? 'employee' : f.lookupModule;
+}
+
+/** Too many records to tick from a first page: the choices come from searching the org. */
+export function searchFirst(f: FilterFieldDef): boolean {
+  return f.lookupModule === 'people' || f.lookupModule === 'employee';
 }
 
 /** A ticked field with nothing to filter by yet (no text, no value picked) is not sent. */
@@ -107,22 +187,25 @@ export function completeFilters(applied: AppliedFilter[], fields: FilterFieldDef
  * Contains, on name OR email OR HRMS ID, in ONE clause. V3 ANDs the top-level keys of `filters`,
  * so the other fields hang off `name` as `orFilters` and the backend ORs them into the same group
  * (FilterUtil.setConditions). Operator 5 is StringOperators.CONTAINS.
+ *
+ * The HRMS field goes in only under the org's own name (`employeeIdField`); unknown, the search
+ * is name OR email, both standard fields — an unknown field fails the whole request.
  */
-export function searchClause(query: string): Record<string, unknown> | null {
+export function searchClause(query: string, idField?: string | null): Record<string, unknown> | null {
   const q = query.trim();
   if (!q) return null;
   const clause = { operatorId: 5, value: [q] };
-  return {
-    name: { ...clause, orFilters: [{ field: 'email', ...clause }, { field: 'hrmsEmployeeId', ...clause }] },
-  };
+  const orFilters: Record<string, unknown>[] = [{ field: 'email', ...clause }];
+  if (idField) orFilters.push({ field: idField, ...clause });
+  return { name: { ...clause, orFilters } };
 }
 
 /**
  * The whole `filters` payload: the search clause plus one top-level key per ticked field. Top-level
  * keys AND together (search AND department AND …); several values on one field OR together.
  */
-export function buildEmployeeFilters(query: string, applied: AppliedFilter[], fields: FilterFieldDef[]): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...(searchClause(query) ?? {}) };
+export function buildEmployeeFilters(query: string, applied: AppliedFilter[], fields: FilterFieldDef[], idField: string | null = employeeIdField(fields)): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...(searchClause(query, idField) ?? {}) };
   for (const f of completeFilters(applied, fields)) {
     if (f.field === 'name') continue; // owned by the search; see mapFilterFields
     const def = fields.find((d) => d.name === f.field)!;

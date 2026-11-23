@@ -68,4 +68,11 @@
     max-height: 92vh;
     border-radius: 16px 16px 0 0;
   }
+  /* A phone zooms the whole page into any field under 16px when it takes the focus — the booking
+     form's Name, Description and attendee count included. The page no longer forbids zooming
+     (index.html), so the fields are simply big enough not to trigger it. */
+  .card input:not([type='checkbox']):not([type='radio']),
+  .card textarea {
+    font-size: 16px;
+  }
 }

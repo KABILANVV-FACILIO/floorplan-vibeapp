@@ -1,10 +1,12 @@
 import { memo } from 'react';
-import type { CSSProperties, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from 'react';
+import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react';
 import type { Unit, PointGeom } from '../../lib/types';
 import type { MarkerModel } from '../../lib/markerModel';
 import type { LabelPlacement, LabelPos, LabelTypography } from '../../lib/labelLayout';
-import { CARD_GAP, CARD_PAD_X, CARD_PAD_Y, DEFAULT_LABEL_TYPOGRAPHY, HALO_TEXT, cardOffset } from '../../lib/labelLayout';
+import { CARD_GAP, CARD_PAD_X, CARD_PAD_Y, DEFAULT_LABEL_TYPOGRAPHY, HALO_TEXT, cardOffset, longHolderType } from '../../lib/labelLayout';
 import { MARKER_ICONS as ICONS } from './markerIcons';
+import { activateOnKey } from '../../lib/keyboard';
+import { ResponderBadges } from './ResponderBadge';
 import styles from './Marker.module.css';
 
 /**
@@ -13,15 +15,20 @@ import styles from './Marker.module.css';
  * decides. One stable object for every marker, so a change of mode never re-renders them for it.
  */
 export interface MarkerHandlers {
-  onClick(unit: Unit, e: ReactMouseEvent): void;
+  /** A click, or Enter / Space on a marker that has the keyboard focus. */
+  onClick(unit: Unit, e: ReactMouseEvent | ReactKeyboardEvent): void;
   onMouseDown(unit: Unit, e: ReactMouseEvent): void;
   onDragOver(unit: Unit, e: ReactDragEvent): void;
   onDragLeave(unit: Unit): void;
   onDrop(unit: Unit, e: ReactDragEvent): void;
 }
 
-/** The tick: a short line from the chip's edge to the text, across the gap, per side. */
-const TICK_COLOR = 'var(--ink-300)';
+/**
+ * The tick: a short line from the chip's edge to the text, across the gap, per side. Mid grey, so
+ * it reads over the drawing's own grey lines (the lighter --ink-300 was lost among them) — on
+ * screen and on paper alike, which draw the same marker.
+ */
+const TICK_COLOR = 'var(--ink-500)';
 const TICK: Record<LabelPos, CSSProperties> = {
   below: { top: -CARD_GAP, left: '50%', width: 1, height: CARD_GAP, marginLeft: -0.5 },
   above: { bottom: -CARD_GAP, left: '50%', width: 1, height: CARD_GAP, marginLeft: -0.5 },
@@ -47,6 +54,7 @@ export const Marker = memo(function Marker({
   previewGeom,
   handlers,
   typography = DEFAULT_LABEL_TYPOGRAPHY,
+  chipScale,
 }: {
   model: MarkerModel;
   /**
@@ -59,8 +67,10 @@ export const Marker = memo(function Marker({
   handlers?: MarkerHandlers;
   /** The type the card is drawn in — the one the labels were laid out for (Settings › Desks). */
   typography?: LabelTypography;
+  /** This chip's own `--chip`, where a neighbour closer than the floor's spacing makes it smaller (see chipSizeNear). */
+  chipScale?: number;
 }) {
-  const { unit, style, title, holder, dept, isMine, isHighlighted, isBusy, draggable } = model;
+  const { unit, style, label, title, holder, dept, isMine, pinText, isHighlighted, isDimmed, isBusy, draggable, responderRoles } = model;
   const geom = previewGeom ?? model.geom;
   const t = typography;
 
@@ -81,14 +91,21 @@ export const Marker = memo(function Marker({
               <path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0z" />
               <circle cx="12" cy="10" r="3" />
             </svg>
-            Your desk
+            {pinText ?? 'Your desk'}
           </div>
           <div className={styles.myDeskTail} />
         </div>
       )}
       <div
         data-tip={title}
+        // A keyboard reaches a desk the way a mouse does: Tab to it, Enter or Space to select it.
+        role={handlers ? 'button' : undefined}
+        tabIndex={handlers ? 0 : undefined}
+        aria-label={title}
+        data-unit-id={unit.id}
+        className={styles.chip}
         onClick={handlers ? (e) => handlers.onClick(unit, e) : undefined}
+        onKeyDown={handlers ? activateOnKey((e) => handlers.onClick(unit, e)) : undefined}
         onMouseDown={handlers && draggable ? (e) => handlers.onMouseDown(unit, e) : undefined}
         onDragOver={handlers ? (e) => handlers.onDragOver(unit, e) : undefined}
         onDragLeave={handlers ? () => handlers.onDragLeave(unit) : undefined}
@@ -106,13 +123,14 @@ export const Marker = memo(function Marker({
           // zoom over its 24px base (see chipScreenSize): it grows with the drawing, within bounds,
           // and the plane sets it beside `--inv`, so a zoom re-renders no chip for it.
           transform: 'scale(calc(var(--inv) * var(--chip, 1))) translate(-50%,-50%)',
+          ...(chipScale ? { ['--chip' as string]: chipScale.toFixed(4) } : {}),
           transformOrigin: '0 0',
           background: style.bg,
           border: `2px solid ${style.bd}`,
           color: style.fg,
           borderRadius: style.radius,
           boxShadow: style.shadow,
-          opacity: style.opacity,
+          opacity: isDimmed ? Math.min(style.opacity ?? 1, 0.22) : style.opacity,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -121,6 +139,9 @@ export const Marker = memo(function Marker({
         }}
       >
         {isHighlighted && <div className={styles.wave} />}
+        {/* Inside the chip, so the badge scales with it. Shown in every mode: an emergency doesn't
+            wait for someone to switch to Assignment view. */}
+        <ResponderBadges roles={responderRoles} chip={style.size} />
         {isBusy && <span className={styles.busy} aria-label="Working" />}
         {!isBusy &&
           (style.img ? (
@@ -163,8 +184,29 @@ export const Marker = memo(function Marker({
               ...HALO_TEXT,
             }}
           >
-            <div style={{ ...LINE, font: `${t.nameWeight} ${t.nameFont}px/${t.nameLine}px var(--font-sans)`, color: 'var(--ink-900)' }}>{unit.label}</div>
-            {labels.sub && holder && <div style={{ ...LINE, font: `${t.subWeight} ${t.subFont}px/${t.subLine}px var(--font-sans)`, color: 'var(--ink-800)' }}>{holder}</div>}
+            <div style={{ ...LINE, font: `${t.nameWeight} ${t.nameFont}px/${t.nameLine}px var(--font-sans)`, color: 'var(--ink-900)' }}>{label}</div>
+            {labels.sub && holder && (
+              // A long name a size down, broken at a space onto the second line the layout gave it.
+              <div
+                style={
+                  labels.subSmall
+                    ? {
+                        font: `${t.subWeight} ${longHolderType(t).font}px/${longHolderType(t).line}px var(--font-sans)`,
+                        color: 'var(--ink-800)',
+                        display: '-webkit-box',
+                        WebkitBoxOrient: 'vertical',
+                        WebkitLineClamp: labels.subLines ?? 1,
+                        overflow: 'hidden',
+                        overflowWrap: 'anywhere',
+                        // Two even lines ("Mariam Rashed Ali / Belwatir AlMazrouei"), as the layout measured them.
+                        ['textWrap' as string]: 'balance',
+                      }
+                    : { ...LINE, font: `${t.subWeight} ${t.subFont}px/${t.subLine}px var(--font-sans)`, color: 'var(--ink-800)' }
+                }
+              >
+                {holder}
+              </div>
+            )}
             {labels.dept && dept && (
               <div
                 style={{

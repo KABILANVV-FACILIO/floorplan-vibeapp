@@ -42,14 +42,14 @@ export function MobileTimePicker() {
       <div ref={sheetRef} className={styles.sheet} onClick={(e) => e.stopPropagation()}>
         <div className={styles.title}>{title}</div>
         <div className={styles.row}>
-          <Stepper label={hourLabel} onUp={() => adjustPick(60)} onDown={() => adjustPick(-60)} />
+          <Stepper label={hourLabel} unit="an hour" onUp={() => adjustPick(60)} onDown={() => adjustPick(-60)} />
           <span className={styles.colon}>:</span>
-          <Stepper label={minLabel} onUp={() => adjustPick(STEP)} onDown={() => adjustPick(-STEP)} />
-          <button className={styles.ampm} onClick={toggleAmpm}>
+          <Stepper label={minLabel} unit={`${STEP} minutes`} onUp={() => adjustPick(STEP)} onDown={() => adjustPick(-STEP)} />
+          <button type="button" className={styles.ampm} aria-label={`${ampm} — switch to ${ampm === 'AM' ? 'PM' : 'AM'}`} onClick={toggleAmpm}>
             {ampm}
           </button>
         </div>
-        <button className={styles.done} onClick={() => actions.setMobTimePick(null)}>
+        <button type="button" className={styles.done} onClick={() => actions.setMobTimePick(null)}>
           Done
         </button>
       </div>
@@ -57,16 +57,16 @@ export function MobileTimePicker() {
   );
 }
 
-function Stepper({ label, onUp, onDown }: { label: string; onUp: () => void; onDown: () => void }) {
+function Stepper({ label, unit, onUp, onDown }: { label: string; unit: string; onUp: () => void; onDown: () => void }) {
   return (
     <div className={styles.stepper}>
-      <button className={styles.stepBtn} onClick={onUp}>
+      <button type="button" className={styles.stepBtn} aria-label={`Later by ${unit}`} onClick={onUp}>
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M18 15l-6-6-6 6" />
         </svg>
       </button>
       <span className={styles.stepLabel}>{label}</span>
-      <button className={styles.stepBtn} onClick={onDown}>
+      <button type="button" className={styles.stepBtn} aria-label={`Earlier by ${unit}`} onClick={onDown}>
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M6 9l6 6 6-6" />
         </svg>

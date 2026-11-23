@@ -14,3 +14,6 @@ Context/
 
 # Regenerable demo seed (real occupancy names) — lives in the Vibe DB, not the repo.
 scripts/rcu-seed.json
+
+# Local screenshots and previews (may show names) — never committed or deployed.
+previews/

@@ -1,6 +1,7 @@
 import { useFloorplanData } from '../../state/FloorplanContext';
+import { orgNow } from '../../lib/orgTime';
 import { useSheetDrag } from './useSheetDrag';
-import { Calendar, toISO } from '../primitives/Calendar';
+import { Calendar } from '../primitives/Calendar';
 import styles from './MobileDatePicker.module.css';
 
 /**
@@ -17,7 +18,9 @@ export function MobileDatePicker({ open, onClose }: { open: boolean; onClose: ()
 
   if (!open) return null;
 
-  const todayIso = toISO(new Date());
+  // The ORG's today, as everywhere else in the app — not the phone's clock, which can be a day off
+  // from the facility's.
+  const todayIso = orgNow().dateISO;
 
   function pick(iso: string) {
     actions.setDate(iso);
@@ -30,7 +33,7 @@ export function MobileDatePicker({ open, onClose }: { open: boolean; onClose: ()
       <div ref={sheetRef} className={styles.sheet}>
         <div className={styles.handle} />
         <Calendar value={state.date} size="lg" onChange={pick} />
-        <button className={styles.todayBtn} onClick={() => pick(todayIso)}>
+        <button type="button" className={styles.todayBtn} onClick={() => pick(todayIso)}>
           Jump to today
         </button>
       </div>

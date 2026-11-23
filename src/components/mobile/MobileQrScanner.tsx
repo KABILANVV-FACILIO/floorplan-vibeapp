@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { isBookable, visibleUnits } from '../../state/selectors';
-import type { Unit } from '../../lib/types';
+import { matchSpaceCode } from '../../lib/qrMatch';
 import styles from './MobileQrScanner.module.css';
 
 /**
@@ -12,30 +12,6 @@ import styles from './MobileQrScanner.module.css';
  * against the floor's units and the booking form opens pre-filled with that
  * space.
  */
-
-/** QR payloads vary (plain label, id, or a URL) — try the obvious shapes. */
-function matchUnit(units: Unit[], raw: string): Unit | undefined {
-  const norm = (s: string) => s.trim().toLowerCase().replace(/[\s_-]+/g, '');
-  let code = raw.trim();
-  try {
-    const url = new URL(code);
-    code =
-      url.searchParams.get('qr') ??
-      url.searchParams.get('space') ??
-      url.searchParams.get('unit') ??
-      url.pathname.split('/').filter(Boolean).pop() ??
-      code;
-  } catch {
-    /* not a URL — use as-is */
-  }
-  const target = norm(code);
-  if (!target) return undefined;
-  return (
-    units.find((u) => norm(u.label) === target) ??
-    units.find((u) => norm(u.id) === target) ??
-    units.find((u) => norm(u.label).includes(target) || target.includes(norm(u.label)))
-  );
-}
 
 interface BarcodeDetectorLike {
   detect(source: CanvasImageSource): Promise<{ rawValue: string }[]>;
@@ -52,23 +28,35 @@ export function MobileQrScanner({ onClose }: { onClose: () => void }) {
   function handleCode(raw: string) {
     if (doneRef.current) return;
     // Scanning a code for a switched-off module must not resurrect it.
-    const unit = matchUnit(visibleUnits(state), raw);
+    // Exact matches only (see matchSpaceCode): a partial match booked the wrong desk.
+    const match = matchSpaceCode(visibleUnits(state), raw);
+    const unit = match.unit;
     if (!unit) {
-      setError(`No space matching “${raw.slice(0, 60)}” on this floor.`);
+      const shown = raw.slice(0, 60);
+      setError(
+        'reason' in match && match.reason === 'ambiguous'
+          ? `More than one space on this floor is called “${shown}” — pick it on the plan instead.`
+          : `No space matching “${shown}” on this floor.`
+      );
       return;
     }
     doneRef.current = true;
-    if (isBookable(unit)) {
+    if (isBookable(unit) && state.planViews.book) {
       // The ask: scanning opens the booking form with the scanned space set.
       actions.openBookingForm({ unitId: unit.id, date: state.date, start: state.start, end: state.end });
       actions.showToast(`Space scanned — ${unit.label}`);
     } else {
-      // Not a bookable type (e.g. locker) — show its detail sheet instead.
+      // Not a bookable type (e.g. locker), or no Booking right — show its detail sheet instead.
       actions.setMobSel(unit.id);
-      actions.showToast(`Space scanned — ${unit.label} isn't bookable; showing details`);
+      actions.showToast(state.planViews.book ? `Space scanned — ${unit.label} isn't bookable; showing details` : `Space scanned — ${unit.label}`);
     }
     onClose();
   }
+  // The scan loop below is started once, when the camera does; it calls the CURRENT handler, so a
+  // code scanned after the floor's spaces (or the date, or the rights) arrived is matched against
+  // them — not against the floor as it was when the scanner opened.
+  const handleCodeRef = useRef(handleCode);
+  handleCodeRef.current = handleCode;
 
   useEffect(() => {
     // Camera scanning needs only getUserMedia: decode via the native
@@ -86,13 +74,22 @@ export function MobileQrScanner({ onClose }: { onClose: () => void }) {
 
     void (async () => {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        const acquired = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'environment' },
           audio: false,
         });
-        if (cancelled || !videoRef.current) return;
+        // Closed while the camera was still starting: the cleanup below already ran, with no stream
+        // to stop, so this one must be stopped here or the camera stays on with nothing showing it.
+        if (cancelled || !videoRef.current) {
+          acquired.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        stream = acquired;
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
+        // Closed while the video was starting: the cleanup has run (and stopped the stream), so no
+        // scan loop may start now — it would keep running with nothing left to clear it.
+        if (cancelled) return;
         setCameraState('live');
 
         if ('BarcodeDetector' in window) {
@@ -105,7 +102,7 @@ export function MobileQrScanner({ onClose }: { onClose: () => void }) {
             detector
               .detect(video)
               .then((codes) => {
-                if (codes.length > 0 && codes[0].rawValue) handleCode(codes[0].rawValue);
+                if (codes.length > 0 && codes[0].rawValue) handleCodeRef.current(codes[0].rawValue);
               })
               .catch(() => {
                 /* per-frame decode errors are normal */
@@ -126,7 +123,7 @@ export function MobileQrScanner({ onClose }: { onClose: () => void }) {
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
             const code = jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
-            if (code?.data) handleCode(code.data);
+            if (code?.data) handleCodeRef.current(code.data);
           }, 450);
         }
       } catch {
@@ -177,6 +174,7 @@ export function MobileQrScanner({ onClose }: { onClose: () => void }) {
         <input
           className={styles.manualInput}
           value={manualCode}
+          aria-label="Space code"
           placeholder="Or type the space code (e.g. WS-07)"
           onChange={(e) => {
             setManualCode(e.target.value);

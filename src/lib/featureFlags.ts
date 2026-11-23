@@ -25,3 +25,11 @@
  * and the toast names the room changes that did not reach Facilio.
  */
 export const ROOM_OUTLINE_WRITES: boolean = true;
+
+/**
+ * Whether the demo seed (src/data/*.json — sample sites, people, desks and bookings) may be shown.
+ * Only under the dev server (`npm run dev`, and vitest): every `vite build` — whatever is deployed
+ * to preview or production — has it off, so a live user never sees a made-up person or floor,
+ * even when the org's own list comes back empty or fails.
+ */
+export const DEMO_DATA: boolean = import.meta.env.DEV;

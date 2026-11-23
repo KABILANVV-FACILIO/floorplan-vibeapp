@@ -8,20 +8,18 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b",
-    "fn:create": "facilio vibe fn create floorplanApi --code functions/floorplanApi/code.ts --description \"Floorplan Manager app data (units, assignments, bookings, settings, files)\" && facilio vibe fn build floorplanApi",
-    "fn:push": "facilio vibe fn update floorplanApi --code functions/floorplanApi/code.ts && facilio vibe fn build floorplanApi",
-    "deploy": "npm run build && facilio vibe deploy",
+    "deploy": "npm test && npm run build && FACILIO_PROFILE=default facilio vibe deploy",
     "test": "vitest run"
   },
   "dependencies": {
     "@facilio/vibe-sdk": "^0.3.3",
+    "@fontsource/roboto": "^5.3.0",
     "@mlightcad/cad-simple-viewer": "1.5.7",
-    "axios": "^0.21.4",
+    "axios": "^1.21.0",
     "html-to-image": "^1.11.13",
     "jspdf": "^4.2.1",
     "jsqr": "^1.4.0",
     "pdfjs-dist": "^6.1.200",
-    "qs": "^6.15.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
