@@ -21,17 +21,21 @@ const moduleFieldReads = new Map<string, Promise<ModuleField[] | null>>();
  * A module's fields — `v2/filter/advanced/fields/<module>`, the read behind its list page's filter,
  * custom fields included. Settings › Parking lists the stall's text fields from it (so a field the
  * org adds turns up without a change here), and the parking register reads picklist labels off it.
- * Read once per session; a failure is retried next time.
+ * Read once per session; a failure is retried next time — and so is an answer with no field list
+ * in it (a refusal, an error body), which says nothing about the module's fields.
  */
 export function fetchModuleFields(moduleName: string): Promise<ModuleField[] | null> {
   if (!isFacilioApiConfigured) return Promise.resolve(null);
   let read = moduleFieldReads.get(moduleName);
   if (!read) {
-    read = Promise.resolve()
+    const pending: Promise<ModuleField[] | null> = Promise.resolve()
       .then(() => customGet(`v2/filter/advanced/fields/${encodeURIComponent(moduleName)}`))
       .then((body: any) => {
         const raw = body?.result?.fields ?? body?.data?.fields ?? body?.fields;
-        if (!Array.isArray(raw)) return null;
+        if (!Array.isArray(raw)) {
+          if (moduleFieldReads.get(moduleName) === pending) moduleFieldReads.delete(moduleName);
+          return null;
+        }
         return raw
           .filter((f: any) => typeof f?.name === 'string')
           .map((f: any): ModuleField => {
@@ -47,9 +51,10 @@ export function fetchModuleFields(moduleName: string): Promise<ModuleField[] | n
       .catch((err: unknown) => {
         // eslint-disable-next-line no-console
         console.warn(`[fields] could not read the ${moduleName} fields`, err);
-        moduleFieldReads.delete(moduleName);
+        if (moduleFieldReads.get(moduleName) === pending) moduleFieldReads.delete(moduleName);
         return null;
       });
+    read = pending;
     moduleFieldReads.set(moduleName, read);
   }
   return read;

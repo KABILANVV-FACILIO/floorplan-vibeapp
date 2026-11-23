@@ -194,15 +194,18 @@ export function FloorplanSkeleton() {
         <div className={styles.progressTrack}>
           <div className={styles.progressBar} />
         </div>
-        <div className={styles.label}>
+        {/* Announced (politely) as it changes, so a screen reader hears that the floor is loading. */}
+        <div className={styles.label} role="status" aria-live="polite">
           <span key={i} className={styles.message}>
             {MESSAGES[i]}
           </span>
-          <span className={styles.msgDot}>.</span>
-          <span className={styles.msgDot} style={delay(0.2)}>
+          <span className={styles.msgDot} aria-hidden>
             .
           </span>
-          <span className={styles.msgDot} style={delay(0.4)}>
+          <span className={styles.msgDot} style={delay(0.2)} aria-hidden>
+            .
+          </span>
+          <span className={styles.msgDot} style={delay(0.4)} aria-hidden>
             .
           </span>
         </div>

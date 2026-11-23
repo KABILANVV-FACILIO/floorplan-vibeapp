@@ -1,6 +1,7 @@
 import { FacilioApiDataSource } from './facilioApiDataSource';
+import { isFacilioApiConfigured } from './facilioApi';
 import { ConnectorDataSource } from './connectorDataSource';
-import { IncompleteListError } from './rateLimit';
+import { IncompleteListError, mapPooled } from './rateLimit';
 import type { Asset } from './assets';
 import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, Site, Unit } from './types';
 
@@ -14,6 +15,7 @@ import assetsJson from '../data/assets.json';
 import unitsJson from '../data/units.json';
 import assignmentsJson from '../data/assignments.json';
 import bookingsJson from '../data/bookings.json';
+import { noteRecordStates } from './recordStates';
 
 /**
  * Data access contract for the Floorplan Manager (vibe-app build).
@@ -35,6 +37,12 @@ export interface FloorplanDataSource {
   getPortfolio(): Promise<Site[]>;
   getBuildings(siteId: string): Promise<Building[]>;
   getFloors(buildingId: string): Promise<Floor[]>;
+  /**
+   * Every floor of a site in one read, keyed by building id — the Bookings floor filter ticks a
+   * whole site at once, and one floor list per building is a request per building. Optional: the
+   * composite falls back to getBuildings + getFloors where no tier answers it.
+   */
+  getSiteFloors?(siteId: string): Promise<Record<string, Floor[]>>;
   /** Floors whose name contains `query`, with the site/building path to open each one. */
   searchFloors(query: string): Promise<FloorSearchHit[]>;
   getEmployees(): Promise<Employee[]>;
@@ -49,16 +57,23 @@ export interface FloorplanDataSource {
   saveUnits(floorId: string, units: Unit[]): Promise<void>;
   /** As getUnits: with `onMore`, the holders of the records past the first pages arrive there. */
   getAssignments(floorId: string, onMore?: (more: Assignments) => void): Promise<Assignments>;
+  /**
+   * Who holds `unitIds` only — re-read after an assign or vacate, where the whole floor's holders
+   * are a read of every desk for one or two that changed. An id missing from the answer is vacant.
+   * Rejects (never answers in part) when the read fails, so the caller keeps what it shows.
+   */
+  getAssignmentsFor?(floorId: string, unitIds: string[]): Promise<Assignments>;
   assignUnit(unitId: string, contactId: string): Promise<void>;
   vacateUnit(unitId: string): Promise<void>;
   getBookings(floorId: string, date: string): Promise<Booking[]>;
   createBooking(input: Omit<Booking, 'id'>): Promise<Booking>;
   cancelBooking(id: string): Promise<void>;
   /**
-   * Mint a genuinely-new record (desk/locker/parking/room). On the Facilio API tier this would be
-   * a real V3 create (not yet wired there — it throws); the local tier just echoes the unit back
-   * with its local id so dev works, and the on-plan position is persisted separately by the caller
-   * via saveUnits. Amenities (assets/markers) aren't records and are handled purely locally.
+   * Mint a genuinely-new record (desk/locker/parking/room). On the Facilio API tier this is a real
+   * V3 create; on a demo floor the local tier just echoes the unit back with its local id so dev
+   * works (on an org floor it throws — the record is the org's or nothing), and the on-plan position
+   * is persisted separately by the caller via saveUnits. Amenities (assets/markers) aren't records
+   * and are handled purely locally.
    */
   createUnit(loc: CreateSpaceLoc, unit: Unit): Promise<Unit>;
   /**
@@ -124,10 +139,35 @@ function savePersisted(next: Partial<PersistedShape>) {
 }
 
 /**
+ * An ORG floor while the org is reachable: its id is a record id (numeric — the demo seed's are
+ * slugs), and the Facilio API tier is configured. Such a floor's records are the org's, never this
+ * browser's: they are not copied into localStorage on every edit (they would go stale, and outlive
+ * a sign-out on a shared PC) and a copy is never served as the floor when the org tier fails.
+ */
+function isOrgFloor(floorId: string): boolean {
+  return isFacilioApiConfigured && /^\d+$/.test(floorId);
+}
+
+/**
+ * The local tier's answer for an org floor's data: none. An empty answer would stand in for the
+ * org's own read that failed — a day with nothing booked, a floor whose desks nobody holds — and
+ * the composite would hand it on as the floor. Thrown instead, the composite throws the org tier's
+ * error and the caller keeps what it shows.
+ */
+function refuseOrgFloor(floorId: string, what: string): void {
+  if (isOrgFloor(floorId)) throw new Error(`local-json: floor ${floorId} is the org's — this browser keeps no ${what} for it`);
+}
+
+/**
  * Local tier: serves the editable src/data/*.json seed and persists a session's edits to
  * localStorage so a dev/demo run survives reloads. Powers `npm run dev` with no backend, and is
  * the fallback under the real Facilio API tier in connected-app mode. To reset to the JSON seed,
  * clear the app's localStorage (Settings › Data & caches › Clear local data).
+ *
+ * An org floor with the org reachable (isOrgFloor) is not this tier's: it holds no units, holders
+ * or bookings for it and keeps none. Its reads throw rather than answer empty (refuseOrgFloor), and
+ * so does `createUnit`, so a create Facilio refused never "succeeds" in this browser. `saveUnits`
+ * is a no-op there — it must still RESOLVE: the explicit save awaits it before writing to the org.
  */
 export class LocalJsonDataSource implements FloorplanDataSource {
   readonly name = 'local-json';
@@ -149,7 +189,17 @@ export class LocalJsonDataSource implements FloorplanDataSource {
     return [];
   }
 
+  /** A seed site's floors. Any other site is not this tier's — the composite reads it another way. */
+  async getSiteFloors(siteId: string): Promise<Record<string, Floor[]>> {
+    const site = SEED_PORTFOLIO.find((s) => s.id === siteId);
+    if (!site) throw new Error(`local-json: site ${siteId} is not in the seed`);
+    return Object.fromEntries((site.buildings ?? []).map((b) => [b.id, b.floors ?? []]));
+  }
+
   async searchFloors(query: string): Promise<FloorSearchHit[]> {
+    // Against the org, a search the org could not answer is a failure to say, never the seed's
+    // floors (or "No floors match") in its place.
+    if (isFacilioApiConfigured) throw new Error('local-json: the floor search is the org\'s');
     const q = query.trim().toLowerCase();
     if (!q) return [];
     const hits: FloorSearchHit[] = [];
@@ -169,6 +219,7 @@ export class LocalJsonDataSource implements FloorplanDataSource {
   }
 
   async getUnits(floorId: string): Promise<Unit[]> {
+    refuseOrgFloor(floorId, 'units');
     const saved = loadPersisted();
     const units = saved?.units ?? SEED_UNITS;
     return units.filter((u) => u.floor === floorId);
@@ -176,21 +227,34 @@ export class LocalJsonDataSource implements FloorplanDataSource {
 
   async saveUnits(floorId: string, units: Unit[]): Promise<void> {
     const saved = loadPersisted();
-    const others = (saved?.units ?? SEED_UNITS).filter((u) => u.floor !== floorId);
+    // An org floor's units are not kept here — and a copy an older build left behind is dropped
+    // the next time this browser saves anything, rather than carried forward.
+    const others = (saved?.units ?? SEED_UNITS).filter((u) => u.floor !== floorId && !isOrgFloor(u.floor));
+    if (isOrgFloor(floorId)) {
+      if (saved?.units && others.length !== saved.units.length) savePersisted({ units: others });
+      return;
+    }
     savePersisted({ units: [...others, ...units] });
   }
 
   // No backend to create against — the record lives entirely in localStorage, persisted with its
-  // position by the caller's saveUnits. Just echo the unit back with its local id.
-  async createUnit(_loc: CreateSpaceLoc, unit: Unit): Promise<Unit> {
+  // position by the caller's saveUnits. Just echo the unit back with its local id. Not on an org
+  // floor: a space there exists once Facilio has made it, and an echo would read as "created" for a
+  // create Facilio refused.
+  async createUnit(loc: CreateSpaceLoc, unit: Unit): Promise<Unit> {
+    if (isOrgFloor(loc.floorId)) throw new Error(`local-json: floor ${loc.floorId} is the org's — a space on it is made in Facilio or not at all`);
     return unit;
   }
 
   async getAssignments(floorId: string): Promise<Assignments> {
+    refuseOrgFloor(floorId, 'holders');
     const saved = loadPersisted();
     const all = saved?.assignments ?? SEED_ASSIGNMENTS;
     const units = await this.getUnits(floorId);
     const ids = new Set(units.map((u) => u.id));
+    // A seed unit may carry the org record's state (`state`), so the occupancy card's split can be
+    // tried without an org (see recordStates).
+    noteRecordStates(floorId, units as Array<Unit & { state?: unknown }>);
     return Object.fromEntries(Object.entries(all).filter(([unitId]) => ids.has(unitId)));
   }
 
@@ -208,6 +272,7 @@ export class LocalJsonDataSource implements FloorplanDataSource {
   }
 
   async getBookings(floorId: string, date: string): Promise<Booking[]> {
+    refuseOrgFloor(floorId, 'bookings');
     const saved = loadPersisted();
     const bookings = saved?.bookings ?? SEED_BOOKINGS.map((b) => ({ ...b, date }));
     const units = await this.getUnits(floorId);
@@ -274,7 +339,11 @@ function describe(result: unknown): string {
   return '';
 }
 
-/** Tries each tier in order for every call; first to resolve wins, logging which did. */
+/**
+ * Tries each tier in order for every call; first to resolve wins, logging which did. When every
+ * tier fails, the FIRST tier's error is thrown: the tiers run strongest first, so that is the org's
+ * own reason (busy, refused, not found), where the last is only the local tier's "not mine".
+ */
 export class CompositeDataSource implements FloorplanDataSource {
   readonly name = 'composite';
   private tiers: FloorplanDataSource[];
@@ -287,7 +356,7 @@ export class CompositeDataSource implements FloorplanDataSource {
     method: K,
     ...args: FloorplanDataSource[K] extends (...a: infer A) => any ? A : never
   ): Promise<any> {
-    let lastErr: unknown;
+    let firstErr: unknown;
     for (const tier of this.tiers) {
       try {
         // @ts-expect-error - dynamic dispatch across the shared interface
@@ -309,14 +378,17 @@ export class CompositeDataSource implements FloorplanDataSource {
         return result;
       } catch (err) {
         // The org answered in part (lib/rateLimit): its rows, and its own way to finish, are the
-        // answer. Another tier's would mix sources, and is refused by the same limit anyway.
+        // answer. Another tier's would mix sources, and is refused by the same limit anyway. That
+        // covers a read Facilio refused for rate outright (RateLimitedError, a stop with no rows) and
+        // a re-read of who holds what that came back short — answered by the local tier it would
+        // read as "nobody", and wipe the plan's holders. The caller keeps what it shows and says so.
         if (err instanceof IncompleteListError) throw err;
-        lastErr = err;
+        firstErr ??= err;
         // eslint-disable-next-line no-console
         console.warn(`[dataSource] ${String(method)} unavailable on "${tier.name}", falling back:`, (err as Error)?.message ?? err);
       }
     }
-    throw lastErr;
+    throw firstErr;
   }
 
   /**
@@ -334,6 +406,34 @@ export class CompositeDataSource implements FloorplanDataSource {
   getFloors(buildingId: string): Promise<Floor[]> {
     return this.run('getFloors', buildingId);
   }
+  /**
+   * The first tier that reads a site's floors at once answers. A refusal for rate (or a list that
+   * stopped part-way) is the answer — a request per building would meet the same limit. Any other
+   * failure, an org that will not take the site filter included, and outside a Facilio host where
+   * no tier reads a site at once, falls back to listing floors building by building, two at a time.
+   */
+  async getSiteFloors(siteId: string): Promise<Record<string, Floor[]>> {
+    let firstErr: unknown;
+    for (const tier of this.tiers) {
+      if (!tier.getSiteFloors) continue;
+      try {
+        const result = await tier.getSiteFloors(siteId);
+        // eslint-disable-next-line no-console
+        console.info(`[dataSource] getSiteFloors <- ${tier.name}${describe(result)}`);
+        return result;
+      } catch (err) {
+        if (err instanceof IncompleteListError) throw err;
+        firstErr ??= err;
+      }
+    }
+    if (firstErr) {
+      // eslint-disable-next-line no-console
+      console.warn(`[dataSource] getSiteFloors: ${(firstErr as Error)?.message ?? firstErr} — reading site ${siteId} building by building`);
+    }
+    const buildings = await this.getBuildings(siteId);
+    const floors = await mapPooled(buildings, 2, (b) => this.getFloors(b.id));
+    return Object.fromEntries(buildings.map((b, i) => [b.id, floors[i]]));
+  }
   searchFloors(query: string): Promise<FloorSearchHit[]> {
     return this.run('searchFloors', query);
   }
@@ -346,34 +446,58 @@ export class CompositeDataSource implements FloorplanDataSource {
   getUnits(floorId: string, onMore?: (units: Unit[]) => void) {
     return this.run('getUnits', floorId, onMore);
   }
-  /** Fast path across tiers that implement it; callers fall back to the per-call path on throw. */
+  /**
+   * Fast path across tiers that implement it; callers fall back to the per-call path on throw. As
+   * run: a partial answer from the org is the answer, and when every tier fails the first one's
+   * error is thrown.
+   */
   async getFloorData(floorId: string, date: string, planId: string): Promise<FloorBundle> {
-    let lastErr: unknown = new Error('no tier implements getFloorData');
+    let firstErr: unknown;
     for (const tier of this.tiers) {
       if (!tier.getFloorData) continue;
       try {
         return await tier.getFloorData(floorId, date, planId);
       } catch (err) {
-        lastErr = err;
+        if (err instanceof IncompleteListError) throw err;
+        firstErr ??= err;
         // eslint-disable-next-line no-console
         console.debug(`[dataSource] getFloorData unavailable on "${tier.name}", falling back`, err);
       }
     }
-    throw lastErr;
+    throw firstErr ?? new Error('no tier implements getFloorData');
   }
   saveUnits(floorId: string, units: Unit[]) {
     return this.run('saveUnits', floorId, units);
   }
   /**
-   * API-first by tier order: a real create wins when the API tier wires one, otherwise the local
-   * tier echoes the unit back so dev/connected sessions stay interactive. The on-plan position is
-   * persisted separately via saveUnits (+ saveFloorplanMarkers to the real API when configured).
+   * API-first by tier order: a real create wins when an org tier makes one; on a demo floor the
+   * local tier otherwise echoes the unit back so dev stays interactive. On an org floor the local
+   * tier refuses, so a create no org tier made fails with the first tier's reason. The on-plan
+   * position is persisted separately via saveUnits (+ saveFloorplanMarkers to the real API when
+   * configured).
    */
   createUnit(loc: CreateSpaceLoc, unit: Unit) {
     return this.run('createUnit', loc, unit) as Promise<Unit>;
   }
   getAssignments(floorId: string, onMore?: (more: Assignments) => void) {
     return this.run('getAssignments', floorId, onMore);
+  }
+  /**
+   * On an org floor with the org reachable, its tier reads the holders by id, and a failure is never
+   * another tier's answer. Otherwise (a demo floor, or the connector outside a Facilio host) the
+   * floor's holders are read as before and cut down to `unitIds`.
+   */
+  async getAssignmentsFor(floorId: string, unitIds: string[]): Promise<Assignments> {
+    const tier = isOrgFloor(floorId) ? this.tiers.find((t) => t.getAssignmentsFor) : undefined;
+    if (tier?.getAssignmentsFor) {
+      const result = await tier.getAssignmentsFor(floorId, unitIds);
+      // eslint-disable-next-line no-console
+      console.info(`[dataSource] getAssignmentsFor <- ${tier.name}${describe(result)}`);
+      return result;
+    }
+    const all: Assignments = await this.getAssignments(floorId);
+    const wanted = new Set(unitIds);
+    return Object.fromEntries(Object.entries(all).filter(([unitId]) => wanted.has(unitId)));
   }
   assignUnit(unitId: string, contactId: string) {
     return this.run('assignUnit', unitId, contactId);

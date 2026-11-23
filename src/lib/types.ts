@@ -614,17 +614,17 @@ export const STATE_SWATCHES = ['#29A01E', '#0059D6', '#3C229D', '#B61919', '#F59
 
 export const STATE_DEFS: Record<UnitType, StateDef[]> = {
   workstation: [
-    { key: 'free', label: 'Free', desc: 'Assignable, no owner yet', def: '#29A01E' },
+    { key: 'free', label: 'Vacant', desc: 'Assignable, no owner yet', def: '#29A01E' },
     { key: 'assigned', label: 'Assigned', desc: 'Has a permanent owner', def: '#0059D6' },
     { key: 'hot', label: 'Hot desk', desc: 'Bookable by anyone, per session', def: '#3C229D' },
     { key: 'booked', label: 'Booked', desc: 'Reserved for a time window', def: '#B61919' },
   ],
   locker: [
-    { key: 'free', label: 'Free', desc: 'Available to assign', def: '#29A01E' },
+    { key: 'free', label: 'Vacant', desc: 'Available to assign', def: '#29A01E' },
     { key: 'assigned', label: 'Assigned', desc: 'Held by an employee', def: '#0059D6' },
   ],
   parking: [
-    { key: 'free', label: 'Free', desc: 'Open stall', def: '#29A01E' },
+    { key: 'free', label: 'Vacant', desc: 'Open stall', def: '#29A01E' },
     { key: 'assigned', label: 'Assigned', desc: 'Allotted to an employee', def: '#0059D6' },
     { key: 'booked', label: 'Booked', desc: 'Reserved for a time window', def: '#B61919' },
   ],

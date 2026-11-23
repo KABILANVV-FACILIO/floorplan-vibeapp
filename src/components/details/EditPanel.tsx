@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { DragEvent as ReactDragEvent, ReactNode } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
-import { contactName, moduleEnabled, unitById } from '../../state/selectors';
+import { canChangeSettings, contactName, moduleEnabled, unitById } from '../../state/selectors';
 import { polyAreaM2, unitSortCompare } from '../../lib/geometry';
 import { BUILTIN_MARKERS, DESK_TYPES, floorImageKey, isRoomLike, isZoneTool, TYPE_META } from '../../lib/types';
 import type { EditTool, MarkerDef, Unit } from '../../lib/types';
@@ -78,13 +78,18 @@ const ADD_TOOLS: { id: 'workstation' | 'locker' | 'parking'; label: string; colo
 
 const NM_SWATCHES = ['#0059D6', '#3C229D', '#29A01E', '#B61919', '#C2761A', '#0EA5A5', '#607796'];
 
-/** Off-screen colored chip used as the HTML5 drag image for library markers / add tools. */
-function makeChipDragImage(e: ReactDragEvent, color: string, round: boolean, inner: string) {
+/**
+ * Off-screen colored chip used as the HTML5 drag image for library markers / add tools. Its content
+ * is either the app's own fixed glyph markup (`svg`) or a marker's text, which is the org's data —
+ * set as text, never as markup.
+ */
+function makeChipDragImage(e: ReactDragEvent, color: string, round: boolean, inner: { svg: string } | { text: string }) {
   const el = document.createElement('div');
   el.style.cssText =
     'position:fixed;top:-1000px;left:-1000px;width:32px;height:32px;display:flex;align-items:center;justify-content:center;' +
     `border-radius:${round ? '999px' : '8px'};background:${color};color:#fff;font:700 11px/1 sans-serif;box-shadow:0 4px 12px rgba(40,54,72,0.35);`;
-  el.innerHTML = inner;
+  if ('svg' in inner) el.innerHTML = inner.svg;
+  else el.textContent = inner.text;
   document.body.appendChild(el);
   e.dataTransfer.setDragImage(el, 16, 16);
   setTimeout(() => el.remove(), 0);
@@ -204,18 +209,15 @@ function ToolsTab() {
                 onDragStart={(e) => {
                   e.dataTransfer.setData('application/x-floorplan-addtool', t.id);
                   e.dataTransfer.effectAllowed = 'copy';
-                  makeChipDragImage(
-                    e,
-                    t.color,
-                    false,
-                    `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${
+                  makeChipDragImage(e, t.color, false, {
+                    svg: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${
                       t.id === 'workstation'
                         ? '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>'
                         : t.id === 'locker'
                           ? '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>'
                           : '<circle cx="12" cy="12" r="9"/><path d="M9.5 16V8h3.5a2.5 2.5 0 0 1 0 5H9.5"/>'
                     }</svg>`,
-                  );
+                  });
                 }}
                 onClick={() => actions.setTool(t.id)}
               >
@@ -268,6 +270,9 @@ function MarkersTab() {
   const [nmColor, setNmColor] = useState('#607796');
 
   const defs = [...BUILTIN_MARKERS, ...state.customMarkers];
+  // A new marker is a change to the settings. Where the app database keeps them, only admins and
+  // roles given Settings may change them — anyone else's marker would show here and never be stored.
+  const mayAddMarker = canChangeSettings(state) || !state.settingsDb.answered;
 
   function saveNewMarker() {
     const name = nmName.trim();
@@ -307,7 +312,7 @@ function MarkersTab() {
                 onDragStart={(e) => {
                   e.dataTransfer.setData('application/x-floorplan-marker', def.id);
                   e.dataTransfer.effectAllowed = 'copy';
-                  makeChipDragImage(e, def.color, true, (def.text ?? def.name.slice(0, 1)).slice(0, 2).toUpperCase());
+                  makeChipDragImage(e, def.color, true, { text: (def.text ?? def.name.slice(0, 1)).slice(0, 2).toUpperCase() });
                 }}
                 onClick={() => actions.setMarkerKind(def.id)}
               >
@@ -323,19 +328,24 @@ function MarkersTab() {
         {formOpen ? (
           <div className={styles.newMarkerForm}>
             <div className={styles.newMarkerTitle}>New marker</div>
-            <input className={card.input} placeholder="Name (e.g. Water cooler)" value={nmName} onChange={(e) => setNmName(e.target.value)} />
+            <input className={card.input} placeholder="Name (e.g. Water cooler)" aria-label="Marker name" value={nmName} onChange={(e) => setNmName(e.target.value)} />
             <input
               className={card.input}
               placeholder="Short label (1–2 chars) e.g. WC"
+              aria-label="Short label, one or two characters"
               maxLength={2}
               value={nmText}
               onChange={(e) => setNmText(e.target.value)}
             />
-            <input className={card.input} placeholder="Image URL (optional)" value={nmImg} onChange={(e) => setNmImg(e.target.value)} />
-            <div className={styles.swatches}>
+            <input className={card.input} placeholder="Image URL (optional)" aria-label="Image URL (optional)" value={nmImg} onChange={(e) => setNmImg(e.target.value)} />
+            <div className={styles.swatches} role="radiogroup" aria-label="Marker colour">
               {NM_SWATCHES.map((hex) => (
                 <button
                   key={hex}
+                  type="button"
+                  role="radio"
+                  aria-checked={nmColor === hex}
+                  aria-label={`Colour ${hex}`}
                   data-tip={hex}
                   className={styles.swatch}
                   style={{ background: hex, boxShadow: nmColor === hex ? `0 0 0 2px #fff, 0 0 0 4px ${hex}` : 'none' }}
@@ -352,14 +362,14 @@ function MarkersTab() {
               </Button>
             </div>
           </div>
-        ) : (
+        ) : mayAddMarker ? (
           <button className={styles.newMarkerBtn} onClick={() => setFormOpen(true)}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d="M12 5v14M5 12h14" />
             </svg>
             New marker
           </button>
-        )}
+        ) : null}
       </div>
     </div>
   );
@@ -376,7 +386,7 @@ function Inspector() {
         <div className={card.cardBody}>
           <div className={styles.inspectorHead}>
             <span className={styles.inspectorCount}>{multi.length} selected</span>
-            <button className={styles.inspectorClose} data-tip="Deselect" onClick={() => actions.setMultiSelected([])}>
+            <button type="button" className={styles.inspectorClose} data-tip="Deselect" aria-label="Deselect all" onClick={() => actions.setMultiSelected([])}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <path d="M18 6L6 18M6 6l12 12" />
               </svg>
@@ -397,14 +407,16 @@ function Inspector() {
       <div className={card.cardBody}>
         <div className={styles.inspectorHead}>
           <span className={styles.inspectorCount}>{sel.label}</span>
-          <button className={styles.inspectorClose} data-tip="Deselect" onClick={() => actions.selectUnit(null)}>
+          <button type="button" className={styles.inspectorClose} data-tip="Deselect" aria-label={`Deselect ${sel.label}`} onClick={() => actions.selectUnit(null)}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d="M18 6L6 18M6 6l12 12" />
             </svg>
           </button>
         </div>
-        <label className={card.label}>Label</label>
-        <input className={card.input} value={sel.label} onChange={(e) => actions.updateUnit(sel.id, { label: e.target.value })} />
+        <label className={card.label} htmlFor={`unit-label-${sel.id}`}>
+          Label
+        </label>
+        <input id={`unit-label-${sel.id}`} className={card.input} value={sel.label} onChange={(e) => actions.updateUnit(sel.id, { label: e.target.value })} />
         <RecordSwap sel={sel} />
         {sel.type === 'workstation' && (
           /* Real deskType semantics (Context/Workplace_spaceModules.md): ASSIGNED desks are
@@ -536,6 +548,7 @@ function CalibrationCard() {
               min={0.1}
               step={0.1}
               placeholder="Distance in meters"
+              aria-label="Distance between the two points, in metres"
               value={state.calibLen}
               onChange={(e) => actions.setCalibLen(e.target.value)}
             />
@@ -596,7 +609,7 @@ function AssetListCard() {
         <h3 className={card.cardTitle}>Assets</h3>
       </div>
       <div className={card.cardBody}>
-        <input className={card.input} placeholder="Search assets" value={assetQuery} onChange={(e) => setAssetQuery(e.target.value)} />
+        <input className={card.input} placeholder="Search assets" aria-label="Search assets" value={assetQuery} onChange={(e) => setAssetQuery(e.target.value)} />
         <p className={card.helper} style={{ margin: '8px 0 4px' }}>
           Drag an asset onto the plan to place it.
         </p>

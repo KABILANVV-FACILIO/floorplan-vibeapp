@@ -23,11 +23,6 @@ export function useDelayedFlag(active: boolean, opts?: { delayMs?: number; key?:
   const [visible, setVisible] = useState(false);
   // Keys that have already shown real content — a re-raised flag for one of them is ignored.
   const settledKeys = useRef(new Set<string>());
-  const lastKey = useRef(key);
-
-  if (lastKey.current !== key) {
-    lastKey.current = key;
-  }
 
   useEffect(() => {
     if (!active) {

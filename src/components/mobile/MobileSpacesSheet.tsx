@@ -70,6 +70,7 @@ export function MobileSpacesSheet({ open, onClose }: { open: boolean; onClose: (
         <input
           className={styles.search}
           placeholder="Search spaces or rooms"
+          aria-label="Search spaces or rooms on this floor"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />

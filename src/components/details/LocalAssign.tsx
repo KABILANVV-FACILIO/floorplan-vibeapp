@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
+import { contactName } from '../../state/selectors';
 import type { Unit } from '../../lib/types';
 import { Button } from '../primitives/Button';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
+import { ConfirmDialog } from '../primitives/ConfirmDialog';
 import { AssignEmployeeModal } from './AssignEmployeeModal';
 import styles from './AssignPanel.module.css';
 
@@ -12,13 +14,16 @@ import styles from './AssignPanel.module.css';
  * showing both would offer two buttons that write to different places.
  *
  * Picking the person happens in the same dialog the transitions open; the select that used to sit
- * here was a second, smaller people list that only this panel had.
+ * here was a second, smaller people list that only this panel had. Vacate asks "are you sure?"
+ * first, as the org's own Vacate does.
  */
 export function LocalAssign({ unit }: { unit: Unit }) {
   const { state, actions } = useFloorplanData();
   const [picking, setPicking] = useState(false);
   const [vacating, setVacating] = useState(false);
-  const assigned = !!state.assignments[unit.id];
+  const [confirming, setConfirming] = useState(false);
+  const holderId = state.assignments[unit.id];
+  const assigned = !!holderId;
   const busy = state.busyUnitId === unit.id;
 
   async function vacate() {
@@ -36,9 +41,23 @@ export function LocalAssign({ unit }: { unit: Unit }) {
   return (
     <div>
       {picking && <AssignEmployeeModal unit={unit} onClose={() => setPicking(false)} />}
+      {confirming && (
+        <ConfirmDialog
+          title={`Vacate ${unit.label}?`}
+          confirmLabel={`Vacate ${unit.label}`}
+          disabled={busy}
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => {
+            setConfirming(false);
+            void vacate();
+          }}
+        >
+          {contactName(state, holderId) ? `${contactName(state, holderId)} comes off ${unit.label}.` : `${unit.label} is left with nobody on it.`}
+        </ConfirmDialog>
+      )}
       <div className={styles.actionsRow}>
         {assigned && (
-          <Button variant="danger" style={{ flex: 1, justifyContent: 'center' }} disabled={busy} onClick={() => void vacate()}>
+          <Button variant="danger" style={{ flex: 1, justifyContent: 'center' }} disabled={busy} onClick={() => setConfirming(true)}>
             {vacating && <ButtonSpinner />}
             Vacate
           </Button>

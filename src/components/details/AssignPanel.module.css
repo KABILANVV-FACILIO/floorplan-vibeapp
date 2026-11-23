@@ -220,7 +220,26 @@
   flex-shrink: 0;
   color: var(--ink-400);
 }
-.personRow:hover .openIcon {
+/* The only way to the person's record: the row itself shows their space on the plan. */
+.openBtn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: -4px -4px -4px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
+.openBtn:hover {
+  background: var(--blue-050);
+}
+.openBtn:hover .openIcon,
+.openBtn:focus-visible .openIcon {
   color: var(--blue-500);
 }
 .avatar {

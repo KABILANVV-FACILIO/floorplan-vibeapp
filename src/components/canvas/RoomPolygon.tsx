@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { clipPathFor } from '../../lib/geometry';
@@ -6,7 +7,11 @@ import { conflictsFor, isAssignable, isBookable } from '../../state/selectors';
 import { moduleColor } from '../../lib/unitStatus';
 import type { PolyGeom, Unit } from '../../lib/types';
 
-export function RoomPolygon({
+/**
+ * A room's tint and outline. Memoised: it reads the view-less store and nothing of the view, and the
+ * plan hands it handlers that never change, so a pan frame re-renders no room.
+ */
+export const RoomPolygon = memo(function RoomPolygon({
   unit,
   onEditDown,
   clickSuppressed,
@@ -96,4 +101,4 @@ export function RoomPolygon({
       </svg>
     </>
   );
-}
+});

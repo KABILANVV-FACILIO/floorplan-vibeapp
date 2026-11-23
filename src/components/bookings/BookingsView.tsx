@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { MouseEvent as ReactMouseEvent } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { canBookFromCalendar, contactName, isBookable, mergeWithOrgPool } from '../../state/selectors';
 import { fmtTime } from '../../lib/geometry';
@@ -7,8 +7,11 @@ import { dataSource } from '../../lib/dataSource';
 import { isFacilioApiConfigured } from '../../lib/facilioApi';
 import { bookingsScopedToUser, fetchOrgBookableResources, fetchOrgBookingsForRange } from '../../lib/facilioApiDataSource';
 import { orgNow } from '../../lib/orgTime';
+import { IncompleteListError } from '../../lib/rateLimit';
 import type { Booking, Building, Floor, Site, Unit, UnitType } from '../../lib/types';
 import { Button } from '../primitives/Button';
+import { ButtonSpinner } from '../primitives/ButtonSpinner';
+import { ConfirmDialog } from '../primitives/ConfirmDialog';
 import { Modal, ModalHeader } from '../primitives/Modal';
 import { BookingStateflowActions } from '../details/BookingStateflowActions';
 import styles from './BookingsView.module.css';
@@ -95,6 +98,13 @@ export function BookingsView() {
   const [resourceId, setResourceId] = useState<string | null>(null);
   const [bookingsByDate, setBookingsByDate] = useState<Record<string, Booking[]>>({});
   const [calLoading, setCalLoading] = useState(true);
+  /** The range could not be read — said over the grid, never shown as a week with no bookings. */
+  const [calFailed, setCalFailed] = useState(false);
+  /** Only part of the range could be read: what came is shown, and the grid says some are missing. */
+  const [calPartial, setCalPartial] = useState(false);
+  /** A local booking waiting on "are you sure?", and the ones whose cancel is on its way. */
+  const [confirmCancel, setConfirmCancel] = useState<{ booking: Booking; onCancelled?: () => void } | null>(null);
+  const [cancelling, setCancelling] = useState<Set<string>>(new Set());
   /** The day preview: which bookings; the rows come from bookingsByDate so a transition updates them. */
   const [preview, setPreview] = useState<{ date: string; ids: string[] } | null>(null);
   const [myOpen, setMyOpen] = useState(false);
@@ -106,15 +116,23 @@ export function BookingsView() {
   // The floor filter rides the range request as an API filter, never as a client-side row filter.
   const [floorFilter, setFloorFilter] = useState<{ id: string; name: string }[]>([]);
   // Every bookable record in the org; the loaded floor's placed units win on an id collision
-  // since they carry the richer data.
+  // since they carry the richer data. A failed read says so, with a way to try again: swallowed,
+  // it read as "No bookable desks or rooms yet" — an org with hundreds of them told it had none.
   const [orgUnits, setOrgUnits] = useState<Unit[]>([]);
+  const [orgUnitsFailed, setOrgUnitsFailed] = useState(false);
+  const [orgUnitsTick, setOrgUnitsTick] = useState(0);
   useEffect(() => {
     let alive = true;
-    if (isFacilioApiConfigured) fetchOrgBookableResources().then((u) => alive && setOrgUnits(u)).catch(() => {});
+    if (isFacilioApiConfigured) {
+      setOrgUnitsFailed(false);
+      fetchOrgBookableResources()
+        .then((u) => alive && setOrgUnits(u))
+        .catch(() => alive && setOrgUnitsFailed(true));
+    }
     return () => {
       alive = false;
     };
-  }, []);
+  }, [orgUnitsTick]);
 
   const resources = useMemo(() => {
     const pool = mergeWithOrgPool(state.units, orgUnits);
@@ -141,9 +159,23 @@ export function BookingsView() {
 
   // ONE request for the whole visible range, grouped per day here. `bookingsNonce` bumps when a
   // booking is made or cancelled anywhere, so the shared form's write re-reads this too.
+  //
+  // A refused read is a failure the grid says out loud ("Couldn't load bookings · Retry"). It used
+  // to be caught as an empty list, so an outage drew a calendar with nobody booked on it — and a
+  // booked desk looked free to take.
+  //
+  // A read that stopped part-way (strict: an IncompleteListError carrying the bookings it did get)
+  // shows those, and says some could not be loaded — rather than passing them off as all of them,
+  // which drew a booked desk as free.
+  //
+  // The plan's floor only matters to the local tier, which reads per floor. Against the org the
+  // range read never names it, so moving the plan to another floor must not re-read the calendar.
+  const localFloorId = isFacilioApiConfigured ? '' : state.floorId;
   useEffect(() => {
     let cancelled = false;
     setCalLoading(true);
+    setCalFailed(false);
+    setCalPartial(false);
     const first = visibleDates[0];
     const last = visibleDates[visibleDates.length - 1];
     const load: Promise<Booking[]> = isFacilioApiConfigured
@@ -151,20 +183,38 @@ export function BookingsView() {
           ...(scopedToUser ? { forCurrentUser: true } : {}),
           ...(floorFilter.length ? { floorIds: floorFilter.map((f) => f.id) } : {}),
           ...(category === 'workstation' ? { resourceField: 'desk' as const } : category === 'room' ? { resourceField: 'space' as const } : {}),
-        }).catch(() => [] as Booking[])
-      : Promise.all(visibleDates.map((d) => dataSource.getBookings(state.floorId, d).catch(() => [] as Booking[]))).then((r) => r.flat());
-    load.then((rows) => {
-      if (cancelled) return;
+          strict: true,
+        })
+      : Promise.all(visibleDates.map((d) => dataSource.getBookings(localFloorId, d).catch(() => [] as Booking[]))).then((r) => r.flat());
+    const show = (rows: Booking[]) => {
       const map: Record<string, Booking[]> = {};
       for (const d of visibleDates) map[d] = [];
       for (const b of rows) (map[b.date] ??= []).push(b);
       setBookingsByDate(map);
       setCalLoading(false);
-    });
+    };
+    load.then(
+      (rows) => {
+        if (cancelled) return;
+        show(rows);
+      },
+      (err: unknown) => {
+        if (cancelled) return;
+        if (err instanceof IncompleteListError && err.rows.length) {
+          show(err.rows as Booking[]);
+          setCalPartial(true);
+          return;
+        }
+        // Nothing from an earlier range stays up as if it were this one's.
+        setBookingsByDate({});
+        setCalFailed(true);
+        setCalLoading(false);
+      }
+    );
     return () => {
       cancelled = true;
     };
-  }, [state.floorId, visibleDates, state.bookingsNonce, refreshTick, scopedToUser, floorFilter, category]);
+  }, [localFloorId, visibleDates, state.bookingsNonce, refreshTick, scopedToUser, floorFilter, category]);
 
   const myBookingsInRange = useMemo(() => {
     const mine: Booking[] = [];
@@ -222,9 +272,46 @@ export function BookingsView() {
     });
   }
 
-  function cancelLocal(b: Booking) {
-    void actions.cancelBooking(b.id);
-    setBookingsByDate((prev) => ({ ...prev, [b.date]: (prev[b.date] ?? []).filter((x) => x.id !== b.id) }));
+  /**
+   * Cancels a booking with no org record (the local tier) — after the "are you sure?". The row
+   * stays until the cancel has settled and the range has been read again: taken off the moment the
+   * button was pressed, a REFUSED cancel left the booking hidden here while it still stood. On
+   * success the re-read leaves it out; on a refusal it is still listed, and the toast says why.
+   */
+  async function cancelLocal(b: Booking, onCancelled?: () => void) {
+    setCancelling((s) => new Set(s).add(b.id));
+    let cancelled = false;
+    try {
+      cancelled = await actions.cancelBooking(b.id);
+    } finally {
+      setCancelling((s) => {
+        const n = new Set(s);
+        n.delete(b.id);
+        return n;
+      });
+      setRefreshTick((t) => t + 1);
+    }
+    // The preview closes on a cancel that went through; a refused one leaves it open on the
+    // booking that still stands (the toast says why).
+    if (cancelled) onCancelled?.();
+  }
+
+  /**
+   * "New booking" without a pointer: the form opens on the day in view (today, if that has
+   * passed), at the next whole half-hour still to come — the slot a click on the grid would give.
+   * The form's own date and time pickers take it from there.
+   */
+  function openNewBooking() {
+    const today = orgTodayISO();
+    let date = focusDate < today ? today : focusDate;
+    let start = 9 * 60;
+    if (date === today) start = Math.ceil(nowMinutes() / SNAP) * SNAP;
+    // Too late in the day for another slot: the first one tomorrow morning.
+    if (start > DAY_END - SNAP) {
+      date = addDays(date, 1);
+      start = 9 * 60;
+    }
+    openForm(date, start, start + SNAP);
   }
 
   function stepFocus(dir: -1 | 1) {
@@ -255,8 +342,12 @@ export function BookingsView() {
     return `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
   }, [calView, focusDate, visibleDates]);
 
-  /** One booking's card, in the day preview and in My bookings. */
-  function bookingCard(b: Booking, opts: { titleAsJump?: boolean; showDate?: boolean; onCancelled?: () => void }) {
+  /**
+   * One booking's card, in the day preview and in My bookings. `autoLoadActions` reads the
+   * booking's flow as the card appears — only where the card is the ONE booking on show; in a list,
+   * each card's actions are read when opened (see BookingStateflowActions).
+   */
+  function bookingCard(b: Booking, opts: { titleAsJump?: boolean; showDate?: boolean; onCancelled?: () => void; autoLoadActions?: boolean }) {
     const unit = unitOf(b);
     const title = unit?.label ?? b.name ?? `#${b.unitId}`;
     const span = b.segCount ? ` · day ${(b.segIndex ?? 0) + 1} of ${b.segCount}` : '';
@@ -288,16 +379,10 @@ export function BookingsView() {
         </div>
         {/* A real record: its state and whatever the org's flow allows on it. A local one: plain Cancel. */}
         {/^\d+$/.test(b.id) ? (
-          <BookingStateflowActions recordId={Number(b.id)} onChanged={() => setRefreshTick((t) => t + 1)} />
+          <BookingStateflowActions recordId={Number(b.id)} autoLoad={opts.autoLoadActions} onChanged={() => setRefreshTick((t) => t + 1)} />
         ) : (
-          <Button
-            variant="danger"
-            style={{ marginTop: 8 }}
-            onClick={() => {
-              cancelLocal(b);
-              opts.onCancelled?.();
-            }}
-          >
+          <Button variant="danger" style={{ marginTop: 8 }} disabled={cancelling.has(b.id)} onClick={() => setConfirmCancel({ booking: b, onCancelled: opts.onCancelled })}>
+            {cancelling.has(b.id) && <ButtonSpinner />}
             Cancel
           </Button>
         )}
@@ -328,13 +413,23 @@ export function BookingsView() {
           </div>
         </div>
 
-        <p className={styles.hint}>
-          {!resourceId
-            ? 'No bookable desks or rooms yet — mark desks as hot desks or spaces as reservable in Facilio, then book them here.'
-            : mayBookHere
-              ? 'Click a time on the calendar, or drag across hours and days, to pick a window — the space is picked in the form.'
-              : 'Your role can look at bookings here but not book from the calendar.'}
-        </p>
+        {orgUnitsFailed ? (
+          <p className={styles.hint} role="alert">
+            Couldn’t load the org’s bookable desks and rooms
+            {resourceId ? ' — only the ones on this floor can be booked for now' : ''}.{' '}
+            <button type="button" className={styles.retryLink} onClick={() => setOrgUnitsTick((t) => t + 1)}>
+              Retry
+            </button>
+          </p>
+        ) : (
+          <p className={styles.hint}>
+            {!resourceId
+              ? 'No bookable desks or rooms yet — mark desks as hot desks or spaces as reservable in Facilio, then book them here.'
+              : mayBookHere
+                ? 'Click a time on the calendar, or drag across hours and days, to pick a window — the space is picked in the form.'
+                : 'Your role can look at bookings here but not book from the calendar.'}
+          </p>
+        )}
 
         <div className={styles.calToolbar}>
           <button className={[styles.myBookings, myBookingsInRange.length ? styles.myBookingsActive : ''].join(' ')} onClick={() => setMyOpen(true)}>
@@ -362,6 +457,12 @@ export function BookingsView() {
             </button>
           </div>
           <div className={styles.rangeLabel}>{rangeLabel}</div>
+          {/* The grid books by pointing at a slot; this is the same form for the keyboard. */}
+          {mayBookHere && resourceId && (
+            <button type="button" className={styles.todayBtn} onClick={openNewBooking}>
+              New booking
+            </button>
+          )}
         </div>
 
         <div className={styles.calArea}>
@@ -369,6 +470,22 @@ export function BookingsView() {
             <div className={styles.calLoading}>
               <span className={styles.calSpinner} />
               Loading bookings…
+            </div>
+          )}
+          {!calLoading && calPartial && (
+            <div className={styles.calPartial} role="status">
+              Some bookings could not be loaded — a slot shown free may be booked.
+              <button type="button" className={styles.retryLink} onClick={() => setRefreshTick((t) => t + 1)}>
+                Retry
+              </button>
+            </div>
+          )}
+          {!calLoading && calFailed && (
+            <div className={styles.calLoading} role="alert">
+              Couldn’t load bookings.
+              <button type="button" className={styles.retryLink} onClick={() => setRefreshTick((t) => t + 1)}>
+                Retry
+              </button>
             </div>
           )}
           {calView === 'month' ? (
@@ -415,9 +532,28 @@ export function BookingsView() {
               onClose={() => setPreview(null)}
             />
             <div style={{ padding: '14px 20px', display: 'flex', flexDirection: 'column', gap: 12, maxHeight: '58vh', overflowY: 'auto' }}>
-              {(bookingsByDate[preview.date] ?? []).filter((b) => preview.ids.includes(b.id)).map((b) => bookingCard(b, { onCancelled: () => setPreview(null) }))}
+              {(bookingsByDate[preview.date] ?? [])
+                .filter((b) => preview.ids.includes(b.id))
+                .map((b) => bookingCard(b, { onCancelled: () => setPreview(null), autoLoadActions: preview.ids.length === 1 }))}
             </div>
           </Modal>
+        )}
+
+        {confirmCancel && (
+          <ConfirmDialog
+            title="Cancel this booking?"
+            confirmLabel="Cancel booking"
+            cancelLabel="Keep booking"
+            onCancel={() => setConfirmCancel(null)}
+            onConfirm={() => {
+              const { booking, onCancelled } = confirmCancel;
+              setConfirmCancel(null);
+              void cancelLocal(booking, onCancelled);
+            }}
+          >
+            {unitOf(confirmCancel.booking)?.label ?? confirmCancel.booking.name ?? 'The space'}, {fmtDay(confirmCancel.booking.date)} · {fmtTime(confirmCancel.booking.start)}–
+            {fmtTime(confirmCancel.booking.end)}. The space is free for others to book again.
+          </ConfirmDialog>
         )}
       </div>
     </div>
@@ -473,12 +609,17 @@ function CalendarGrid({ dates, bookingsFor, myId, canCreate, onBlocked, onCreate
     anchorDate: string;
     endDate: string;
   } | null>(null);
+  /** Takes the window listeners of a drag in progress off again — on release, or on unmount. */
+  const detachDragRef = useRef<(() => void) | null>(null);
   // Live "now", once a minute, so the current-time line stays put while the view sits open.
   const [now, setNow] = useState(nowMinutes());
   useEffect(() => {
     const t = setInterval(() => setNow(nowMinutes()), 60_000);
     return () => clearInterval(t);
   }, []);
+  // The view closing mid-drag (inside the Facilio frame a release outside it never arrives) must
+  // not leave the window listening, or the next move anywhere would drive a grid that is gone.
+  useEffect(() => () => detachDragRef.current?.(), []);
 
   const todayIso = orgTodayISO();
   const gridHeight = ((DAY_END - DAY_START) / 60) * PX_PER_HOUR;
@@ -494,7 +635,12 @@ function CalendarGrid({ dates, bookingsFor, myId, canCreate, onBlocked, onCreate
     return Math.max(DAY_START, Math.min(DAY_END - SNAP, Math.floor(raw / SNAP) * SNAP));
   }
 
-  function onColMouseDown(date: string, e: ReactMouseEvent) {
+  /**
+   * Pointer events, not mouse events: the same press-drag-release for a mouse, and a tap on a
+   * touch screen or with a pen now picks a slot too. A touch the browser takes over to scroll the
+   * grid ends in `pointercancel`, which drops the selection without opening the form.
+   */
+  function onColPointerDown(date: string, e: ReactPointerEvent) {
     if (e.button !== 0) return;
     if (!canCreate) {
       onBlocked();
@@ -507,12 +653,25 @@ function CalendarGrid({ dates, bookingsFor, myId, canCreate, onBlocked, onCreate
       return { date: el.dataset.daycol as string, left: r.left, right: r.right };
     });
     const from = slotAt(colTop, e.clientY);
+    detachDragRef.current?.();
     dragRef.current = { date, colTop, anchor: from, from, to: from + SNAP, cols, anchorDate: date, endDate: date };
     setDrag({ date, from, to: from + SNAP });
-    window.addEventListener('mousemove', onDragMove);
-    window.addEventListener('mouseup', onDragUp);
+    window.addEventListener('pointermove', onDragMove);
+    window.addEventListener('pointerup', onDragUp);
+    window.addEventListener('pointercancel', onDragCancel);
+    detachDragRef.current = () => {
+      window.removeEventListener('pointermove', onDragMove);
+      window.removeEventListener('pointerup', onDragUp);
+      window.removeEventListener('pointercancel', onDragCancel);
+      detachDragRef.current = null;
+    };
   }
-  function onDragMove(e: MouseEvent) {
+  function onDragCancel() {
+    detachDragRef.current?.();
+    dragRef.current = null;
+    setDrag(null);
+  }
+  function onDragMove(e: PointerEvent) {
     const d = dragRef.current;
     if (!d) return;
     // The selection stretches from where the drag started, either way, and into other days: the
@@ -538,8 +697,7 @@ function CalendarGrid({ dates, bookingsFor, myId, canCreate, onBlocked, onCreate
     setDrag({ date: d.date, from: d.from, to: d.to });
   }
   function onDragUp() {
-    window.removeEventListener('mousemove', onDragMove);
-    window.removeEventListener('mouseup', onDragUp);
+    detachDragRef.current?.();
     const d = dragRef.current;
     dragRef.current = null;
     setDrag(null);
@@ -578,7 +736,7 @@ function CalendarGrid({ dates, bookingsFor, myId, canCreate, onBlocked, onCreate
             const blocks = bookingsFor(d);
             const inDrag = drag && (drag.endDate && drag.endDate !== drag.date ? d >= drag.date && d <= drag.endDate : drag.date === d);
             return (
-              <div key={d} data-daycol={d} className={[styles.dayCol, canCreate ? '' : styles.dayColReadOnly].join(' ')} onMouseDown={(e) => onColMouseDown(d, e)}>
+              <div key={d} data-daycol={d} className={[styles.dayCol, canCreate ? '' : styles.dayColReadOnly].join(' ')} onPointerDown={(e) => onColPointerDown(d, e)}>
                 {Array.from({ length: (DAY_END - DAY_START) / 60 }, (_, i) => (
                   <div key={i} className={styles.hourCell} style={{ top: (i + 1) * PX_PER_HOUR }} />
                 ))}
@@ -596,7 +754,7 @@ function CalendarGrid({ dates, bookingsFor, myId, canCreate, onBlocked, onCreate
                         type="button"
                         className={[styles.block, styles.blockOther, oneLine ? styles.blockOneLine : ''].join(' ')}
                         style={{ top, height, cursor: 'pointer', textAlign: 'left' }}
-                        onMouseDown={(e) => e.stopPropagation()}
+                        onPointerDown={(e) => e.stopPropagation()}
                         onClick={() => onPreview(d, cluster.map((b) => b.id))}
                         data-tip={`${fmtTime(cStart)} – ${fmtTime(cEnd)} · ${cluster.length} overlapping bookings — click to preview`}
                         data-tip-pos="top"
@@ -616,15 +774,19 @@ function CalendarGrid({ dates, bookingsFor, myId, canCreate, onBlocked, onCreate
                   }
                   const b = cluster[0];
                   const mine = b.by === myId;
+                  const who = mine ? 'Your booking' : `Booked by ${contactNameOf(b.by) || 'someone'}`;
+                  // A real button, as the overlap groups are: Tab reaches it and Enter opens it.
                   return (
-                    <div
+                    <button
                       key={b.id}
-                      className={[styles.block, mine ? styles.blockMine : styles.blockOther, oneLine ? styles.blockOneLine : ''].join(' ')}
+                      type="button"
+                      className={[styles.block, styles.blockBtn, mine ? styles.blockMine : styles.blockOther, oneLine ? styles.blockOneLine : ''].join(' ')}
                       // Pending approval reads amber, so a request looks different from a confirmed booking.
                       style={{ top, height, cursor: 'pointer', ...(b.approvalPending ? { background: 'var(--warning-050)', borderColor: 'var(--warning-700)', color: 'var(--warning-700)' } : {}) }}
-                      onMouseDown={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => e.stopPropagation()}
                       onClick={() => onPreview(d, [b.id])}
-                      data-tip={`${fmtTime(b.start)} – ${fmtTime(b.end)} · ${mine ? 'Your booking' : `Booked by ${contactNameOf(b.by) || 'someone'}`}${b.approvalPending ? ' · pending approval' : ''} — click to preview`}
+                      aria-label={`${fmtDay(d)}, ${fmtTime(b.start)} – ${fmtTime(b.end)} · ${who}${b.approvalPending ? ' · pending approval' : ''}`}
+                      data-tip={`${fmtTime(b.start)} – ${fmtTime(b.end)} · ${who}${b.approvalPending ? ' · pending approval' : ''} — click to preview`}
                       data-tip-pos="top"
                     >
                       {oneLine ? (
@@ -637,7 +799,7 @@ function CalendarGrid({ dates, bookingsFor, myId, canCreate, onBlocked, onCreate
                           <div className={styles.blockName}>{mine ? 'Your booking' : contactNameOf(b.by) || 'Booked'}</div>
                         </>
                       )}
-                    </div>
+                    </button>
                   );
                 })}
                 {inDrag && drag && (
@@ -721,10 +883,52 @@ function MonthGrid({ dates, monthIso, bookingsFor, onPickDay }: { dates: string[
 /* ─────────────────────────── Portfolio filter ─────────────────────────── */
 
 /**
+ * How many buildings' floor lists a ticked site reads at once — only where the data source has no
+ * site-wide floor read (see toggleSite). A site can hold hundreds of buildings (the org has 431),
+ * and reading them all in one burst spent the user's request budget in a second; two at a time
+ * finishes the same list without the burst.
+ */
+const FLOOR_READS_AT_ONCE = 2;
+
+/** `fn` over `items`, at most `width` running at a time; results come back in the items' order. */
+async function mapAtMost<T, R>(items: T[], width: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(width, items.length) }, worker));
+  return out;
+}
+
+/** The small "Couldn't load … · Retry" line the filter tree shows where a read failed. */
+function FilterRetry({ what, onRetry }: { what: string; onRetry: () => void }) {
+  return (
+    <div className={styles.filterLoading} role="alert">
+      Couldn’t load {what} ·{' '}
+      <button
+        type="button"
+        onClick={onRetry}
+        style={{ border: 'none', background: 'none', padding: 0, font: 'inherit', fontWeight: 600, color: 'var(--blue-600)', textDecoration: 'underline', cursor: 'pointer' }}
+      >
+        Retry
+      </button>
+    </div>
+  );
+}
+
+/**
  * "Filter": a popover checkbox tree (Site → Building → Floor). Buildings and floors load on
  * expand through the same data-source reads the portfolio tab uses; a search box narrows the
  * loaded rows. Apply hands the chosen floors up (the calendar re-reads with them in the request);
  * Reset clears everything.
+ *
+ * A read that FAILED is never kept as "no buildings" / "no floors": it used to be cached as an
+ * empty list, so a refused building looked floorless for the rest of the session. It is flagged
+ * instead, and the tree says "Couldn't load floors · Retry" where the rows would be.
  */
 function PortfolioFilter({ applied, onApply }: { applied: { id: string; name: string }[]; onApply: (floors: { id: string; name: string }[]) => void }) {
   const { state } = useFloorplanData();
@@ -736,7 +940,22 @@ function PortfolioFilter({ applied, onApply }: { applied: { id: string; name: st
   const [floorsByBuilding, setFloorsByBuilding] = useState<Record<string, Floor[]>>({});
   const [openSites, setOpenSites] = useState<Set<string>>(new Set());
   const [openBuildings, setOpenBuildings] = useState<Set<string>>(new Set());
+  /** Sites whose floors are being read after a tick — their checkbox waits until it has them all. */
+  const [loadingSites, setLoadingSites] = useState<Set<string>>(new Set());
+  /** Buildings whose own floor list is being read (an expand, or a building's tick). */
+  const [loadingBuildings, setLoadingBuildings] = useState<Set<string>>(new Set());
+  /** Sites whose building list, or whose site-wide floor list, could not be read. */
+  const [failedSites, setFailedSites] = useState<Record<string, 'buildings' | 'floors'>>({});
+  /** Buildings whose own floor list could not be read. */
+  const [failedBuildings, setFailedBuildings] = useState<Set<string>>(new Set());
   const wrapRef = useRef<HTMLDivElement>(null);
+  /**
+   * Bumped each time the popover closes. A tick's reads check it after every wait: an answer that
+   * lands after the popover closed ticks nothing (the draft it was for is gone — reopening starts a
+   * new one from what was applied), and the building-by-building fallback stops reading. What a
+   * late answer brings is still kept for the tree, since it is the org's answer either way.
+   */
+  const session = useRef(0);
 
   useEffect(() => {
     if (!open) return;
@@ -747,23 +966,93 @@ function PortfolioFilter({ applied, onApply }: { applied: { id: string; name: st
     return () => document.removeEventListener('mousedown', onDoc);
   }, [open]);
 
+  useEffect(() => {
+    if (open) return;
+    session.current += 1;
+    // Nothing still being read for this popover holds a site's box shut in the next one.
+    setLoadingSites(new Set());
+  }, [open]);
+
   // The portfolio in state may already carry children; a cached [] means "loaded, none", null "not yet".
   const buildingsOf = (site: Site): Building[] | null => (site.buildings?.length ? site.buildings : buildingsBySite[site.id] ?? null);
   const floorsOf = (b: Building): Floor[] | null => (b.floors?.length ? b.floors : floorsByBuilding[b.id] ?? null);
 
-  const loadBuildings = async (site: Site): Promise<Building[]> => {
+  const without = <T,>(set: Set<T>, item: T) => {
+    const n = new Set(set);
+    n.delete(item);
+    return n;
+  };
+  const clearSiteFailure = (siteId: string) =>
+    setFailedSites((m) => {
+      if (!(siteId in m)) return m;
+      const n = { ...m };
+      delete n[siteId];
+      return n;
+    });
+
+  /** The site's buildings, or null when they could not be read (flagged, never cached as none). */
+  const loadBuildings = async (site: Site): Promise<Building[] | null> => {
     const have = buildingsOf(site);
     if (have) return have;
-    const list = await dataSource.getBuildings(site.id).catch(() => [] as Building[]);
-    setBuildingsBySite((m) => ({ ...m, [site.id]: list }));
-    return list;
+    clearSiteFailure(site.id);
+    try {
+      const list = await dataSource.getBuildings(site.id);
+      setBuildingsBySite((m) => ({ ...m, [site.id]: list }));
+      return list;
+    } catch {
+      setFailedSites((m) => ({ ...m, [site.id]: 'buildings' }));
+      return null;
+    }
   };
-  const loadFloors = async (b: Building): Promise<Floor[]> => {
+  /** One building's floors, or null when they could not be read (flagged, never cached as none). */
+  const loadFloors = async (b: Building): Promise<Floor[] | null> => {
     const have = floorsOf(b);
     if (have) return have;
-    const list = await dataSource.getFloors(b.id).catch(() => [] as Floor[]);
-    setFloorsByBuilding((m) => ({ ...m, [b.id]: list }));
-    return list;
+    setFailedBuildings((s) => without(s, b.id));
+    setLoadingBuildings((s) => new Set(s).add(b.id));
+    try {
+      const list = await dataSource.getFloors(b.id);
+      setFloorsByBuilding((m) => ({ ...m, [b.id]: list }));
+      return list;
+    } catch {
+      setFailedBuildings((s) => new Set(s).add(b.id));
+      return null;
+    } finally {
+      setLoadingBuildings((s) => without(s, b.id));
+    }
+  };
+  /**
+   * Every floor of a site's buildings, by building — ONE site-wide read where the data source has
+   * one (`getSiteFloors`). It used to be one floor list per building: 61 requests for a 60-building
+   * site, against the same per-minute limit as everything else. Null when it could not be read.
+   * `isCurrent` says whether the popover that asked is still open.
+   */
+  const loadSiteFloors = async (site: Site, bs: Building[], isCurrent: () => boolean): Promise<Record<string, Floor[]> | null> => {
+    const known = (rec: Record<string, Floor[]>) => Object.fromEntries(bs.map((b) => [b.id, rec[b.id] ?? []]));
+    const have: Record<string, Floor[]> = {};
+    for (const b of bs) {
+      const f = floorsOf(b);
+      if (f) have[b.id] = f;
+    }
+    if (Object.keys(have).length === bs.length) return have;
+    clearSiteFailure(site.id);
+    if (dataSource.getSiteFloors) {
+      try {
+        const bySite = await dataSource.getSiteFloors(site.id);
+        // The read succeeded, so a building it doesn't name has no floors — that one IS kept as none.
+        const filled = known(bySite);
+        setFloorsByBuilding((m) => ({ ...m, ...filled }));
+        return { ...filled, ...have };
+      } catch {
+        setFailedSites((m) => ({ ...m, [site.id]: 'floors' }));
+        return null;
+      }
+    }
+    // No site-wide read on this data source: building by building, two at a time, stopping once
+    // the popover has closed. Any building that could not be read fails the tick as a whole.
+    const lists = await mapAtMost(bs, FLOOR_READS_AT_ONCE, async (b) => (isCurrent() ? loadFloors(b) : null));
+    if (lists.some((l) => l === null)) return null;
+    return Object.fromEntries(bs.map((b, i) => [b.id, lists[i] as Floor[]]));
   };
 
   // Several buildings share floor names ("Floor 1"), so a chip carries the building too.
@@ -786,15 +1075,39 @@ function PortfolioFilter({ applied, onApply }: { applied: { id: string; name: st
       return n;
     });
   const toggleBuilding = async (b: Building) => {
+    const mine = session.current;
     setOpenBuildings((s) => new Set(s).add(b.id));
-    setAllOrNone((await loadFloors(b)).map((f) => ({ id: f.id, name: chipLabel(b, f) })));
+    const floors = await loadFloors(b);
+    if (!floors || session.current !== mine) return;
+    setAllOrNone(floors.map((f) => ({ id: f.id, name: chipLabel(b, f) })));
   };
+  // Each building of the site shows "Loading…" until its floors arrive (the tree renders that for
+  // any expanded building with none yet), and the site's own box can't be ticked again meanwhile.
+  // A read that failed ticks nothing and says so under the site, with Retry.
   const toggleSite = async (site: Site) => {
+    if (loadingSites.has(site.id)) return;
+    const mine = session.current;
+    const isCurrent = () => session.current === mine;
     setOpenSites((s) => new Set(s).add(site.id));
-    const bs = await loadBuildings(site);
-    setOpenBuildings((s) => new Set([...s, ...bs.map((x) => x.id)]));
-    const entries = await Promise.all(bs.map(async (b) => (await loadFloors(b)).map((f) => ({ id: f.id, name: chipLabel(b, f) }))));
-    setAllOrNone(entries.flat());
+    setLoadingSites((s) => new Set(s).add(site.id));
+    try {
+      const bs = await loadBuildings(site);
+      if (!bs || !isCurrent()) return;
+      setOpenBuildings((s) => new Set([...s, ...bs.map((x) => x.id)]));
+      const bySite = await loadSiteFloors(site, bs, isCurrent);
+      if (!bySite || !isCurrent()) return;
+      setAllOrNone(bs.flatMap((b) => (bySite[b.id] ?? []).map((f) => ({ id: f.id, name: chipLabel(b, f) }))));
+    } finally {
+      if (isCurrent()) setLoadingSites((s) => without(s, site.id));
+    }
+  };
+  /** Retry after a failed read: reads again, ticks nothing — the box is there to tick once it has them. */
+  const retrySite = (site: Site, what: 'buildings' | 'floors') => {
+    const mine = session.current;
+    void (async () => {
+      const bs = await loadBuildings(site);
+      if (bs && what === 'floors') await loadSiteFloors(site, bs, () => session.current === mine);
+    })();
   };
 
   const q = search.trim().toLowerCase();
@@ -882,7 +1195,14 @@ function PortfolioFilter({ applied, onApply }: { applied: { id: string; name: st
               </div>
             </div>
           )}
-          <input className={styles.filterSearch} placeholder="Search sites, buildings, floors…" value={search} onChange={(e) => setSearch(e.target.value)} autoFocus />
+          <input
+            className={styles.filterSearch}
+            placeholder="Search sites, buildings, floors…"
+            aria-label="Search sites, buildings and floors"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            autoFocus
+          />
           <div className={styles.filterTree}>
             {state.portfolio.filter(siteVisible).map((site) => {
               const expanded = q ? true : openSites.has(site.id);
@@ -890,13 +1210,26 @@ function PortfolioFilter({ applied, onApply }: { applied: { id: string; name: st
               const siteFloors = (bs ?? []).flatMap((b) => floorsOf(b) ?? []);
               const siteSel = siteFloors.filter((f) => draft.has(f.id)).length;
               const siteAll = siteFloors.length > 0 && siteSel === siteFloors.length;
+              // The site's floor read failed: its own line says so, once, and its buildings with no
+              // floors show nothing rather than a "Loading…" that nothing will end.
+              const siteFloorsFailed = failedSites[site.id] === 'floors';
               return (
                 <div key={site.id}>
                   <label className={styles.filterRow}>
-                    <input type="checkbox" checked={siteAll} ref={checkboxRef(siteSel > 0, siteAll)} onChange={() => void toggleSite(site)} />
+                    <input
+                      type="checkbox"
+                      checked={siteAll}
+                      ref={checkboxRef(siteSel > 0, siteAll)}
+                      disabled={loadingSites.has(site.id)}
+                      aria-busy={loadingSites.has(site.id) || undefined}
+                      onChange={() => void toggleSite(site)}
+                    />
                     <span className={styles.filterName}>{site.name}</span>
                     <button
+                      type="button"
                       className={styles.chevBtn}
+                      aria-label={`${expanded ? 'Collapse' : 'Expand'} ${site.name}`}
+                      aria-expanded={expanded}
                       onClick={(e) => {
                         e.preventDefault();
                         setOpenSites((s) => {
@@ -911,7 +1244,11 @@ function PortfolioFilter({ applied, onApply }: { applied: { id: string; name: st
                       {expanded ? '▾' : '▸'}
                     </button>
                   </label>
-                  {expanded && bs === null && <div className={styles.filterLoading}>Loading…</div>}
+                  {expanded && failedSites[site.id] ? (
+                    <FilterRetry what={failedSites[site.id]} onRetry={() => retrySite(site, failedSites[site.id])} />
+                  ) : (
+                    expanded && bs === null && <div className={styles.filterLoading}>Loading…</div>
+                  )}
                   {expanded &&
                     (bs ?? [])
                       .filter((b) => !q || hit(site.name) || hit(b.name) || (floorsOf(b) ?? []).some((f) => hit(f.name)))
@@ -926,7 +1263,10 @@ function PortfolioFilter({ applied, onApply }: { applied: { id: string; name: st
                               <input type="checkbox" checked={bAll} ref={checkboxRef(bSel > 0, bAll)} onChange={() => void toggleBuilding(b)} />
                               <span className={styles.filterName}>{b.name}</span>
                               <button
+                                type="button"
                                 className={styles.chevBtn}
+                                aria-label={`${bExpanded ? 'Collapse' : 'Expand'} ${b.name}`}
+                                aria-expanded={bExpanded}
                                 onClick={(e) => {
                                   e.preventDefault();
                                   setOpenBuildings((s) => {
@@ -941,7 +1281,13 @@ function PortfolioFilter({ applied, onApply }: { applied: { id: string; name: st
                                 {bExpanded ? '▾' : '▸'}
                               </button>
                             </label>
-                            {bExpanded && fls === null && <div className={styles.filterLoading}>Loading…</div>}
+                            {bExpanded &&
+                              fls === null &&
+                              (failedBuildings.has(b.id) ? (
+                                <FilterRetry what="floors" onRetry={() => void loadFloors(b)} />
+                              ) : siteFloorsFailed && !loadingBuildings.has(b.id) ? null : (
+                                <div className={styles.filterLoading}>Loading…</div>
+                              ))}
                             {bExpanded &&
                               (fls ?? [])
                                 .filter((f) => !q || hit(site.name) || hit(b.name) || hit(f.name))

@@ -78,6 +78,9 @@ export interface LabelPlacement {
   h?: number;
   /** The department runs to two lines. */
   deptLines?: 1 | 2;
+  /** A long holder name, a size down (LONG_HOLDER_SCALE) and on two lines where it needs them. */
+  subSmall?: boolean;
+  subLines?: 1 | 2;
   /** Half the chip's screen size the layout placed against — the card and the pill are offset from it. */
   half?: number;
 }
@@ -263,6 +266,37 @@ export function cardWidthScale(t: LabelTypography): number {
 export function subMaxChars(t: LabelTypography = DEFAULT_LABEL_TYPOGRAPHY): number {
   return Math.floor((CARD_MAX_PX * cardWidthScale(t) - CARD_EXTRA_W) / (t.subFont * 0.55));
 }
+/**
+ * A long holder name ("Mariam Rashed Ali Belwatir AlMazrouei") — wider than its desk code and than
+ * LONG_HOLDER_PX — is set this much smaller and breaks onto a second line, so the card stays about
+ * as wide as the code instead of spanning its neighbours on one line.
+ */
+export const LONG_HOLDER_SCALE = 0.85;
+const LONG_HOLDER_PX = 110;
+/** Characters a holder may run to and still be printed whole: two lines of the smaller type. */
+export function holderMaxChars(t: LabelTypography = DEFAULT_LABEL_TYPOGRAPHY): number {
+  return Math.floor((2 * subMaxChars(t)) / LONG_HOLDER_SCALE);
+}
+/** The smaller type a long holder name is set in: its size and line height, in px. */
+export function longHolderType(t: LabelTypography): { font: number; line: number } {
+  const font = Math.round(t.subFont * LONG_HOLDER_SCALE * 10) / 10;
+  return { font, line: lineHeightFor(font) };
+}
+/**
+ * The longer of a name's two lines when broken at the word that evens them most, as a share of the
+ * whole — what its width is split to.
+ */
+export function longerLineShare(text: string): number {
+  const words = text.split(' ').filter(Boolean);
+  if (words.length < 2) return 1;
+  const total = words.join(' ').length;
+  let best = total;
+  for (let i = 1; i < words.length; i++) {
+    const first = words.slice(0, i).join(' ').length;
+    best = Math.min(best, Math.max(first, total - first - 1));
+  }
+  return best / total;
+}
 /** The "Your desk" pill carries an icon and more generous padding than a plain label. */
 const PILL_EXTRA = 26;
 const PILL_HEIGHT = 20;
@@ -382,9 +416,10 @@ class PlacedSides {
   }
 }
 
-/** The card's height for its lines. */
-export function cardHeight(sub: boolean, deptLines: 0 | 1 | 2, t: LabelTypography = DEFAULT_LABEL_TYPOGRAPHY): number {
-  return CARD_EXTRA_H + t.nameLine + (sub ? t.subLine : 0) + deptLines * t.deptLine;
+/** The card's height for its lines. A long holder name (`subSmall`) is set smaller, on `subLines` lines. */
+export function cardHeight(sub: boolean, deptLines: 0 | 1 | 2, t: LabelTypography = DEFAULT_LABEL_TYPOGRAPHY, subLines: 1 | 2 = 1, subSmall = false): number {
+  const subLine = subSmall ? longHolderType(t).line : t.subLine;
+  return CARD_EXTRA_H + t.nameLine + (sub ? subLines * subLine : 0) + deptLines * t.deptLine;
 }
 
 /**
@@ -432,8 +467,12 @@ export function planMarkerLabels(inputs: MarkerLabelInput[], opts: LabelLayoutOp
 
     if (i.name) {
       const nameW = i.nameW ?? estimateTextWidth(i.name, t.nameFont);
-      const subW = i.sub ? (i.subW ?? estimateTextWidth(i.sub, t.subFont)) : 0;
+      const fullSubW = i.sub ? (i.subW ?? estimateTextWidth(i.sub, t.subFont)) : 0;
       const deptW = i.dept ? (i.deptW ?? estimateTextWidth(i.dept, t.deptFont)) : 0;
+      // A long name, a size down, and the width it takes broken onto two lines.
+      const subSmall = !!i.sub && fullSubW > Math.max(nameW, LONG_HOLDER_PX * cardWidthScale(t));
+      const subW = subSmall ? fullSubW * LONG_HOLDER_SCALE : fullSubW;
+      const holderW = subSmall ? Math.max(nameW, subW * longerLineShare(i.sub!)) : subW;
 
       // What the card may carry, most first; for each, its own width then narrower ones. The caps
       // are set for the default type and scale with the one in use (see cardWidthScale).
@@ -444,8 +483,8 @@ export function planMarkerLabels(inputs: MarkerLabelInput[], opts: LabelLayoutOp
         return [own, ...narrower.map((n) => Math.round(n * ws)).filter((n) => n < own)];
       };
       const variants: Variant[] = [];
-      if (i.sub && i.dept) variants.push({ sub: true, dept: true, widths: widthsFor(Math.max(nameW, subW, deptW), FULL_NARROWER_PX) });
-      if (i.sub) variants.push({ sub: true, dept: false, widths: widthsFor(Math.max(nameW, subW), NAME_SUB_NARROWER_PX) });
+      if (i.sub && i.dept) variants.push({ sub: true, dept: true, widths: widthsFor(Math.max(nameW, holderW, deptW), FULL_NARROWER_PX) });
+      if (i.sub) variants.push({ sub: true, dept: false, widths: widthsFor(Math.max(nameW, holderW), NAME_SUB_NARROWER_PX) });
       variants.push({ sub: false, dept: false, widths: widthsFor(nameW, NAME_NARROWER_PX) });
       // Its last spot first, if it had one; then the side its nearest placed neighbour took; then
       // the usual order.
@@ -460,7 +499,11 @@ export function planMarkerLabels(inputs: MarkerLabelInput[], opts: LabelLayoutOp
         for (const w of v.widths) {
           // A department wider than the card runs to a second line rather than ending in "…".
           const deptLines: 0 | 1 | 2 = v.dept ? (deptW > w - CARD_EXTRA_W ? 2 : 1) : 0;
-          const h = cardHeight(v.sub, deptLines, t);
+          // So does a long holder name — one set a size down (`subSmall`), the only kind the marker
+          // draws on two lines. A medium name at full size, merely wider than the card, keeps one
+          // line and ends in "…": reserving a second for it left a blank line under the cut name.
+          const subLines: 1 | 2 = v.sub && subSmall && subW > w - CARD_EXTRA_W ? 2 : 1;
+          const h = cardHeight(v.sub, deptLines, t, subLines, v.sub && subSmall);
           for (const pos of positions) {
             // The pill stands above the chip: a card never goes there too.
             if (placement.pill && pos === 'above') continue;
@@ -475,6 +518,8 @@ export function planMarkerLabels(inputs: MarkerLabelInput[], opts: LabelLayoutOp
             placement.w = w;
             placement.h = h;
             if (v.dept) placement.deptLines = deptLines as 1 | 2;
+            if (v.sub && subSmall) placement.subSmall = true;
+            if (v.sub && subLines === 2) placement.subLines = 2;
             sides.add(cx, cy, pos);
             break search;
           }

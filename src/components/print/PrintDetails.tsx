@@ -1,4 +1,5 @@
 import { Fragment, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
 import type { RegisterKind, RegisterPrint } from '../../lib/types';
 import type { AppState } from '../../state/types';
@@ -18,11 +19,39 @@ const SCOPES: { value: AppState['printScope']; label: string }[] = [
 ];
 
 /**
+ * The arrow keys of a row of choices — the Plan radios and the Details tabs — as the ARIA patterns
+ * for those roles have them: one stop on Tab (the chosen one, tabIndex 0, the rest -1), arrows move
+ * to the next or previous and choose it, Home and End to the first and last. Without them a
+ * keyboard user could reach the chosen one alone.
+ */
+function rovingKeys<T>(values: readonly T[], current: T, choose: (value: T) => void) {
+  return (e: ReactKeyboardEvent<HTMLElement>) => {
+    const i = values.indexOf(current);
+    const next =
+      e.key === 'ArrowRight' || e.key === 'ArrowDown'
+        ? (i + 1) % values.length
+        : e.key === 'ArrowLeft' || e.key === 'ArrowUp'
+          ? (i - 1 + values.length) % values.length
+          : e.key === 'Home'
+            ? 0
+            : e.key === 'End'
+              ? values.length - 1
+              : null;
+    if (next === null) return;
+    e.preventDefault();
+    choose(values[next]);
+    const row = e.currentTarget.parentElement;
+    (row?.children[next] as HTMLElement | undefined)?.focus();
+  };
+}
+
+/**
  * The print window's settings: what the plan's page shows (Plan), and what the registers after it
  * list — desks and rooms after a desk plan, stalls after a parking plan, lockers after a locker plan
  * — a tab each, every kind with its own choices. Staged like the Settings modals — nothing reaches
- * the pages until Apply, which applies the plan and every tab — and kept for everyone (the settings
- * blob), so every printout reads the same.
+ * the pages until Apply, which applies the plan and every tab — and kept for everyone (the print
+ * settings, which anyone who prints may change: the app database's 'print' row, see
+ * lib/sharedSettings), so every printout reads the same.
  */
 export function PrintDetails({ labelFields, onClose }: { labelFields: Partial<Record<RegisterKind, LabelField>>; onClose: () => void }) {
   const { state, actions } = useFloorplanData();
@@ -55,7 +84,20 @@ export function PrintDetails({ labelFields, onClose }: { labelFields: Partial<Re
         <span className={styles.planLabel}>Plan</span>
         <div className={styles.planSeg} role="radiogroup" aria-label="Plan">
           {SCOPES.map((s) => (
-            <button key={s.value} type="button" role="radio" aria-checked={scope === s.value} className={[styles.tab, scope === s.value ? styles.tabOn : ''].join(' ')} onClick={() => setScope(s.value)}>
+            <button
+              key={s.value}
+              type="button"
+              role="radio"
+              aria-checked={scope === s.value}
+              tabIndex={scope === s.value ? 0 : -1}
+              onKeyDown={rovingKeys(
+                SCOPES.map((x) => x.value),
+                scope,
+                setScope,
+              )}
+              className={[styles.tab, scope === s.value ? styles.tabOn : ''].join(' ')}
+              onClick={() => setScope(s.value)}
+            >
               {s.label}
             </button>
           ))}
@@ -68,7 +110,16 @@ export function PrintDetails({ labelFields, onClose }: { labelFields: Partial<Re
             {kinds.map((k) => {
               const n = changedIn(k);
               return (
-                <button key={k} type="button" role="tab" aria-selected={tab === k} className={[styles.tab, tab === k ? styles.tabOn : ''].join(' ')} onClick={() => setTab(k)}>
+                <button
+                  key={k}
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === k}
+                  tabIndex={tab === k ? 0 : -1}
+                  onKeyDown={rovingKeys(kinds, tab, setTab)}
+                  className={[styles.tab, tab === k ? styles.tabOn : ''].join(' ')}
+                  onClick={() => setTab(k)}
+                >
                   {REGISTERS[k].many[0].toUpperCase() + REGISTERS[k].many.slice(1)}
                   {n > 0 && <span className={styles.tabDot} aria-label={`${n} unsaved`} />}
                 </button>

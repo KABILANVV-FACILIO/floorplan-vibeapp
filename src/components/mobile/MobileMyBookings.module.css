@@ -147,6 +147,11 @@
 .cancelBtn:active {
   background: var(--danger-050);
 }
+/* Its cancel is on its way: no second press. */
+.cancelBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 
 .empty {
   display: flex;

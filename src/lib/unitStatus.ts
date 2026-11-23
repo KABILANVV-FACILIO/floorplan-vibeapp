@@ -1,8 +1,9 @@
 import type { AppState } from '../state/types';
 import { personInitials } from './displayNames';
-import { colorByOf, conflictsFor, contactById, isAssignable, isBookable, multiSelectedSet, showsHolder } from '../state/selectors';
+import { colorByOf, conflictsFor, contactById, departmentColorIds, isAssignable, isBookable, multiSelectedSet, showsHolder } from '../state/selectors';
 import { isRoomLike, resolveMarkerDef, STATE_DEFS } from './types';
-import { departmentColor, departmentKey, departmentsIn } from './departmentColors';
+import { departmentColor, departmentKey } from './departmentColors';
+import { isReserved, isTemporarilyVacant } from './recordStates';
 import type { Unit } from './types';
 import { fmtTime } from './geometry';
 
@@ -112,13 +113,10 @@ export function markerStyle(state: AppState, unit: Unit, markerScale = 1): Marke
     // as departmentsIn keys it for the legend and the counts card.
     const deptKey = unit.departmentId || (unit.department?.trim() ? 'name:' + departmentKey(unit.department) : null);
     if (colorByOf(state) === 'department' && unit.type === 'workstation' && deptKey) {
-      // Keyed by the department's record id, so a rename in Facilio keeps the colour. The set of
-      // ids on the plan goes along, so no two departments here can land on the same colour.
-      const c = departmentColor(
-        deptKey,
-        state.departmentColors,
-        departmentsIn(state.units).map((d) => d.id),
-      );
+      // Keyed by the department's record id, so a rename in Facilio keeps the colour. The set the
+      // defaults are resolved over goes along (departmentColorIds — the one Settings uses), so no
+      // two departments land on the same colour and each has the same one everywhere.
+      const c = departmentColor(deptKey, state.departmentColors, departmentColorIds(state));
       return {
         bg: c,
         bd: c,
@@ -192,6 +190,23 @@ function contactNameFallback(state: AppState, contactId: string): string {
   return contactById(state, contactId)?.name ?? contactId;
 }
 
+/**
+ * What an unheld space is called: "Vacant" for a desk, locker or stall — their records' own word
+ * for it — and "Free" for a room or delivery area, whose records have no such state.
+ *
+ * Except where the record's own state says more, as the occupancy card counts it (floorCounts): a
+ * desk the org holds open as Temporarily Vacant, a stall that is Reserved. One desk was otherwise
+ * "Temporarily vacant" in the card and "Vacant" in its pill, tooltip and name. Drawn in the vacant
+ * colour all the same, so the legend's key still holds.
+ */
+function vacantWord(state: AppState, unit: Unit): string {
+  if (unit.type === 'room' || unit.type === 'delivery') return 'Free';
+  const recordState = state.recordStates?.[unit.id];
+  if (unit.type === 'workstation' && isTemporarilyVacant(recordState)) return 'Temporarily vacant';
+  if (unit.type === 'parking' && isReserved(recordState)) return 'Reserved';
+  return 'Vacant';
+}
+
 export function unitStatus(state: AppState, unit: Unit, contactName: (id: string) => string): UnitStatus {
   if (unit.type === 'amenity') {
     const name = unit.markerKind || unit.icon ? resolveMarkerDef(state.customMarkers, unit).name : 'Amenity';
@@ -205,7 +220,7 @@ export function unitStatus(state: AppState, unit: Unit, contactName: (id: string
     if (holder) {
       return { key: 'assigned', text: `Assigned · ${contactName(holder)}`, bg: TOKEN.blue050, fg: TOKEN.blue700, dot: moduleColor(state, unit.type, 'assigned') };
     }
-    return { key: 'free', text: 'Free', bg: TOKEN.success050, fg: TOKEN.success700, dot: moduleColor(state, unit.type, 'free') };
+    return { key: 'free', text: vacantWord(state, unit), bg: TOKEN.success050, fg: TOKEN.success700, dot: moduleColor(state, unit.type, 'free') };
   }
   if (state.mode === 'assign') {
     if (!isAssignable(unit)) {
@@ -221,7 +236,7 @@ export function unitStatus(state: AppState, unit: Unit, contactName: (id: string
         dot: moduleColor(state, unit.type, 'assigned'),
       };
     }
-    return { key: 'free', text: 'Free', bg: TOKEN.success050, fg: TOKEN.success700, dot: moduleColor(state, unit.type, 'free') };
+    return { key: 'free', text: vacantWord(state, unit), bg: TOKEN.success050, fg: TOKEN.success700, dot: moduleColor(state, unit.type, 'free') };
   }
   // book mode
   if (!isBookable(unit)) {

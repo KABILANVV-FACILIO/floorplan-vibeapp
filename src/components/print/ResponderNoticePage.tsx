@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplanData } from '../../state/FloorplanContext';
 import { holdersOf, peopleOnFloor, respondersOnFloor, rolesOnFloor } from '../../lib/firstResponders';
 import type { FloorPerson } from '../../lib/firstResponders';
 import type { ResponderRoleDef } from '../../lib/types';
@@ -18,7 +18,8 @@ import sheet from './PrintSheet.module.css';
  * Printed as the last page of the floor's sheet, only when the floor has someone to list.
  */
 export function ResponderNoticePage({ where, pageNo, pageCount, header }: { where: { floor: string; building: string; site: string }; pageNo: number; pageCount: number; header: ReactNode }) {
-  const { state } = useFloorplan();
+  // The view-less store: nothing on this page depends on where the plan is, so a pan does not redraw it.
+  const { state } = useFloorplanData();
   const onFloor = respondersOnFloor(state);
   const people = peopleOnFloor(onFloor);
   // A notice is read from across a corridor: a short list prints large, in one column. A longer one

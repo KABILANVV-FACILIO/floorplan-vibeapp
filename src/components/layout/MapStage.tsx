@@ -15,6 +15,7 @@ import { Toolbar } from './Toolbar';
 import { Button } from '../primitives/Button';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
 import { floorImageKey } from '../../lib/types';
+import { ErrorBoundary } from '../primitives/ErrorBoundary';
 import styles from './MapStage.module.css';
 
 export function MapStage({ stageRef }: { stageRef: RefObject<HTMLDivElement> }) {
@@ -69,7 +70,15 @@ export function MapStage({ stageRef }: { stageRef: RefObject<HTMLDivElement> }) 
 
       <Toolbar leftPad={leftPad} rightPad={rightPad} />
 
-      {showSkeleton ? <FloorplanSkeleton /> : !hasPlan ? <EmptyPlanState /> : <Canvas />}
+      {/* The drawing on its own boundary: a plan that fails to draw leaves the panels around it —
+          the floor picker among them — working, so another floor or plan type is a click away. */}
+      <ErrorBoundary
+        label="the floor plan"
+        resetKey={`${state.floorId}:${state.planId}:${state.mode}`}
+        onError={(message) => actions.showToast(`Something went wrong showing the floor plan — ${message}`, 6000)}
+      >
+        {showSkeleton ? <FloorplanSkeleton /> : !hasPlan ? <EmptyPlanState /> : <Canvas />}
+      </ErrorBoundary>
 
       <div className={styles.topBar}>
         {state.mode === 'edit' && state.unsavedChanges > 0 && (

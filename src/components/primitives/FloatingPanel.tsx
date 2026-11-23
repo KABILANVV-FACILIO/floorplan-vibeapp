@@ -18,7 +18,12 @@ interface FloatingPanelProps {
   zIndex?: number;
 }
 
-/** A draggable, collapsible floating panel used for Location and Details on the canvas. */
+/**
+ * A draggable, collapsible floating panel used for Location and Details on the canvas.
+ *
+ * Collapsed, it is a button — dragged to move it, pressed (click, Enter or Space) to open it. It
+ * was a div, so a panel collapsed from the keyboard could not be opened again from it.
+ */
 export function FloatingPanel({
   x,
   y,
@@ -36,16 +41,20 @@ export function FloatingPanel({
   zIndex = 41,
 }: FloatingPanelProps) {
   if (!open) {
+    const name = typeof title === 'string' ? `Open ${title}` : 'Open panel';
     return (
-      <div
+      <button
+        type="button"
         className={styles.iconDock}
         style={{ left: x, top: y, zIndex }}
         onMouseDown={onIconDown}
         onClick={onIconClick}
-        data-tip={typeof title === 'string' ? `Open ${title}` : undefined}
+        aria-label={name}
+        aria-expanded={false}
+        data-tip={typeof title === 'string' ? name : undefined}
       >
         {icon}
-      </div>
+      </button>
     );
   }
   return (
@@ -63,7 +72,7 @@ export function FloatingPanel({
           <circle cx="15" cy="18" r="1" />
         </svg>
         <span className={styles.title}>{title}</span>
-        <button className={styles.collapse} data-tip="Collapse" onClick={onToggle}>
+        <button type="button" className={styles.collapse} data-tip="Collapse" aria-label={typeof title === 'string' ? `Collapse ${title}` : 'Collapse panel'} aria-expanded onClick={onToggle}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M5 12h14" />
           </svg>

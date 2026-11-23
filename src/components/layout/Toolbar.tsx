@@ -103,6 +103,8 @@ export function Toolbar({ leftPad, rightPad }: { leftPad: number; rightPad: numb
         <button
           className={[styles.iconToggle, state.panels.details.open ? styles.iconToggleActive : ''].join(' ')}
           data-tip="Toggle details panel"
+          aria-label="Details panel"
+          aria-pressed={state.panels.details.open}
           onClick={() => actions.togglePanelOpen('details')}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">

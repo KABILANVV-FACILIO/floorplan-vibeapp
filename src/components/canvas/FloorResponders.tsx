@@ -18,6 +18,7 @@ export function FloorResponders() {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const chipRef = useRef<HTMLButtonElement>(null);
   // Where the list opens: above the chip, on the page itself. Drawn inside the plan it sat UNDER
   // the floating Location panel, which covers exactly the corner the chip is in.
   const [at, setAt] = useState<{ left: number; bottom: number } | null>(null);
@@ -41,11 +42,13 @@ export function FloorResponders() {
       const t = e.target as Node;
       if (!rootRef.current?.contains(t) && !panelRef.current?.contains(t)) setOpen(false);
     };
-    // Capture phase, stopped here: Escape closes the list, not the plan's selection behind it.
+    // Capture phase, stopped here: Escape closes the list, not the plan's selection behind it — and
+    // puts the keyboard back on the chip that opened it.
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       e.stopPropagation();
       setOpen(false);
+      chipRef.current?.focus();
     };
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey, true);
@@ -54,6 +57,20 @@ export function FloorResponders() {
       document.removeEventListener('keydown', onKey, true);
     };
   }, [open]);
+
+  // Opened, the keyboard goes into the list: it is drawn on the page itself (a portal), so Tab from
+  // the chip would never reach it. The first person is focused, a press of Enter from their desk.
+  // Once per opening: a resize places the list again, and must not pull the focus back to the top.
+  const focusedRef = useRef(false);
+  useEffect(() => {
+    if (!open) {
+      focusedRef.current = false;
+      return;
+    }
+    if (!at || focusedRef.current) return;
+    focusedRef.current = true;
+    panelRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
+  }, [open, at]);
 
   // A floor change closes it: the list was of the floor that was on screen.
   useEffect(() => setOpen(false), [state.floorId]);
@@ -65,7 +82,7 @@ export function FloorResponders() {
     // The plan reads a press as the start of a pan and a click as "deselect"; neither belongs to
     // this list.
     <div ref={rootRef} className={styles.root} onMouseDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
-      <button type="button" className={styles.chip} aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen((v) => !v)}>
+      <button ref={chipRef} type="button" className={styles.chip} aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen((v) => !v)}>
         <span className={styles.glyphs}>
           {roles.slice(0, 4).map((r) => (
             <ResponderGlyph key={r.id} role={r} size={13} />

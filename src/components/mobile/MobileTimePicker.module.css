@@ -7,6 +7,8 @@
   align-items: center;
   justify-content: center;
   padding: 20px;
+  /* The card is centred in what is left above the home bar, never under it. */
+  padding-bottom: calc(20px + env(safe-area-inset-bottom));
 }
 .sheet {
   width: 100%;

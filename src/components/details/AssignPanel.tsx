@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent as ReactDragEvent } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
-import { contactName, initials, isAssignable, unitById, visibleUnits } from '../../state/selectors';
+import { contactName, departmentColorIds, initials, isAssignable, spacesByPerson, unitById, visibleUnits } from '../../state/selectors';
 import { byDepartmentName, departmentDisplayName, employeeNumber, personDisplayName } from '../../lib/displayNames';
 import { TYPE_META } from '../../lib/types';
 import type { Unit } from '../../lib/types';
 import { facilioRecordUrl, isFacilioApiConfigured } from '../../lib/facilioApi';
+import { activateOnKey } from '../../lib/keyboard';
 import { fetchEmployeeFilterFields } from '../../lib/facilioApiDataSource';
 import { DEMO_FILTER_FIELDS } from '../../lib/employeeFilters';
 import type { AppliedFilter, FilterFieldDef } from '../../lib/employeeFilters';
-import { departmentColor, departmentKey, departmentsIn } from '../../lib/departmentColors';
+import { departmentColor, departmentKey } from '../../lib/departmentColors';
 import { Button } from '../primitives/Button';
 import { ButtonSpinner } from '../primitives/ButtonSpinner';
 import { SkeletonBlock, SkeletonRows } from '../primitives/Skeleton';
@@ -84,8 +85,9 @@ export function AssignPanel() {
 
 /**
  * The People list: search, a Department picker and the Filter panel, over the org's own list.
- * People are dragged onto the plan to assign them only with the Assignment right; without it the
- * list is for finding people — rows open the employee record, and nothing drags.
+ * People are dragged onto the plan to assign them only with the Assignment right; without it
+ * nothing drags. Either way a row whose person has a space on this plan shows it — a click, or
+ * Enter / Space on the focused row — and the icon at the row's end opens their employee record.
  */
 export function PeopleCard({ fixed = false }: { /** A set height, for a panel that scrolls as a whole (the Booking view's). */ fixed?: boolean } = {}) {
   const { state, actions } = useFloorplanData();
@@ -93,10 +95,10 @@ export function PeopleCard({ fixed = false }: { /** A set height, for a panel th
   const [dragId, setDragId] = useState<string | null>(null);
   const dragGhostRef = useRef<HTMLDivElement | null>(null);
 
-  // The org's own list, filtered AT THE ORG as you type — the same read the People page and the
-  // assign picker make. This panel used to match `state.employees` in the browser, so typing here
-  // sent nothing to the API: a person outside the roster loaded at boot was unfindable from the
-  // one list that sits beside the plan.
+  // The app's roster with nothing typed, filtered AT THE ORG as you type — the same as the People
+  // page and the assign picker. This panel used to match `state.employees` in the browser only, so
+  // typing here sent nothing to the API: a person outside the roster loaded at boot was unfindable
+  // from the one list that sits beside the plan.
   //
   // The Filter panel narrows the same request: its ticked fields go out in the SAME `filters`
   // payload as the search (see employeeFilters.buildEmployeeFilters). Session-only, this surface
@@ -121,10 +123,12 @@ export function PeopleCard({ fixed = false }: { /** A set height, for a panel th
     people: contacts,
     loading: peopleLoading,
     failed: filterFailed,
-  } = useLivePeople(state.contactSearch, state.employees, { filters, filterFields: filterFields ?? [] });
+    loadFailed: peopleLoadFailed,
+    retry: retryPeople,
+  } = useLivePeople(state.contactSearch, state.employees, { filters, filterFields: filterFields ?? [], rosterStatus: state.rosterStatus, reloadRoster: actions.reloadRoster });
 
   // Department colours exactly as the plan draws them: the same function, fed the same ids.
-  const planDeptIds = useMemo(() => departmentsIn(state.units).map((d) => d.id), [state.units]);
+  const planDeptIds = departmentColorIds(state);
   const deptIdByName = useMemo(() => new Map(state.departments.map((d) => [departmentKey(d.name), d.id])), [state.departments]);
   const deptColorForName = (name?: string) => {
     if (!name) return undefined;
@@ -171,9 +175,18 @@ export function PeopleCard({ fixed = false }: { /** A set height, for a panel th
 
   // A disabled module leaves no trace anywhere, so a holding of one is not listed against the
   // person either — it would name a unit the rest of the app has stopped showing.
-  function unitsHeldBy(contactId: string) {
-    return visibleUnits(state).filter((u) => state.assignments[u.id] === contactId).map((u) => u.label);
-  }
+  // Both per-person lookups are built once per change, in one pass each, and every row reads its
+  // own: scanning every space on the plan once per row, for the whole roster, slowed the panel.
+  const heldLabels = useMemo(() => {
+    const out = new Map<string, string[]>();
+    for (const u of visibleUnits(state)) {
+      const holder = state.assignments[u.id];
+      if (holder) out.set(holder, [...(out.get(holder) ?? []), u.label]);
+    }
+    return out;
+  }, [state]);
+  const unitsHeldBy = (contactId: string): string[] => heldLabels.get(contactId) ?? [];
+  const spaceByPerson = useMemo(() => spacesByPerson(state), [state]);
 
   function onDragStart(e: ReactDragEvent, contactId: string, name: string) {
     e.dataTransfer.setData('text/plain', contactId);
@@ -308,7 +321,17 @@ export function PeopleCard({ fixed = false }: { /** A set height, for a panel th
       <div className={styles.peopleBody}>
         {!(filterOpen && filterFields) && (
           <div className={styles.peopleList}>
-            {((state.loading && state.employees.length === 0) || (activeFilters > 0 && peopleLoading)) && <SkeletonRows rows={6} avatar />}
+            {((state.loading && state.employees.length === 0) || peopleLoading) && <SkeletonRows rows={6} avatar />}
+            {/* The roster read at boot failed (or a search could not be made) and left no one to
+                list: say so, with Retry, rather than an empty panel. */}
+            {activeFilters === 0 && peopleLoadFailed && contacts.length === 0 && (
+              <div className={styles.listNote} role="alert">
+                <b>Couldn’t load people.</b>
+                <button type="button" className={styles.linkBtn} onClick={retryPeople}>
+                  Retry
+                </button>
+              </div>
+            )}
             {activeFilters > 0 && filterFailed && (
               <div className={styles.listNote}>
                 <b>Couldn’t filter people right now.</b>
@@ -332,6 +355,10 @@ export function PeopleCard({ fixed = false }: { /** A set height, for a panel th
               // Mock demo ids look like "c1".."c14" and have no real record to open — only
               // real (numeric) employee ids from the real backend get a working summary-page link.
               const recordUrl = /^\d+$/.test(contact.id) ? facilioRecordUrl('employee', contact.id) : null;
+              // A click on the row shows their desk, stall or room on this plan, as a click on it
+              // would; their record opens from the icon at the end alone.
+              const space = spaceByPerson.get(contact.id) ?? null;
+              const showSpace = space ? () => actions.focusUnit(space.id, state.stage.w, state.stage.h) : undefined;
               return (
                 <div
                   key={contact.id}
@@ -340,9 +367,17 @@ export function PeopleCard({ fixed = false }: { /** A set height, for a panel th
                   draggable={assignOn}
                   onDragStart={assignOn ? (e) => onDragStart(e, contact.id, contact.name) : undefined}
                   onDragEnd={assignOn ? onDragEnd : undefined}
-                  onClick={() => recordUrl && window.open(recordUrl, '_blank', 'noopener,noreferrer')}
-                  style={{ opacity: dragId === contact.id ? 0.45 : 1, cursor: recordUrl ? 'pointer' : assignOn ? 'grab' : 'default' }}
-                  data-tip={recordUrl ? 'Open employee record' : undefined}
+                  onClick={showSpace}
+                  // A row that shows a space is a button for the keyboard too. Enter on the record
+                  // icon inside it is the icon's own (activateOnKey ignores keys from children).
+                  role={showSpace ? 'button' : undefined}
+                  tabIndex={showSpace ? 0 : undefined}
+                  aria-label={space ? `Show ${personDisplayName(contact.name)}'s ${space.label} on the plan` : undefined}
+                  onKeyDown={showSpace ? activateOnKey(showSpace) : undefined}
+                  // Where a row can be dragged, it keeps the grab cue — the drag is what assigning
+                  // is, and a pointer hid it; a click still shows the space.
+                  style={{ opacity: dragId === contact.id ? 0.45 : 1, cursor: assignOn ? 'grab' : space ? 'pointer' : 'default' }}
+                  data-tip={space ? `Show ${space.label} on the plan` : undefined}
                 >
                   <span className={styles.avatar}>
                     {initials(contact.name)}
@@ -356,10 +391,21 @@ export function PeopleCard({ fixed = false }: { /** A set height, for a panel th
                   </div>
                   {held.length > 0 && <span className={styles.heldBadge}>{held.join(', ')}</span>}
                   {recordUrl && (
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={styles.openIcon}>
-                      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                      <path d="M15 3h6v6M10 14L21 3" />
-                    </svg>
+                    <button
+                      type="button"
+                      className={styles.openBtn}
+                      aria-label={`Open ${personDisplayName(contact.name)}'s employee record`}
+                      data-tip="Open employee record"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        window.open(recordUrl, '_blank', 'noopener,noreferrer');
+                      }}
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={styles.openIcon}>
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                        <path d="M15 3h6v6M10 14L21 3" />
+                      </svg>
+                    </button>
                   )}
                 </div>
               );

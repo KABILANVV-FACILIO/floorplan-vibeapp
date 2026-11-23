@@ -52,6 +52,11 @@ export function MobileQrScanner({ onClose }: { onClose: () => void }) {
     }
     onClose();
   }
+  // The scan loop below is started once, when the camera does; it calls the CURRENT handler, so a
+  // code scanned after the floor's spaces (or the date, or the rights) arrived is matched against
+  // them — not against the floor as it was when the scanner opened.
+  const handleCodeRef = useRef(handleCode);
+  handleCodeRef.current = handleCode;
 
   useEffect(() => {
     // Camera scanning needs only getUserMedia: decode via the native
@@ -82,6 +87,9 @@ export function MobileQrScanner({ onClose }: { onClose: () => void }) {
         stream = acquired;
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
+        // Closed while the video was starting: the cleanup has run (and stopped the stream), so no
+        // scan loop may start now — it would keep running with nothing left to clear it.
+        if (cancelled) return;
         setCameraState('live');
 
         if ('BarcodeDetector' in window) {
@@ -94,7 +102,7 @@ export function MobileQrScanner({ onClose }: { onClose: () => void }) {
             detector
               .detect(video)
               .then((codes) => {
-                if (codes.length > 0 && codes[0].rawValue) handleCode(codes[0].rawValue);
+                if (codes.length > 0 && codes[0].rawValue) handleCodeRef.current(codes[0].rawValue);
               })
               .catch(() => {
                 /* per-frame decode errors are normal */
@@ -115,7 +123,7 @@ export function MobileQrScanner({ onClose }: { onClose: () => void }) {
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
             const code = jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
-            if (code?.data) handleCode(code.data);
+            if (code?.data) handleCodeRef.current(code.data);
           }, 450);
         }
       } catch {
@@ -166,6 +174,7 @@ export function MobileQrScanner({ onClose }: { onClose: () => void }) {
         <input
           className={styles.manualInput}
           value={manualCode}
+          aria-label="Space code"
           placeholder="Or type the space code (e.g. WS-07)"
           onChange={(e) => {
             setManualCode(e.target.value);

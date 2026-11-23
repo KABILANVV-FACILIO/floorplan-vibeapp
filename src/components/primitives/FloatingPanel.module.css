@@ -74,6 +74,9 @@
   position: absolute;
   width: 46px;
   height: 46px;
+  /* A <button>: none of a button's own padding or font. */
+  padding: 0;
+  font: inherit;
   border-radius: var(--radius-xl);
   background: #fff;
   border: 1px solid var(--ink-200);

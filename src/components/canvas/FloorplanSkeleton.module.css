@@ -184,3 +184,27 @@
     opacity: 1;
   }
 }
+
+/* Asked for less motion: the plan is drawn whole and still — no drawing-in, shimmer, sweeping beam
+   or moving dots. The walls start hidden by their dash offset and the rooms at no opacity, so each
+   is set to its end state rather than only having its animation taken away. */
+@media (prefers-reduced-motion: reduce) {
+  .draw,
+  .drawEase {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+  .rise {
+    animation: none;
+    opacity: 1;
+  }
+  .beamBand,
+  .beamLine {
+    display: none;
+  }
+  .progressBar,
+  .message,
+  .msgDot {
+    animation: none;
+  }
+}

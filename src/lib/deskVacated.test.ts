@@ -59,7 +59,9 @@ describe('waiting for the org to let go of a vacated desk', () => {
     await expect(result).resolves.toEqual({ cleared: false });
     await vi.advanceTimersByTimeAsync(60_000);
     expect(reads).toHaveBeenCalledTimes(3);
-    expect(reads).toHaveBeenCalledWith('desks', { id: 1676024 });
+    // Each read is asked ONCE — a refusal for rate is not waited out for a minute after the user may
+    // have moved on; the next pause decides whether to ask again.
+    expect(reads).toHaveBeenCalledWith('desks', { id: 1676024 }, { once: true });
   });
 
   it('stops at the first read that shows the holder gone', async () => {

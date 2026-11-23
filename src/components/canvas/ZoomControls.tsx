@@ -17,12 +17,12 @@ export function ZoomControls({ rectW, rectH }: { rectW: number; rectH: number })
         {scaleText} · {zoomPct}
       </span>
       <div className={styles.group}>
-        <button className={styles.btn} data-tip="Zoom in" onClick={() => actions.zoomIn(rectW, rectH)}>
+        <button className={styles.btn} data-tip="Zoom in" aria-label="Zoom in" onClick={() => actions.zoomIn(rectW, rectH)}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M12 5v14M5 12h14" />
           </svg>
         </button>
-        <button className={[styles.btn, styles.btnLast].join(' ')} data-tip="Zoom out" onClick={() => actions.zoomOut(rectW, rectH)}>
+        <button className={[styles.btn, styles.btnLast].join(' ')} data-tip="Zoom out" aria-label="Zoom out" onClick={() => actions.zoomOut(rectW, rectH)}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M5 12h14" />
           </svg>

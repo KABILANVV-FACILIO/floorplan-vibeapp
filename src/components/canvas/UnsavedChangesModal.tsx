@@ -22,7 +22,8 @@ export function UnsavedChangesModal() {
         Save or discard them before switching to {targetLabel}.
       </div>
       <ModalFooter>
-        <Button variant="secondary" onClick={actions.cancelModeSwitch}>
+        {/* Not while saving: the switch the save is for happens when it lands (cancelModeSwitch). */}
+        <Button variant="secondary" disabled={state.saving} onClick={actions.cancelModeSwitch}>
           Cancel
         </Button>
         <Button variant="danger" disabled={state.saving} onClick={actions.confirmDiscardAndSwitch}>

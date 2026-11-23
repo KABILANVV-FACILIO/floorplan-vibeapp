@@ -1,5 +1,5 @@
 import { CLOSED_RIGHTS, DEFAULT_ACCESS, SURFACE_ORDER, isModuleEnabled, isRoomLike, labelledType, unitOnPlan } from '../lib/types';
-import { ROOM_FONT, subMaxChars, typographyOf } from '../lib/labelLayout';
+import { ROOM_FONT, holderMaxChars, typographyOf } from '../lib/labelLayout';
 import type { LabelTypography } from '../lib/labelLayout';
 import type { LabelTextMeasure } from '../lib/textMeasure';
 import type { MarkerLabelInput, RoomLabelInput } from '../lib/labelLayout';
@@ -8,6 +8,7 @@ import type { Booking, Employee, Surface, Tab, Unit, UnitType } from '../lib/typ
 import type { AppState } from './types';
 import { departmentDisplayName, personDisplayName, personInitials, shortPersonName } from '../lib/displayNames';
 import { departmentColor, departmentKey, departmentsIn } from '../lib/departmentColors';
+import { isReserved, isTemporarilyVacant } from '../lib/recordStates';
 
 /*
  * Lookups by id, indexed once per array and cached on the array itself (a WeakMap, so a replaced
@@ -147,8 +148,12 @@ export interface FloorCount {
   total: number;
   /** Held by someone. Rooms are never held, so 0 for them. */
   occupied: number;
-  /** Booked in the date and hours picked in the toolbar, and not held. */
-  booked: number;
+  /**
+   * Not held, and set aside: a desk whose record is Temporarily Vacant, a stall whose record is
+   * Reserved (state.recordStates), a room booked in the date and hours picked in the toolbar.
+   */
+  aside: number;
+  /** The rest: vacant desks and stalls, free rooms. */
   free: number;
   /** Narrowed to the ticked departments (desks and stalls with any ticked). */
   narrowed: boolean;
@@ -156,24 +161,53 @@ export interface FloorCount {
 
 /**
  * What the counts card on the plan says (FloorCounts): per type, every space placed on the floor and
- * how many are occupied, booked in the window on screen, and free — a held space counts as occupied
- * whatever its bookings, so the three add up. A type the floor has none of is left out.
+ * how many are occupied, set aside (desks Temporarily Vacant, stalls Reserved, rooms booked in the
+ * window on screen) and vacant or free — a held space counts as occupied whatever else is true of
+ * it, so the three add up. A type the floor has none of is left out.
  */
 export function floorCounts(state: AppState): FloorCount[] {
   const booked = bookedUnitIds(state);
   const narrowed = activeDepartments(state).length > 0;
   const out: FloorCount[] = [];
+  // A holder first, whatever the record's state says: the org clears a vacated desk's holder a
+  // moment after moving it to Temporarily Vacant (waitForDeskVacated), and a desk mid-way is still
+  // theirs. Desks and stalls are not booked in this org; rooms are, and have no such states.
+  const setAside: Record<CountedType, (u: Unit) => boolean> = {
+    workstation: (u) => isTemporarilyVacant(state.recordStates[u.id]),
+    parking: (u) => isReserved(state.recordStates[u.id]),
+    room: (u) => booked.has(u.id),
+  };
   for (const type of COUNTED_TYPES) {
-    const row: FloorCount = { type, total: 0, occupied: 0, booked: 0, free: 0, narrowed: narrowed && type !== 'room' };
+    const row: FloorCount = { type, total: 0, occupied: 0, aside: 0, free: 0, narrowed: narrowed && type !== 'room' };
     for (const u of countedUnits(state, type)) {
       row.total++;
       if (type !== 'room' && state.assignments[u.id]) row.occupied++;
-      else if (booked.has(u.id)) row.booked++;
+      else if (setAside[type](u)) row.aside++;
       else row.free++;
     }
     if (row.total) out.push(row);
   }
   return out;
+}
+
+const departmentIdLists = new WeakMap<object, string[]>();
+
+/**
+ * The departments a default colour is worked out over — ONE set for every surface, so a department
+ * gets the same default on the plan, its legend, the counts card, the People list, Settings and the
+ * print: the org's department list once it has loaded (Settings lists those), else the departments
+ * on this floor (the local tier, and before the org's list arrives). The colours are resolved as a
+ * set so that no two land alike (departmentColorMap); resolved over two different sets — Settings
+ * the org's, the plan the floor's — one department could get two defaults.
+ */
+export function departmentColorIds(state: AppState): string[] {
+  const source: object = state.departments.length ? state.departments : state.units;
+  let ids = departmentIdLists.get(source);
+  if (!ids) {
+    ids = state.departments.length ? state.departments.map((d) => d.id) : departmentsIn(state.units).map((d) => d.id);
+    departmentIdLists.set(source, ids);
+  }
+  return ids;
 }
 
 /**
@@ -182,7 +216,7 @@ export function floorCounts(state: AppState): FloorCount[] {
  * exactly as the Legend keys them; desks with none last, in the free colour, as "No department".
  */
 export function deskDepartmentCounts(state: AppState, freeColor: string): { id: string; name: string; color: string; total: number; occupied: number }[] {
-  const ids = departmentsIn(state.units).map((d) => d.id);
+  const ids = departmentColorIds(state);
   const rows = new Map<string, { id: string; name: string; color: string; total: number; occupied: number }>();
   for (const u of countedUnits(state, 'workstation')) {
     const name = u.department?.trim();
@@ -342,14 +376,70 @@ export function planMarkers(state: AppState): Unit[] {
   return visibleUnits(state).filter((u) => !isRoomLike(u.type) && !u.unplaced && (u.type === 'amenity' || unitOnPlan(u, state.planId)));
 }
 
+/** Whether a booking is this person's: they made it (`by` — what an org booking carries), or it is for them (`host`). */
+function bookingIsFor(b: Booking, contactId: string): boolean {
+  return b.by === contactId || b.host === contactId;
+}
+
+/** Whether a booking covers the date and hours picked in the toolbar. */
+function inWindow(state: AppState, b: Booking): boolean {
+  return b.date === state.date && b.start < state.end && b.end > state.start;
+}
+
+/** The desks, stalls and rooms on the plan on screen — what spaceOfPerson can show. */
+function personSpacesOnPlan(state: AppState): Unit[] {
+  return [...planMarkers(state), ...planRooms(state)].filter((u) => u.type !== 'amenity');
+}
+
+/**
+ * The space this person has on the plan on screen — the desk, stall or room they hold, else one
+ * they have booked in the date and hours picked in the toolbar — or null. What a click on their row
+ * in the People list shows, as a click on the space itself would.
+ *
+ * "Booked" is a booking they made or one made for them: an org booking names its booker in `by`
+ * (reservedBy) and its host only when the form had one, so matching the host alone found no org
+ * booking at all.
+ */
+export function spaceOfPerson(state: AppState, contactId: string): Unit | null {
+  const onPlan = personSpacesOnPlan(state);
+  const held = onPlan.find((u) => state.assignments[u.id] === contactId);
+  if (held) return held;
+  const booking = (state.bookings ?? []).find((b) => bookingIsFor(b, contactId) && inWindow(state, b) && onPlan.some((u) => u.id === b.unitId));
+  return booking ? onPlan.find((u) => u.id === booking.unitId) ?? null : null;
+}
+
+/**
+ * spaceOfPerson for everyone at once: one pass over the plan and the bookings, answering each
+ * person exactly as spaceOfPerson would (the first space they hold, in the plan's order; else the
+ * space of their first booking in the window). The People list asks for every row on every render,
+ * and spaceOfPerson scans every space on the plan per row.
+ */
+export function spacesByPerson(state: AppState): Map<string, Unit> {
+  const onPlan = personSpacesOnPlan(state);
+  const byId = new Map(onPlan.map((u) => [u.id, u]));
+  const out = new Map<string, Unit>();
+  for (const u of onPlan) {
+    const holder = state.assignments[u.id];
+    if (holder && !out.has(holder)) out.set(holder, u);
+  }
+  // Then bookings, in their order, for whoever holds nothing here: the first one in the window wins.
+  for (const b of state.bookings ?? []) {
+    const unit = byId.get(b.unitId);
+    if (!unit || !inWindow(state, b)) continue;
+    for (const who of [b.by, b.host]) if (who && !out.has(who)) out.set(who, unit);
+  }
+  return out;
+}
+
 /**
  * What a desk says UNDER its chip in Assignment view: who holds it, and their department — one
  * function for the layout that measures it and the marker that draws it, so what was measured is
  * what is drawn, on screen and on paper alike.
  *
- * The holder is the name without its employee number, shortened to first name + surname when it
- * would not fit a label ("Abdulrahman Abdullah Khalaf AlAnazi" → "Abdulrahman AlAnazi"); the full
- * name is on the chip's tooltip. The department is the desk's own, else the holder's, without
+ * The holder is the name without its employee number — a long one set a size down on two lines
+ * (planMarkerLabels), shortened to first name + surname only past what two such lines hold
+ * ("Abdulrahman Abdullah Khalaf AlAnazi" → "Abdulrahman AlAnazi"); the full name is on the chip's
+ * tooltip. The department is the desk's own, else the holder's, without
  * its cost-centre code.
  */
 export function markerSubTexts(state: AppState, unit: Unit): { holder: string | null; dept: string | null } {
@@ -359,7 +449,7 @@ export function markerSubTexts(state: AppState, unit: Unit): { holder: string | 
   const name = personDisplayName(contact?.name);
   if (!name) return { holder: null, dept: null };
   const dept = departmentDisplayName(unit.department?.trim() || contact?.department);
-  return { holder: shortPersonName(name, subMaxChars(typographyOf(state.labelStyle))), dept: dept || null };
+  return { holder: shortPersonName(name, holderMaxChars(typographyOf(state.labelStyle))), dept: dept || null };
 }
 
 /**
@@ -491,6 +581,23 @@ export function canSee(state: AppState, surface: Surface): boolean {
   // locks out the only people who could undo it.
   if (surface === 'settings' && state.viewerRole.isAdmin) return true;
   return rule.roles.includes(state.viewerRole.id);
+}
+
+/**
+ * Whether this viewer's changes to the settings (and the department colours) will be taken. Before
+ * the app database (the file store) that is whoever reaches Settings, as it always was. Once the
+ * database answers, the floorplanResponders function decides, and the browser asks the same
+ * question so it offers no save the function will refuse: admins, or a role the STORED Settings
+ * rule names — the Roles & access grid kept in the database, else the one in the database's own
+ * settings row. With no rule stored there, admins only: the Settings tab's open default is no rule
+ * the function can see.
+ */
+export function canChangeSettings(state: AppState): boolean {
+  if (!canSee(state, 'settings')) return false;
+  if (!state.settingsDb.answered) return true;
+  if (state.viewerRole?.isAdmin) return true;
+  const rule = state.accessStoredInDb || state.settingsDb.settings ? state.access.settings : undefined;
+  return !!rule && (rule.all || (!!state.viewerRole && rule.roles.includes(state.viewerRole.id)));
 }
 
 /** The tabs this viewer reaches, in nav order. Tabs only — editing is never somewhere to land. */

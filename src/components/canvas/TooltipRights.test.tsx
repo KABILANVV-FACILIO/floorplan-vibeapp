@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import type { Unit } from '../../lib/types';
 import type { AppState } from '../../state/types';
 
@@ -20,6 +20,7 @@ vi.mock('../details/LocalAssign', () => ({ LocalAssign: () => null }));
 
 const { buildInitialState } = await import('../../state/reducer');
 const { Tooltip } = await import('./Tooltip');
+const { fetchUnitRecordInfo } = await import('../../lib/facilioApiDataSource');
 
 const HOT_DESK = { id: 'd1', type: 'workstation', label: 'N-047', geom: { kind: 'point', x: 0.5, y: 0.5 }, floor: 'f1', plan: 'workstation', deskType: 'HOT' } as Unit;
 
@@ -49,5 +50,31 @@ describe("a desk's card on the plan", () => {
     card('assign', { assign: false, book: false });
     expect(screen.queryByTestId('flow')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Book' })).toBeNull();
+  });
+});
+
+/**
+ * The card re-reads its record after a write to THAT record (its version), or a plan-wide change
+ * whose records are unknown (the nonce) — it used to re-read after every assign or vacate anywhere
+ * on the plan.
+ */
+describe("the card's record read", () => {
+  it('re-reads when this desk changes, not when another desk does', async () => {
+    vi.mocked(fetchUnitRecordInfo).mockClear();
+    const { rerender } = card('assign', { assign: true, book: true });
+    await waitFor(() => expect(fetchUnitRecordInfo).toHaveBeenCalledTimes(1));
+
+    ctx.state = { ...ctx.state, recordVersions: { d9: 1 } };
+    rerender(<Tooltip />);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchUnitRecordInfo).toHaveBeenCalledTimes(1);
+
+    ctx.state = { ...ctx.state, recordVersions: { d9: 1, d1: 1 } };
+    rerender(<Tooltip />);
+    await waitFor(() => expect(fetchUnitRecordInfo).toHaveBeenCalledTimes(2));
+
+    ctx.state = { ...ctx.state, recordNonce: ctx.state.recordNonce + 1 };
+    rerender(<Tooltip />);
+    await waitFor(() => expect(fetchUnitRecordInfo).toHaveBeenCalledTimes(3));
   });
 });

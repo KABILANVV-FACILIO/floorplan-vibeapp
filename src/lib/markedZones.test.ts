@@ -88,7 +88,16 @@ vi.mock('./facilioApi', () => ({
     return { code: 1, message: `no count for ${path}` }; // counts unavailable: the loader pages on
   }),
   facilioApi: {
-    fetchAll: vi.fn(),
+    // By-id list reads (`id` "is" the ids): the save checks every room it creates in one `space`
+    // read — and, without the space module id, one read per point module — answered from the same
+    // tables as a record read.
+    fetchAll: vi.fn(async (module: string, params: { filters?: string }) => {
+      const ids: number[] = (JSON.parse(params?.filters ?? '{}').id?.value ?? []).map(Number);
+      if (module === 'space') {
+        return { error: null, list: ids.flatMap((id) => (org.spaceTypes[id] ? [{ id, ...org.spaceTypes[id] }] : org.spaceModuleId ? [{ id, moduleId: org.spaceModuleId }] : [])) };
+      }
+      return { error: null, list: ids.filter((id) => org.pointRecords[module]?.includes(id)).map((id) => ({ id, moduleId: 99999 })) };
+    }),
     fetchRecord: vi.fn(async (module: string, { id }: { id: number }) => {
       if (module === 'indoorfloorplan') return { indoorfloorplan: { id, geometry: PLAN_GEOMETRY } };
       if (org.pointRecords[module]?.includes(id)) return { [module]: { id, moduleId: 99999 } };
@@ -589,6 +598,61 @@ describe('saving room outlines', () => {
     expect(result.skipped.join(' ')).toMatch(/module id/);
     expect(result.roomsNotWritten).toEqual(['Room 819849']);
     expect(org.create).toHaveLength(0);
+  });
+
+  describe('twenty new rooms in one save', () => {
+    const NEW = Array.from({ length: 20 }, (_, i) => 830_000 + i);
+    const square = (i: number): [number, number][] => [
+      [0.01 + i * 0.04, 0.6],
+      [0.04 + i * 0.04, 0.6],
+      [0.04 + i * 0.04, 0.7],
+      [0.01 + i * 0.04, 0.7],
+    ];
+    async function saveTwenty(before?: (api: (typeof import('./facilioApi'))['facilioApi']) => void) {
+      org.tables.space.push(...NEW.map((id) => ({ id, name: `Room ${id}`, spaceTypeEnum: 'SPACE' })));
+      const { saveFloorplanZones, placed } = await loadFloor();
+      const { facilioApi } = await import('./facilioApi');
+      vi.mocked(facilioApi.fetchAll).mockClear();
+      vi.mocked(facilioApi.fetchRecord).mockClear();
+      before?.(facilioApi);
+      const result = await saveFloorplanZones(FLOOR, [...placed, ...NEW.map((id, i) => traced(String(id), square(i)))], placed);
+      const lists = vi.mocked(facilioApi.fetchAll).mock.calls.map(([module]) => module);
+      const records = vi.mocked(facilioApi.fetchRecord).mock.calls.map(([module]) => module);
+      return { result, lists, records };
+    }
+
+    it('checks them in one space read — no record read per room', async () => {
+      const { result, lists, records } = await saveTwenty();
+      expect(result.created).toBe(20);
+      expect(lists).toEqual(['space']);
+      expect(records.filter((m) => m !== 'indoorfloorplan')).toEqual([]);
+      expect(zones(org.create).every((c) => c.data.zoneModuleId === SPACE_MODULE_ID)).toBe(true);
+    });
+
+    it('without the space module id, adds one read per point module — still none per room', async () => {
+      org.tables.floorplanmarkedzone = [];
+      const { result, lists, records } = await saveTwenty();
+      expect(result.created).toBe(20);
+      expect(lists.filter((m) => m === 'space')).toHaveLength(1);
+      expect(lists.filter((m) => m !== 'space').sort()).toEqual(['desks', 'lockers', 'parkingstall']);
+      expect(records.filter((m) => m !== 'indoorfloorplan')).toEqual([]);
+    });
+
+    it('checks each room on its own, as before, when the org ignored the id filter — and still outlines them', async () => {
+      const { result, lists, records } = await saveTwenty((api) =>
+        vi.mocked(api.fetchAll).mockImplementationOnce(async () => ({ error: null, list: [{ id: 1, name: 'Somewhere else', spaceTypeEnum: 'SPACE' }, ...NEW.map((id) => ({ id, spaceTypeEnum: 'SPACE' }))] }) as any),
+      );
+      expect(lists).toEqual(['space']);
+      expect(records.filter((m) => m === 'space')).toHaveLength(20);
+      expect(result.created).toBe(20);
+    });
+
+    it('creates none of them when the space read fails, and says why for each', async () => {
+      const { result } = await saveTwenty((api) => vi.mocked(api.fetchAll).mockImplementationOnce(async () => ({ error: { code: 500, message: 'down' }, list: null })));
+      expect(result.created).toBe(0);
+      expect(result.roomsNotWritten).toHaveLength(20);
+      expect(result.skipped.every((s) => /could not be read/.test(s))).toBe(true);
+    });
   });
 
   it('keeps rooms minted in the app local — no create for a non-numeric id', async () => {

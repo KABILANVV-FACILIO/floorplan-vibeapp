@@ -10,6 +10,21 @@
   max-width: 360px;
 }
 
+/* "+5 others": the rest of the names are in its tooltip. */
+/* "+N others": a button, drawn as the link-coloured text it was. */
+.more {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--blue-600);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.more:hover {
+  text-decoration: underline;
+}
+
 .section {
   padding: 14px 20px 16px;
 }

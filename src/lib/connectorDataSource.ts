@@ -1,4 +1,5 @@
 import { CMMS_CONNECTION, isVibeApp, vibe } from './vibe';
+import { mapPooled, withBackoff } from './rateLimit';
 import type { CreateSpaceLoc, FloorplanDataSource } from './dataSource';
 import type { Asset } from './assets';
 import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, Site, Unit } from './types';
@@ -26,26 +27,55 @@ import type { Assignments, Booking, Building, Employee, Floor, FloorSearchHit, S
  */
 export class ConnectorDataSource implements FloorplanDataSource {
   readonly name = 'facilio-cmms-connector';
+  private readonly sleep?: (ms: number) => Promise<void>;
+
+  /** `sleep` stands in for the real wait between retries (tests). */
+  constructor(opts: { sleep?: (ms: number) => Promise<void> } = {}) {
+    this.sleep = opts.sleep;
+  }
 
   private assertAvailable() {
     if (!isVibeApp) throw new Error('cmms-connector: not running as a vibe app');
   }
 
+  /**
+   * One action call. INTERIM: these are the browser's `vibe.executeAction`, which the platform has
+   * deprecated — the reads belong in a function handler calling `callAction` server-side. Until they
+   * move, a read refused for rate or failed on the server (5xx) waits out Facilio's window (plus
+   * jitter) and is asked again, at most twice (lib/rateLimit withBackoff) — never at once, which is
+   * only refused again.
+   *
+   * A write — any action not in READ_ACTIONS, `create-space` today — is sent again only after a
+   * refusal for rate, which says Facilio did nothing. A 5xx on a create often means the space was
+   * made and only the answer was lost: sent again, it would make the space twice (or three times),
+   * so the failure is thrown for the caller as it came.
+   */
   private async action<T>(actionSlug: string, body: Record<string, unknown> = {}): Promise<T> {
     this.assertAvailable();
-    return vibe.executeAction<T>(CMMS_CONNECTION, actionSlug, body);
+    const retryOn = READ_ACTIONS.has(actionSlug) ? 'rateOrServer' : 'rate';
+    return withBackoff(() => vibe.executeAction<T>(CMMS_CONNECTION, actionSlug, body), this.sleep, { retryOn });
   }
 
   /**
    * Every row of a list action. `page_size` is capped at 200 by the connector, so a portfolio
    * bigger than one page needs paging — stop on a short page, and bail at a page cap so a
    * misbehaving action can't spin forever.
+   *
+   * A page refused part-way is waited out and asked for again (see action), so the pages already
+   * read are kept rather than the list being started over. One that still fails after that fails
+   * the list, as before — the composite then asks the tier below.
    */
   private async listAll(actionSlug: string, body: Record<string, unknown> = {}): Promise<any[]> {
     const pageSize = 200;
     const out: any[] = [];
     for (let page = 1; page <= 25; page++) {
-      const res = await this.action<{ data?: any[] }>(actionSlug, { ...body, page, page_size: pageSize });
+      let res: { data?: any[] };
+      try {
+        res = await this.action<{ data?: any[] }>(actionSlug, { ...body, page, page_size: pageSize });
+      } catch (err) {
+        if (!out.length) throw err;
+        throw new Error(`cmms-connector: ${actionSlug} failed on page ${page} after ${out.length} rows (${(err as Error)?.message ?? err})`);
+      }
       const rows = res?.data ?? [];
       out.push(...rows);
       if (rows.length < pageSize) break;
@@ -157,11 +187,10 @@ export class ConnectorDataSource implements FloorplanDataSource {
    */
   async getUnits(floorId: string): Promise<Unit[]> {
     const filters = `floor=${floorId}`;
-    const [desks, lockers, stalls] = await Promise.all([
-      this.listAll('list-custom-module-records', { custom_module: 'desks', filters }),
-      this.listAll('list-custom-module-records', { custom_module: 'lockers', filters }),
-      this.listAll('list-custom-module-records', { custom_module: 'parkingstall', filters }),
-    ]);
+    // Two lists at a time, not three: each is its own run of paged action calls as this user.
+    const [desks, lockers, stalls] = await mapPooled(['desks', 'lockers', 'parkingstall'], 2, (custom_module) =>
+      this.listAll('list-custom-module-records', { custom_module, filters }),
+    );
 
     const units: Unit[] = [
       ...desks.map((r: any) => toUnit(r, 'workstation', floorId)),
@@ -197,6 +226,13 @@ export class ConnectorDataSource implements FloorplanDataSource {
     throw new Error('cmms-connector: bookings have no connector action');
   }
 }
+
+/**
+ * The actions this tier calls that only read — named one by one, not told by a `list-` prefix, so
+ * that anything not named here (`create-space` today, and any action added later until it is
+ * listed) is treated as a write: never sent again after a server failure (see action).
+ */
+const READ_ACTIONS: ReadonlySet<string> = new Set(['list-sites', 'list-buildings', 'list-floors', 'list-employees', 'list-assets', 'list-custom-module-records']);
 
 /** `create-space` space categories, per the action schema (Desk / Parking Stall / Room). */
 const SPACE_CATEGORY: Partial<Record<Unit['type'], string>> = {

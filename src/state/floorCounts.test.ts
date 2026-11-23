@@ -5,10 +5,13 @@ vi.mock('../lib/pdfPreview', () => ({ renderPdfToDataUrl: vi.fn() }));
 
 import { renderHook } from '@testing-library/react';
 import { buildInitialState, reducer } from './reducer';
-import { colorByOf, deskDepartmentCounts, floorCounts, markerLabelInputs } from './selectors';
+import { colorByOf, departmentColorIds, deskDepartmentCounts, floorCounts, markerLabelInputs, spaceOfPerson, spacesByPerson } from './selectors';
+import { unitStatus } from '../lib/unitStatus';
+import { markerModel } from '../lib/markerModel';
+import { bookingSegmentsFromRow } from '../lib/bookingRows';
 import { settingsFromState } from '../lib/settingsStore';
 import { markerStyle } from '../lib/unitStatus';
-import { departmentColor, departmentsIn } from '../lib/departmentColors';
+import { departmentColor, departmentKey, departmentsIn } from '../lib/departmentColors';
 import { legendItems } from '../components/canvas/Legend';
 import type { Booking, Employee, Unit } from '../lib/types';
 import type { AppState } from './types';
@@ -60,6 +63,122 @@ const floor = (over: Partial<AppState> = {}): AppState => ({
   ...over,
 });
 
+describe('record states', () => {
+  it("replace with a floor's read, merge a later page's, and ignore another floor's", () => {
+    let s = reducer(floor(), { type: 'RECORD_STATES', floorId: 'f1', states: { d1: 'vacant', d3: 'temporarilyvacant' } });
+    s = reducer(s, { type: 'RECORD_STATES', floorId: 'f1', states: { p2: 'reserved' }, merge: true });
+    expect(s.recordStates).toEqual({ d1: 'vacant', d3: 'temporarilyvacant', p2: 'reserved' });
+    s = reducer(s, { type: 'RECORD_STATES', floorId: 'f9', states: { x: 'reserved' } });
+    expect(s.recordStates).toEqual({ d1: 'vacant', d3: 'temporarilyvacant', p2: 'reserved' });
+    // The re-read after a Vacate replaces the lot.
+    s = reducer(s, { type: 'RECORD_STATES', floorId: 'f1', states: { d1: 'temporarilyvacant' } });
+    expect(s.recordStates).toEqual({ d1: 'temporarilyvacant' });
+    expect(reducer(s, { type: 'SELECT_FLOOR_START', floorId: 'f2' }).recordStates).toEqual({});
+  });
+});
+
+describe('a person in the People list', () => {
+  it('shows the desk they hold on the plan on screen, else one they booked in the window, else nothing', () => {
+    expect(spaceOfPerson(floor(), 'e1')?.id).toBe('d1');
+    // A stall on the parking plan is not on the workstation plan on screen.
+    expect(spaceOfPerson(floor(), 'e3')).toBeNull();
+    expect(spaceOfPerson(floor({ planId: 'parking' }), 'e3')?.id).toBe('p1');
+    // Booked a room in 09:00–10:00, not outside it.
+    const bookings = [{ ...booking('r1'), host: 'e9' }, { ...booking('r2', 11 * 60, 12 * 60), host: 'e8' }];
+    expect(spaceOfPerson(floor({ bookings }), 'e9')?.id).toBe('r1');
+    expect(spaceOfPerson(floor({ bookings }), 'e8')).toBeNull();
+  });
+
+  it('finds an org booking, which names its booker in `by` and no host', () => {
+    // As bookingRows maps a spacebooking row: reservedBy → `by`, no host on the row.
+    const [org] = bookingSegmentsFromRow({ id: 77, space: { id: 'r2' }, reservedBy: { id: 'e7' }, bookingStartTime: Date.UTC(2026, 10, 13, 9, 0), bookingEndTime: Date.UTC(2026, 10, 13, 10, 0), name: 'Sync' } as never, 'UTC')!;
+    expect(org).toMatchObject({ by: 'e7', unitId: 'r2', date: '2026-11-13', start: 540 });
+    expect(org.host).toBeUndefined();
+    expect(spaceOfPerson(floor({ bookings: [org] }), 'e7')?.id).toBe('r2');
+  });
+
+  it('answers every person the same from the one-pass map as from spaceOfPerson', () => {
+    const bookings: Booking[] = [
+      { ...booking('r1'), by: 'e1', host: 'e9' },
+      { ...booking('r2'), by: 'e9' },
+      { ...booking('d4'), by: 'e8' },
+      { ...booking('d3', 11 * 60, 12 * 60), by: 'e6' },
+      { ...booking('r2'), by: 'e6', host: 'e5' },
+      { ...booking('r1'), by: '' },
+    ];
+    for (const s of [floor({ bookings }), floor({ bookings, planId: 'parking' }), floor({ bookings, enabledModules: { ...floor().enabledModules, room: false } })]) {
+      const map = spacesByPerson(s);
+      for (const id of ['e1', 'e2', 'e3', 'e5', 'e6', 'e7', 'e8', 'e9', 'nobody']) expect(map.get(id) ?? null).toBe(spaceOfPerson(s, id));
+    }
+  });
+});
+
+describe('a desk the org holds open, or a stall it reserved', () => {
+  const states = { d4: 'temporarilyvacant', p2: 'reserved' };
+
+  it('is called what the counts card calls it, in its pill, tooltip and name — in the vacant colour still', () => {
+    const s = floor({ recordStates: states });
+    const name = (id: string) => '';
+    const d4 = s.units.find((u) => u.id === 'd4')!;
+    const status = unitStatus(s, d4, name);
+    expect(status.text).toBe('Temporarily vacant');
+    expect(status.key).toBe('free');
+    expect(status.dot).toBe(unitStatus(floor(), d4, name).dot);
+    expect(markerModel(s, d4).title).toContain('Temporarily vacant');
+    expect(markerStyle(s, d4)).toEqual(markerStyle(floor(), d4));
+
+    const p2 = s.units.find((u) => u.id === 'p2')!;
+    expect(unitStatus({ ...s, planId: 'parking' }, p2, name).text).toBe('Reserved');
+    // Held, it is theirs whatever its state; and a plain vacant desk stays "Vacant".
+    expect(unitStatus({ ...s, recordStates: { d1: 'temporarilyvacant' } }, s.units[0], name).text).toMatch(/^Assigned/);
+    expect(unitStatus(s, s.units.find((u) => u.id === 'd3')!, name).text).toBe('Vacant');
+  });
+});
+
+describe('department colours', () => {
+  it('are resolved over the org’s department list once it has loaded, else over the floor’s', () => {
+    const s = floor();
+    expect(departmentColorIds(s)).toEqual(departmentsIn(s.units).map((d) => d.id));
+    const org = [
+      { id: '30', name: 'Accounts' },
+      { id: '20', name: 'Engineering' },
+      { id: '10', name: 'Finance' },
+      { id: '40', name: 'Legal' },
+    ];
+    expect(departmentColorIds(floor({ departments: org }))).toEqual(['30', '20', '10', '40']);
+  });
+
+  it('give a department one default colour on the plan, its legend, the counts card and in Settings', () => {
+    const org = [
+      { id: '30', name: 'Accounts' },
+      { id: '20', name: 'Engineering' },
+      { id: '10', name: 'Finance' },
+      { id: '40', name: 'Legal' },
+    ];
+    const s = floor({ departments: org, colorByView: 'department' });
+    // What Settings draws for Finance: the org's list, as the swatch beside it.
+    const settings = departmentColor('10', s.departmentColors, org.map((d) => d.id));
+    expect(markerStyle(s, s.units[0]).bg).toBe(settings);
+    expect(legendItems(s).find((i) => i.label === 'Finance')?.color).toBe(settings);
+    expect(deskDepartmentCounts(s, '#29A01E').find((l) => l.name === 'Finance')?.color).toBe(settings);
+  });
+
+  it('leave the plan’s colours as they were where no org list is loaded (the demo data)', async () => {
+    // Demo/local mode reads no department list (fetchDepartments answers [] without an org), so the
+    // set is the floor's, exactly as the plan resolved it before: every seed desk keeps its colour.
+    const { seedUnits } = await import('../lib/mockData');
+    const units = seedUnits();
+    const s = floor({ units, colorByView: 'department', departments: [] });
+    const before = departmentsIn(units).map((d) => d.id);
+    const desks = units.filter((u) => u.type === 'workstation' && u.department?.trim());
+    expect(desks.length).toBeGreaterThan(0);
+    for (const u of desks) {
+      const key = u.departmentId || 'name:' + departmentKey(u.department!);
+      expect(markerStyle(s, u).bg).toBe(departmentColor(key, s.departmentColors, before));
+    }
+  });
+});
+
 describe('the counts card', () => {
   it('counts every placed desk, stall and room on the floor — not lockers, delivery areas, unplaced desks or rooms with no outline', () => {
     const rows = floorCounts(floor());
@@ -70,12 +189,23 @@ describe('the counts card', () => {
     ]);
   });
 
-  it('splits each type into occupied, booked in the window on screen, and free — adding up to the total', () => {
+  it('splits each type into occupied, set aside and vacant or free — adding up to the total', () => {
     const [desks, stalls, rooms] = floorCounts(floor());
-    expect(desks).toMatchObject({ occupied: 2, booked: 1, free: 1 }); // d2 is held, so occupied, though booked too
-    expect(stalls).toMatchObject({ occupied: 1, booked: 0, free: 1 }); // p2's booking is outside 09:00–10:00
-    expect(rooms).toMatchObject({ occupied: 0, booked: 1, free: 1 });
-    for (const r of floorCounts(floor())) expect(r.occupied + r.booked + r.free).toBe(r.total);
+    expect(desks).toMatchObject({ occupied: 2, aside: 0, free: 2 }); // desks are not booked in this org: d4's booking leaves it vacant
+    expect(stalls).toMatchObject({ occupied: 1, aside: 0, free: 1 });
+    expect(rooms).toMatchObject({ occupied: 0, aside: 1, free: 1 }); // r1 booked in 09:00–10:00
+    for (const r of floorCounts(floor())) expect(r.occupied + r.aside + r.free).toBe(r.total);
+  });
+
+  it("sets aside the desks whose record is Temporarily Vacant and the stalls whose record is Reserved — a holder first, whatever the state", () => {
+    // d1 still names its holder beside the new state (the org clears it a moment later); d3 and d4
+    // are emptied for now; a desk Reserved counts as vacant (only stalls are split by it); p2 reserved.
+    const recordStates = { d1: 'temporarilyvacant', d3: 'temporarilyvacant', d4: 'reserved', p1: 'reserved', p2: 'reserved', r2: 'reserved' };
+    const [desks, stalls, rooms] = floorCounts(floor({ recordStates }));
+    expect(desks).toMatchObject({ total: 4, occupied: 2, aside: 1, free: 1 });
+    expect(stalls).toMatchObject({ total: 2, occupied: 1, aside: 1, free: 0 });
+    expect(rooms).toMatchObject({ occupied: 0, aside: 1, free: 1 }); // rooms go by bookings only
+    for (const r of floorCounts(floor({ recordStates }))) expect(r.occupied + r.aside + r.free).toBe(r.total);
   });
 
   it('counts the whole floor whichever plan is on screen', () => {
@@ -126,6 +256,29 @@ describe('colouring desks by department, from the card', () => {
     const legend = legendItems(s);
     for (const l of lines.slice(0, 2)) expect(l.color).toBe(legend.find((i) => i.label === l.name)?.color);
     expect(lines[2].color).toBe(free);
+  });
+});
+
+describe('the key', () => {
+  it('keys two departments that print the same name apart, so both are drawn', async () => {
+    const { render, cleanup } = await import('@testing-library/react');
+    const { createElement } = await import('react');
+    const twins = [
+      point('t1', 'workstation', 'workstation', { department: 'Finance', departmentId: '10' }),
+      point('t2', 'workstation', 'workstation', { department: 'Finance', departmentId: '11' }),
+    ];
+    const s = floor({ units: twins, colorByView: 'department' });
+    const items = legendItems(s).filter((i) => i.label === 'Finance');
+    expect(items).toHaveLength(2);
+    expect(new Set(legendItems(s).map((i) => i.key)).size).toBe(legendItems(s).length);
+    // Drawn as two entries — keyed by their label, React kept one and warned.
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { LegendSwatch } = await import('../components/canvas/Legend');
+    const { container } = render(createElement('div', null, legendItems(s).map((it) => createElement('span', { key: it.key }, createElement(LegendSwatch, { item: it }), it.label))));
+    expect(container.textContent?.match(/Finance/g)).toHaveLength(2);
+    expect(error).not.toHaveBeenCalled();
+    error.mockRestore();
+    cleanup();
   });
 });
 

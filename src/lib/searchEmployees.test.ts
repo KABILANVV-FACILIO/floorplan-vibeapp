@@ -78,7 +78,7 @@ describe('people search asks the org', () => {
   });
 
   it('returns the people the org answered with', async () => {
-    fetchAll.mockResolvedValue({ error: null, list: [{ id: 7, name: 'Amrithya', email: 'amr@enec.ae', hrmsEmployeeId: 'AMR-01' }] });
+    fetchAll.mockResolvedValue({ error: null, list: [{ id: 7, name: 'Amrithya', email: 'amr@example.com', hrmsEmployeeId: 'AMR-01' }] });
     const people = await searchEmployees('amr');
     expect(people).toEqual([expect.objectContaining({ id: '7', name: 'Amrithya', hrmsEmployeeId: 'AMR-01' })]);
   });
@@ -105,10 +105,10 @@ describe("an employee record's HRMS ID", () => {
 
 describe("a lookup's choices come from the org's picklist", () => {
   it('asks v3/picklist for the module, searched, with the picked ids included', async () => {
-    customGet.mockResolvedValueOnce({ code: 0, data: { pickList: [{ value: 28725, label: 'A Manager', secondaryLabel: 'a@enec.ae' }, { value: 3, label: 'B' }] } } as never);
+    customGet.mockResolvedValueOnce({ code: 0, data: { pickList: [{ value: 28725, label: 'A Manager', secondaryLabel: 'a@example.com' }, { value: 3, label: 'B' }] } } as never);
     const res = await fetchPicklist('people', { search: ' om ', perPage: 2, defaultIds: ['28725'] });
     expect(customGet).toHaveBeenLastCalledWith('v3/picklist/people', { page: 1, perPage: 2, search: 'om', default: '28725' });
-    expect(res).toEqual({ options: [{ value: '28725', label: 'A Manager', secondary: 'a@enec.ae' }, { value: '3', label: 'B' }], more: true });
+    expect(res).toEqual({ options: [{ value: '28725', label: 'A Manager', secondary: 'a@example.com' }, { value: '3', label: 'B' }], more: true });
   });
 
   it('still lists when the server refuses the picked ids, asking once more without them', async () => {

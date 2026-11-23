@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CARD_PAD_X, CHIP_FOOTPRINT_OF_PITCH, CHIP_MAX_SCALE, CHIP_MIN_PX, CHIP_PX, DEFAULT_LABEL_TYPOGRAPHY, cardOffset, chipScreenSize, chipSizeNear, planMarkerLabels, planRoomLabels, scaleTypography, typographyOf } from './labelLayout';
+import { CARD_PAD_X, CHIP_FOOTPRINT_OF_PITCH, CHIP_MAX_SCALE, CHIP_MIN_PX, CHIP_PX, DEFAULT_LABEL_TYPOGRAPHY, cardHeight, cardOffset, chipScreenSize, chipSizeNear, longerLineShare, planMarkerLabels, planRoomLabels, scaleTypography, typographyOf } from './labelLayout';
 import type { LabelPlacement, MarkerLabelInput, RoomLabelInput } from './labelLayout';
 import { chipPitch, deskPitch, nearestDistances } from './printAreas';
 
@@ -90,11 +90,36 @@ describe('a card is drawn only where it fits', () => {
 });
 
 describe('the card fits its text', () => {
-  it('runs as wide as a long name needs, up to 180px', () => {
+  it('sets a long name a size down on two lines, the card about as wide as the code instead of 180px', () => {
     const plan = planMarkerLabels([desk('E-1-WS77', 0.5, 0.5, { sub: 'Abdulrahman Abdullah Khalaf AlAnazi', dept: 'Finance' })], opts);
     const p = plan.get('E-1-WS77')!;
-    expect(p.w).toBeGreaterThan(120);
-    expect(p.w).toBeLessThanOrEqual(180);
+    expect(p).toMatchObject({ sub: true, subSmall: true, subLines: 2 });
+    expect(p.w).toBeLessThan(120);
+    expect(p.h).toBe(cardHeight(true, 1, DEFAULT_LABEL_TYPOGRAPHY, 2, true));
+  });
+
+  it("keeps a name that fits at its own size, on one line — a short code doesn't make it long", () => {
+    const p = planMarkerLabels([desk('d2', 0.5, 0.5, { sub: 'Amrithya', dept: 'Project Implementation' })], opts).get('d2')!;
+    expect(p.subSmall).toBeUndefined();
+    expect(p.subLines).toBeUndefined();
+  });
+
+  it('keeps a medium name at full size on one line in a narrow card, with no blank line reserved under it', () => {
+    // Boxed in so that only the 100px card fits below the chip: the holder (105px, full size — not
+    // long enough to be set a size down) is wider than that card's text. It is cut with "…" on one
+    // line; a second line used to be reserved under it and left blank.
+    const at = (dx: number, dy: number, id: string) => desk(id, 0.5 + dx / 1000, 0.5 + dy / 1000);
+    const inputs = [desk('A', 0.5, 0.5, { sub: 'Holder', nameW: 30, subW: 105 }), at(64, 29, 'r'), at(-64, 29, 'l'), at(0, -40, 'u'), at(40, 0, 'e'), at(-40, 0, 'w')];
+    const p = planMarkerLabels(inputs, opts).get('A')!;
+    expect(p).toMatchObject({ name: true, sub: true, w: 100 });
+    expect(p.subSmall).toBeUndefined();
+    expect(p.subLines).toBeUndefined();
+    expect(p.h).toBe(cardHeight(true, 0, DEFAULT_LABEL_TYPOGRAPHY));
+  });
+
+  it('breaks a long name at the word that evens its two lines most', () => {
+    expect(longerLineShare('Mariam Rashed Ali Belwatir AlMazrouei')).toBeCloseTo(19 / 37, 5); // "Mariam Rashed Ali" / "Belwatir AlMazrouei"
+    expect(longerLineShare('Amrithya')).toBe(1);
   });
 
   it('runs a long department to a second line rather than cutting it', () => {
@@ -439,5 +464,19 @@ describe('chipPitch: a few spaces far apart and a tight column (Test Floor 1)', 
     const floor = Array.from({ length: 10 }, (_, i) => ({ id: `s${i}`, x: (i % 5) * 200, y: Math.floor(i / 5) * 200 }));
     floor.push({ id: 'p1', x: 400, y: 600 }, { id: 'p2', x: 410, y: 600 });
     expect(chipPitch(floor)).toBe(deskPitch(floor));
+  });
+});
+
+describe('the desk spacing, worked out once', () => {
+  it('chipPitch gives the same answer from nearest distances already worked out as from the points', () => {
+    const pts = [
+      { id: 'a', x: 0, y: 0 },
+      { id: 'b', x: 50, y: 0 },
+      { id: 'c', x: 50, y: 60 },
+      { id: 'd', x: 300, y: 300 },
+      { id: 'e', x: 330, y: 300 },
+    ];
+    expect(chipPitch(pts, nearestDistances(pts))).toBe(chipPitch(pts));
+    expect(chipPitch(pts.slice(0, 1), new Map())).toBe(chipPitch(pts.slice(0, 1)));
   });
 });

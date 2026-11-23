@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
+import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { Dispatch, MutableRefObject, ReactNode } from 'react';
 import { dataSource, clearLocalData } from '../lib/dataSource';
 import type { CreateSpaceLoc } from '../lib/dataSource';
@@ -8,17 +8,29 @@ import type { AmenityIcon, Booking, Employee, FirstResponder, FloorSearchHit, Ma
 import type { CadGroup } from '../lib/cadAnalyze';
 import { DEMO_ASSETS } from '../lib/assets';
 import { isFacilioApiConfigured } from '../lib/facilioApi';
-import { assignUnitReal, createRealBooking, ensurePlanGeoreference, fetchCurrentPeopleId, fetchCurrentRole, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, fetchOrgBookingsForRange, fetchOrgRoles, cancelRealBooking, fetchOrgTimezone, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, takeFloorReadFailure, takeRoomOutlineReadFailure, vacateUnitReal } from '../lib/facilioApiDataSource';
+import { assignUnitReal, createRealBooking, ensurePlanGeoreference, FacilioApiDataSource, fetchCurrentPeopleId, fetchCurrentRole, fetchDepartments, fetchFloorPath, fetchFloorplanImage, fetchMyDesk, fetchOrgBookingsForRange, fetchOrgRoles, cancelRealBooking, fetchOrgTimezone, findUnitIdForDeskRecord, getFloorPlanSummary, invalidateOrgCaches, isRealFloorId, takeFloorReadFailure, takeRoomOutlineReadFailure, vacateUnitReal } from '../lib/facilioApiDataSource';
 import { DEMO_DATA, ROOM_OUTLINE_WRITES } from '../lib/featureFlags';
 import { IncompleteListError, onFacilioBusy } from '../lib/rateLimit';
 import { orgNow } from '../lib/orgTime';
 import { personDisplayName } from '../lib/displayNames';
 import { measureImageDataUrl } from '../lib/geoReference';
 import { listFloorplanFloorIds, loadFloorplanFile, persistFloorplanFile } from '../lib/floorplanFileStore';
-import { loadSettings, saveSettings, settingsFromState } from '../lib/settingsStore';
-import { loadSharedSettings, refusalReason, saveAccess, saveResponderRoles, saveResponders } from '../lib/sharedSettings';
+import { loadSettings, saveSettings, settingsFromState, splitSettings } from '../lib/settingsStore';
+import type { SettingsConfig } from '../lib/settingsStore';
+import {
+  loadSharedSettings,
+  notSavedNotice,
+  refusalReason,
+  saveAccess,
+  saveAppSettings,
+  saveDepartmentColorScheme,
+  savePrintSettings,
+  saveResponderRoles,
+  saveResponders,
+} from '../lib/sharedSettings';
+import type { SharedSettings } from '../lib/sharedSettings';
 import { sanitizeResponders, sanitizeRoles } from '../lib/firstResponders';
-import { loadDepartmentColors, saveDepartmentColor } from '../lib/departmentColorStore';
+import { loadDepartmentColors, saveDepartmentColors } from '../lib/departmentColorStore';
 import { pathForView, viewFromLocation } from '../lib/routes';
 import { bootFloorCandidates, readUrlFloorId, writeUrlFloorId } from '../lib/urlFloor';
 import { refuseOrgWrite } from '../lib/orgWrites';
@@ -27,9 +39,11 @@ import { buildInitialState, reducer } from './reducer';
 import { useDataState } from './useDataState';
 import type { Action } from './reducer';
 import type { AppState, BookFormTarget } from './types';
+import type { DepartmentColorScheme } from '../lib/departmentColorStore';
 import type { LabelStyle } from '../lib/labelLayout';
-import { bookingAllowed, canEdit, conflictsFor, contactById, isAssignable, nextLabel, planMarkers, unitById } from './selectors';
+import { bookingAllowed, canChangeSettings, canEdit, canSee, conflictsFor, contactById, isAssignable, nextLabel, planMarkers, unitById } from './selectors';
 import { calibratedPxPerMeter, clampPanelPos, defaultPanelPos, distNormToPx, fitUnitsView, fitView as fitViewFn, focusUnitView, pointInPoly, zoomAt as zoomAtFn } from '../lib/geometry';
+import { takeRecordStates } from '../lib/recordStates';
 
 interface Ctx {
   state: AppState;
@@ -56,6 +70,47 @@ function delegatingActions(get: () => Ctx['actions']): Ctx['actions'] {
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
+/** How long a desk jumped to keeps pulsing (HIGHLIGHT_UNIT), so the eye finds it. */
+const PULSE_MS = 2000;
+/**
+ * When an animated jump of the plan has landed: just past the plane's own transform transition
+ * (Canvas `planeTransition`, 340ms). The view is then set again without the animation, so the
+ * next pan starts from rest.
+ */
+const JUMP_SETTLE_MS = 380;
+let pulseTimer: ReturnType<typeof setTimeout> | undefined;
+let settleTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * Settle an animated jump once it has landed: `view()` (worked out then) without the animation.
+ * One at a time — a newer jump cancels an older one's, which would otherwise pull the plan back.
+ */
+function settleJump(dispatch: Dispatch<Action>, view: () => AppState['view']) {
+  if (settleTimer) clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => dispatch({ type: 'SET_VIEW', view: view(), animate: false }), JUMP_SETTLE_MS);
+}
+
+/**
+ * Jump the plan to `view` and pulse the unit there — what "show me this desk" does, from the People
+ * list, the responders popup or My desk. Separate from selecting it, so a caller that does not
+ * select still gives the visual cue. One pulse at a time: the previous one's timer is cleared, so
+ * jumping to desk A and then to B never switches B's highlight off early.
+ */
+function pulseUnit(dispatch: Dispatch<Action>, unitId: string, view: AppState['view']) {
+  dispatch({ type: 'SET_VIEW', view, animate: true });
+  dispatch({ type: 'MARK_USER_ZOOMED', value: true });
+  dispatch({ type: 'HIGHLIGHT_UNIT', id: unitId });
+  if (pulseTimer) clearTimeout(pulseTimer);
+  pulseTimer = setTimeout(() => dispatch({ type: 'HIGHLIGHT_UNIT', id: null }), PULSE_MS);
+  settleJump(dispatch, () => view);
+}
+
+/**
+ * Each date pick's request number: the plan applies only the latest pick's bookings, so an earlier,
+ * slower answer can never land after a later one and leave the day showing the wrong bookings.
+ */
+let dateSeq = 0;
+
 /** A toast for `ms` — shared by the actions and the boot effect, which has no actions of its own. */
 function postToast(dispatch: Dispatch<Action>, message: string, ms: number = 3200) {
   dispatch({ type: 'SHOW_TOAST', message });
@@ -67,6 +122,122 @@ export const ROSTER_FAILED = 'Couldn’t load people from Facilio — names may 
 export const ROSTER_BUSY = 'Facilio is busy — some names are missing. Trying again in a minute.';
 /** Any other read Facilio refused for rate, while it waits to ask again (lib/rateLimit readPatiently). */
 export const FACILIO_BUSY = 'Facilio is busy — trying again in a minute.';
+/** A floor's load (or a day's bookings) Facilio refused for rate, with nothing waiting to ask again: the user does. */
+export const FLOOR_BUSY = 'Facilio is busy — try again in a minute';
+/** A floor's load that failed for any other reason. */
+export const FLOOR_NOT_LOADED = 'Couldn’t load that floor — try again in a moment';
+/** A day's bookings that could not be read for the plan; the day on screen stays as it was. */
+export const DAY_NOT_LOADED = 'Couldn’t load the bookings for that day — try again';
+/** A colour change while the saved scheme is unknown: saving it would replace the org's colours. */
+export const COLOURS_NOT_LOADED = 'Couldn’t load the saved department colours, so colour changes can’t be saved yet — reload to try again';
+/** The same while the saved scheme is still being read. */
+export const COLOURS_LOADING = 'The saved department colours are still loading — try the change again in a moment';
+/**
+ * A change to the settings by someone without Settings — a new marker from the Edit view is the one
+ * way to make one. Not sent: the function would refuse it (lib/sharedSettings).
+ */
+export const SETTINGS_NOT_ALLOWED = "Couldn't save the settings — only admins and roles given Settings can change them.";
+/** The same, for the department colours, which are kept with the settings. */
+export const COLOURS_NOT_ALLOWED = "Couldn't save the department colours — only admins and roles given Settings can change them.";
+
+/**
+ * How long after a failed read of the settings blob or the colour scheme it is tried once more.
+ * Until one read succeeds nothing is saved to it: a save built on a failed read would replace
+ * the org's settings, or every department's colour, with this browser's defaults.
+ */
+const STORE_RETRY_MS = 30_000;
+/** Each retry after that waits twice as long as the last, up to this. */
+const STORE_RETRY_MAX_MS = 5 * 60_000;
+
+/** The wait before retry number `attempt` (0 for the first). */
+function storeRetryDelay(attempt: number): number {
+  return Math.min(STORE_RETRY_MS * 2 ** attempt, STORE_RETRY_MAX_MS);
+}
+
+/**
+ * `run` after `ms` — or, if the tab is hidden by then, once it is shown again: a read retried for
+ * a tab nobody is looking at is a call for no one. Returns a cancel.
+ */
+function retryWhenVisible(ms: number, run: () => void): () => void {
+  const onVisible = () => {
+    if (document.visibilityState === 'hidden') return;
+    document.removeEventListener('visibilitychange', onVisible);
+    run();
+  };
+  const timer = setTimeout(() => {
+    if (typeof document === 'undefined' || document.visibilityState !== 'hidden') run();
+    else document.addEventListener('visibilitychange', onVisible);
+  }, ms);
+  return () => {
+    clearTimeout(timer);
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisible);
+  };
+}
+
+/** A settings change made before the settings could be read: held, and sent once they are. */
+export const SETTINGS_NOT_READY = 'Settings haven’t loaded yet — your change will be saved once they have.';
+/** The app database answered, but its settings row is too large for it to hand back. */
+export const SETTINGS_TOO_LARGE = 'The app’s settings are too large to load, so changes to them can’t be saved — remove large custom marker images, or ask an admin.';
+
+/**
+ * The actions a user changes the stored settings with. One made before the settings were read is
+ * held (see the provider's autosave): every other action that touches them is a load, replayed to
+ * know the settings as loaded.
+ */
+const USER_SETTINGS_ACTIONS = new Set<Action['type']>([
+  'ADD_CUSTOM_MARKER',
+  'SET_BOOKING_MODULE',
+  'SET_SURFACE_ACCESS',
+  'SET_ACCESS',
+  'RESET_ACCESS',
+  'SET_PLAN_LABEL',
+  'SET_PRINT_REGISTER',
+  'SET_MODULE_COLOR',
+  'SET_COLOR_BY',
+  'SET_PRINT_SCOPE',
+  'SET_MODULE_ENABLED',
+  'SET_SLOT_GRANULARITY',
+  'SET_LABEL_STYLE',
+  'SET_FIRST_RESPONDERS',
+  'SET_RESPONDER_ROLES',
+]);
+/** The loads that set the stored settings (or decide where they live) — see USER_SETTINGS_ACTIONS. */
+const SETTINGS_LOAD_ACTIONS = new Set<Action['type']>([
+  'APPLY_SETTINGS',
+  'SHARED_SETTINGS_LOADED',
+  'SETTINGS_STORED',
+  'RESPONDERS_LOADED',
+  'ACCESS_LOADED',
+  'PORTFOLIO_LOADED',
+  'EMPLOYEES_LOADED',
+  'SET_VIEWER_ROLE',
+]);
+
+/** What to tell the user when a floor's load failed: busy for a rate refusal, else that it did not load. */
+function floorLoadFailedMessage(err: unknown): string {
+  return err instanceof IncompleteListError && err.rateLimited ? FLOOR_BUSY : FLOOR_NOT_LOADED;
+}
+
+/** The site list could not be read at boot — nothing to open, and the user can do something about it. */
+export const SITES_NOT_LOADED = 'Couldn’t load your sites — Refresh to try again';
+/** The site list came back empty: this user can see no floor at all. */
+export const NO_FLOORS_SHARED = 'No floors are shared with you';
+
+/**
+ * How long a floor's lists, or its plan image, may take before the load counts as failed. The
+ * refusals and errors are handled; a request that never answers left the loading animation up
+ * for good, with nothing to press.
+ */
+const FLOOR_LOAD_TIMEOUT_MS = 45_000;
+
+/** `p`, or a rejection once `ms` has passed without an answer. A late answer is dropped. */
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not answer within ${Math.round(ms / 1000)} s`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
 
 /**
  * The org's roster, as much of it as Facilio gives, and never a silent empty one.
@@ -169,13 +340,6 @@ function firstLoadedFloorId(portfolio: Site[]): string | undefined {
 }
 
 /**
- * The default floor for a LAZY tree: nothing below the sites is loaded at boot, so walk down the
- * first site → its first building → its first floor, dispatching each level as it arrives so the
- * tree shows the path it just opened. Two extra sequential requests, versus paging ~1000 records
- * for a tree the user mostly never expands. Any failure yields undefined and the caller keeps the
- * current floor.
- */
-/**
  * How far to probe for a default floor at boot. Deep enough to get past an empty site or building,
  * shallow enough that it can't turn into a portfolio-wide crawl.
  */
@@ -212,6 +376,13 @@ function mockFloorExists(floorId: string): boolean {
   return MOCK_PORTFOLIO.some((site) => site.buildings?.some((b) => b.floors?.some((f) => f.id === floorId)));
 }
 
+/**
+ * The default floor for a LAZY tree: nothing below the sites is loaded at boot, so walk down the
+ * first site → its first building → its first floor, dispatching each level as it arrives so the
+ * tree shows the path it just opened. Two extra sequential requests, versus paging ~1000 records
+ * for a tree the user mostly never expands. Any failure yields undefined and the caller keeps the
+ * current floor.
+ */
 async function resolveDefaultFloor(
   dispatch: Dispatch<Action>,
   portfolio: Site[],
@@ -261,11 +432,6 @@ async function resolveDefaultFloor(
   return undefined;
 }
 
-/**
- * Fetched lazily for ONE floor at a time (on selection/mount), not eagerly for the whole
- * portfolio. Finds which plan types are actually configured, defaults `planId` to one of them
- * if the current selection isn't among them, then loads that plan's real image.
- */
 /** Blob/object URLs aren't portable to the Vibe DB — turn any image URL into a storable data URL. */
 async function toStorableDataUrl(url: string): Promise<string | null> {
   if (url.startsWith('data:')) return url;
@@ -283,12 +449,6 @@ async function toStorableDataUrl(url: string): Promise<string | null> {
 }
 
 /**
- * Floor-plan image load, with this browser's copy as a read-through cache of the floorplan image
- * (lib/floorplanFileStore): (1) serve the cached copy immediately if there is one, (2) refresh from
- * the org when available, and (3) write that fetch back to the cache so the next load is instant.
- * Only real org fetches populate it — so it stays equal to the source.
- */
-/**
  * The pages of a big floor that arrive after it is drawn (see getUnits' `onMore`). They can land
  * before the floor's own load has finished — its bookings may still be in flight — and applied
  * then, SELECT_FLOOR_DONE would overwrite them with the first pages. So they wait for `release`,
@@ -300,7 +460,10 @@ function floorMore(dispatch: Dispatch<Action>, floorId: string) {
   const send = (a: Action) => (released ? dispatch(a) : queued.push(a));
   return {
     units: (units: Unit[]) => send({ type: 'FLOOR_UNITS_MORE', floorId, units }),
-    assignments: (assignments: AppState['assignments']) => send({ type: 'FLOOR_ASSIGNMENTS_MORE', floorId, assignments }),
+    assignments: (assignments: AppState['assignments']) => {
+      send({ type: 'FLOOR_ASSIGNMENTS_MORE', floorId, assignments });
+      send({ type: 'RECORD_STATES', floorId, states: takeRecordStates(floorId), merge: true });
+    },
     release: () => {
       released = true;
       queued.splice(0).forEach(dispatch);
@@ -308,16 +471,32 @@ function floorMore(dispatch: Dispatch<Action>, floorId: string) {
   };
 }
 
-async function loadFloorPlanTypesAndImage(dispatch: Dispatch<Action>, floorId: string, currentPlanId: PlanId) {
-  dispatch({ type: 'SET_FLOOR_IMAGE_LOADING', value: true });
+/**
+ * Fetched lazily for ONE floor at a time (on selection/mount), not eagerly for the whole
+ * portfolio. Finds which plan types are actually configured, defaults `planId` to one of them
+ * if the current selection isn't among them, then loads that plan's real image.
+ *
+ * Floor-plan image load, with this browser's copy as a read-through cache of the floorplan image
+ * (lib/floorplanFileStore): (1) serve the cached copy immediately if there is one, (2) refresh from
+ * the org when available, and (3) write that fetch back to the cache so the next load is instant.
+ * Only real org fetches populate it — so it stays equal to the source.
+ *
+ * Its plan-type switch and its loading flag carry `floorId`: a floor the user has left by the time
+ * they land changes neither the plan type nor the skeleton of the floor now on screen.
+ *
+ * `mayEditPlan` is asked when the image's size is known (the role and the access grid may have
+ * arrived only since this started) — see the georeference below.
+ */
+async function loadFloorPlanTypesAndImage(dispatch: Dispatch<Action>, floorId: string, currentPlanId: PlanId, mayEditPlan: () => boolean = () => true) {
+  dispatch({ type: 'SET_FLOOR_IMAGE_LOADING', value: true, floorId });
   try {
     let resolvedPlanId = currentPlanId;
     if (isFacilioApiConfigured) {
-      const types = await getFloorPlanSummary(floorId).catch(() => []);
+      const types = await withTimeout(getFloorPlanSummary(floorId), FLOOR_LOAD_TIMEOUT_MS, 'the plan types').catch(() => []);
       dispatch({ type: 'SET_FLOOR_PLAN_TYPES', floorId, types });
       if (types.length) {
         resolvedPlanId = types.some((t) => t.id === currentPlanId) ? currentPlanId : types[0].id;
-        if (resolvedPlanId !== currentPlanId) dispatch({ type: 'SET_PLAN', planId: resolvedPlanId });
+        if (resolvedPlanId !== currentPlanId) dispatch({ type: 'SET_PLAN', planId: resolvedPlanId, floorId });
       }
     }
 
@@ -327,13 +506,21 @@ async function loadFloorPlanTypesAndImage(dispatch: Dispatch<Action>, floorId: s
 
     // 2) Refresh from the org, and 3) keep the fetch as this browser's copy.
     if (isFacilioApiConfigured) {
-      const imageUrl = await fetchFloorplanImage(floorId, resolvedPlanId).catch(() => null);
+      const imageUrl = await withTimeout(fetchFloorplanImage(floorId, resolvedPlanId), FLOOR_LOAD_TIMEOUT_MS, 'the plan image').catch(() => null);
       if (imageUrl) {
         dispatch({ type: 'SET_FLOOR_IMAGE', floorId, planId: resolvedPlanId, dataUrl: imageUrl });
         // Now that the image's pixel size is known, make sure the plan carries the georeference
         // quad marker positions are written and read through. No-op if it already has one.
+        //
+        // Writing it changes the org's plan record, so it is the Edit right's to do (canEdit) — with
+        // one deliberate exception. A plan whose markers were placed in Facilio's own editor has no
+        // quad, and getUnits draws no marker of a plan without one: until the quad fitted to those
+        // markers is written, nobody sees the floor's desks. Only an editor opening the floor would
+        // ever fix that, so the fitted quad is written whoever opens it (`write: 'fitted'`). The
+        // synthetic quad a plan with no markers gets is left to an editor — written for a viewer
+        // it would show them nothing more.
         void measureImageDataUrl(imageUrl)
-          .then((dims) => ensurePlanGeoreference(floorId, resolvedPlanId, dims))
+          .then((dims) => ensurePlanGeoreference(floorId, resolvedPlanId, dims, { write: mayEditPlan() ? true : 'fitted' }))
           .catch((err) => {
             // eslint-disable-next-line no-console
             console.warn('[facilio-api] georeference check failed', err);
@@ -345,7 +532,7 @@ async function loadFloorPlanTypesAndImage(dispatch: Dispatch<Action>, floorId: s
       }
     }
   } finally {
-    dispatch({ type: 'SET_FLOOR_IMAGE_LOADING', value: false });
+    dispatch({ type: 'SET_FLOOR_IMAGE_LOADING', value: false, floorId });
   }
 }
 
@@ -355,7 +542,7 @@ async function loadFloorPlanTypesAndImage(dispatch: Dispatch<Action>, floorId: s
  * type other than whichever one `loadFloorPlanTypesAndImage` auto-resolved on floor load.
  */
 async function ensureFloorplanImage(dispatch: Dispatch<Action>, floorId: string, planId: PlanId) {
-  dispatch({ type: 'SET_FLOOR_IMAGE_LOADING', value: true });
+  dispatch({ type: 'SET_FLOOR_IMAGE_LOADING', value: true, floorId });
   try {
     let imageUrl = isFacilioApiConfigured ? await fetchFloorplanImage(floorId, planId).catch(() => null) : null;
     if (!imageUrl) {
@@ -365,11 +552,57 @@ async function ensureFloorplanImage(dispatch: Dispatch<Action>, floorId: string,
     }
     if (imageUrl) dispatch({ type: 'SET_FLOOR_IMAGE', floorId, planId, dataUrl: imageUrl });
   } finally {
-    dispatch({ type: 'SET_FLOOR_IMAGE_LOADING', value: false });
+    dispatch({ type: 'SET_FLOOR_IMAGE_LOADING', value: false, floorId });
   }
 }
 
-/** The room polygon (if any) containing an image-fraction point — placed units inherit its label. */
+/**
+ * A floor's load that failed — Facilio busy (RateLimitedError / IncompleteListError: the data layer
+ * no longer falls to a weaker tier then), or anything else. Before this, the rejection went
+ * unhandled and the skeleton stayed up for good. Now the loading flags come down, the user is told,
+ * and the screen shows something true (see SELECT_FLOOR_FAILED): the floor they came from, or this
+ * floor's own data on a Refresh, or — when neither is there — this floor with its plan image and no
+ * markers, rather than "no floorplan yet" over a floor that has one.
+ */
+function failFloorLoad(
+  dispatch: Dispatch<Action>,
+  floorId: string,
+  err: unknown,
+  how: { revertTo?: string; keep: boolean },
+  planId: PlanId,
+  mayEditPlan: () => boolean,
+) {
+  // eslint-disable-next-line no-console
+  console.warn(`[floor] could not load floor ${floorId}`, err);
+  dispatch({ type: 'SELECT_FLOOR_FAILED', floorId, ...how });
+  postToast(dispatch, floorLoadFailedMessage(err), 6000);
+  // The plan image is other requests than the lists that were refused, and usually still comes.
+  if (!how.revertTo && !how.keep) void loadFloorPlanTypesAndImage(dispatch, floorId, planId, mayEditPlan);
+}
+
+/**
+ * A floor's bookings for the day it opens on, read beside its spaces but never failing them: a
+ * floor whose bookings could not be read (Facilio busy, or a role that may not read bookings at
+ * all) still opens — its spaces and holders are the floor — with no bookings shown, and `tell`
+ * says so once the floor is up, rather than passing the empty day off as one with nothing booked.
+ */
+function readDayBookings(dispatch: Dispatch<Action>, floorId: string, date: string) {
+  let failure: unknown = null;
+  const bookings = dataSource.getBookings(floorId, date).catch((err: unknown) => {
+    failure = err;
+    // eslint-disable-next-line no-console
+    console.warn(`[bookings] could not read ${date} on floor ${floorId}`, err);
+    return [] as Booking[];
+  });
+  return {
+    bookings,
+    tell: () => {
+      if (!failure) return;
+      postToast(dispatch, failure instanceof IncompleteListError && failure.rateLimited ? FLOOR_BUSY : DAY_NOT_LOADED, 6000);
+    },
+  };
+}
+
 /**
  * Session guard for the lazily-fetched asset catalog. Module scope rather than a ref so it survives
  * a provider remount — the catalog doesn't change within a session, and re-fetching it because a
@@ -377,6 +610,7 @@ async function ensureFloorplanImage(dispatch: Dispatch<Action>, floorId: string,
  */
 let assetsRequested = false;
 
+/** The room polygon (if any) containing an image-fraction point — placed units inherit its label. */
 function roomLabelAt(state: AppState, x: number, y: number): string | null {
   // Only rooms on the plan being shown: now that zones are scoped to the image they were traced
   // over, a room on the workstation plan says nothing about a point picked on the locker plan —
@@ -387,23 +621,77 @@ function roomLabelAt(state: AppState, x: number, y: number): string | null {
   return room ? room.label : null;
 }
 
-function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef: MutableRefObject<DOMRect | null>) {
-  /** A toast for `ms` (3.2 s by default — longer for one that has more to say, see ROOM_NOTICE_MS). */
+/**
+ * What the actions read beyond the state they were built from: the LATEST state (an action that
+ * awaits must check what changed meanwhile — the floor left, a dialog cancelled), whether the
+ * viewer may edit the plan, and which reads of the saved colour scheme have answered.
+ */
+interface ActionEnv {
+  latest: () => AppState;
+  mayEditPlan: () => boolean;
+  colorReads: MutableRefObject<ColorReads>;
+}
+
+/**
+ * The two reads a colour save waits on: the app database's (`shared` — answered, or could not be
+ * asked, so where the scheme lives is known) and the file store's (`file` — read successfully,
+ * none stored counts).
+ */
+interface ColorReads {
+  shared: boolean;
+  file: boolean;
+  /** A read of the scheme failed (it is still asked again) — not merely not answered yet. */
+  failed: boolean;
+}
+
+function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef: MutableRefObject<DOMRect | null>, env: ActionEnv) {
   /**
    * Re-read who holds what on this floor from the org. After a desk move the org may have changed
    * more than the desk that was dropped on — the person's previous desk, the previous holder's —
    * and the plan has to show that too.
    */
+  /**
+   * Re-read who holds `unitIds` after a write to them, and the desks on this floor `people` hold —
+   * a desk move can clear the person's previous desk — rather than every desk on the floor for the
+   * one or two that changed. Resolves with the ids re-read, for RECORD_CHANGED. A read that fails
+   * leaves the holders on screen as they are.
+   */
+  const reloadHolders = async (unitIds: string[], people: string[] = []): Promise<string[]> => {
+    const floorId = state.floorId;
+    const held = new Set(people);
+    const ids = [...new Set([...unitIds, ...Object.keys(state.assignments).filter((id) => held.has(state.assignments[id]))])];
+    if (!isFacilioApiConfigured || !ids.length) return ids;
+    try {
+      const holders = dataSource.getAssignmentsFor ? await dataSource.getAssignmentsFor(floorId, ids) : await dataSource.getAssignments(floorId);
+      dispatch({ type: 'HOLDERS_LOADED', floorId, unitIds: ids, assignments: holders });
+      // The same read says those records' new states — a vacated desk is now Temporarily Vacant.
+      dispatch({ type: 'RECORD_STATES', floorId, states: takeRecordStates(floorId), ids });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[assign] could not re-read the holders', err);
+      // Refused for rate, nothing more is asked now: the holders on screen stay. Any other failure
+      // (the by-id read itself not working here) re-reads the floor's holders the way it was done
+      // before, which also brings the records' new states.
+      if (!(err instanceof IncompleteListError && err.rateLimited)) {
+        await reloadAssignments();
+        return [];
+      }
+    }
+    return ids;
+  };
   const reloadAssignments = async () => {
     if (!isFacilioApiConfigured) return;
     try {
       const assignments = await dataSource.getAssignments(state.floorId);
-      dispatch({ type: 'ASSIGNMENTS_LOADED', assignments });
+      dispatch({ type: 'ASSIGNMENTS_LOADED', floorId: state.floorId, assignments });
+      // The same read says each record's new state — a vacated desk is now Temporarily Vacant.
+      dispatch({ type: 'RECORD_STATES', floorId: state.floorId, states: takeRecordStates(state.floorId) });
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('[refresh] could not re-read assignments', err);
     }
   };
+  /** A toast for `ms` (3.2 s by default — longer for one that has more to say, see ROOM_NOTICE_MS). */
   const showToast = (message: string, ms: number = 3200) => postToast(dispatch, message, ms);
   /**
    * One write to the app database (lib/sharedSettings) — the responders or the access grid. The
@@ -423,7 +711,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn(`[shared-settings] the ${what} were not saved:`, (err as Error)?.message ?? err);
-      const stored = await loadSharedSettings();
+      const stored = await loadSharedSettings().catch(() => null);
       if (stored) {
         dispatch({ type: 'RESPONDERS_LOADED', roles: stored.roles, responders: stored.responders });
         dispatch({ type: 'ACCESS_LOADED', access: stored.access });
@@ -472,12 +760,21 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     else if (outlines) showToast(ROOM_OUTLINES_FAILED_NOTICE, ROOM_NOTICE_MS);
   };
 
-  async function loadFloor(floorId: string): Promise<Unit[]> {
+  /**
+   * Load a floor: its spaces, who holds them and the day's bookings, then its plan image. Null
+   * when the load failed — said to the user, and the screen left showing something true (see
+   * failFloorLoad) — so a caller never acts on a floor that is not on screen.
+   */
+  async function loadFloor(floorId: string): Promise<Unit[] | null> {
+    // A switch away from a floor that finished loading can go back to it if this one fails; a
+    // switch while another floor was still loading has nothing on screen to go back to.
+    const switching = floorId !== state.floorId;
+    const revertTo = switching && !state.loading ? state.floorId : undefined;
     dispatch({ type: 'SELECT_FLOOR_START', floorId });
     // Flag the image load NOW, not when loadFloorPlanTypesAndImage eventually starts — the
     // units/assignments/bookings awaits below leave a gap where the stage would otherwise flash
     // a blank canvas before the skeleton appears. Its finally-block still clears the flag.
-    dispatch({ type: 'SET_FLOOR_IMAGE_LOADING', value: true });
+    dispatch({ type: 'SET_FLOOR_IMAGE_LOADING', value: true, floorId });
 
     // Fast path (no org, a demo floor): getFloorData bundles the four per-call reads
     // (units/assignments/bookings/floorplan file) into ONE — written for the app-database
@@ -493,12 +790,14 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
           units: bundle.units,
           assignments: bundle.assignments,
           bookings: bundle.bookings,
+          date: state.date,
         });
+        dispatch({ type: 'RECORD_STATES', floorId, states: takeRecordStates(floorId) });
         try {
           const file = bundle.file ? (JSON.parse(bundle.file) as { dataUrl?: string }) : null;
           if (file?.dataUrl) dispatch({ type: 'SET_FLOOR_IMAGE', floorId, planId: state.planId, dataUrl: file.dataUrl });
         } finally {
-          dispatch({ type: 'SET_FLOOR_IMAGE_LOADING', value: false });
+          dispatch({ type: 'SET_FLOOR_IMAGE_LOADING', value: false, floorId });
         }
         return bundle.units;
       } catch (err) {
@@ -509,22 +808,94 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
 
     // A big floor draws from its first pages; the rest merges in when it arrives (floorMore).
     const more = floorMore(dispatch, floorId);
-    const [units, assignments, bookings] = await Promise.all([
-      dataSource.getUnits(floorId, (rest) => {
-        more.units(rest);
-        noteFloorReadFailure(floorId);
-      }),
-      dataSource.getAssignments(floorId, more.assignments),
-      dataSource.getBookings(floorId, state.date),
-    ]);
-    dispatch({ type: 'SELECT_FLOOR_DONE', floorId, units, assignments, bookings });
+    const day = readDayBookings(dispatch, floorId, state.date);
+    let loaded: [Unit[], AppState['assignments'], Booking[]];
+    try {
+      loaded = await withTimeout(
+        Promise.all([
+          dataSource.getUnits(floorId, (rest) => {
+            more.units(rest);
+            // Not about a floor the user has since left (or been taken back from, its load failed).
+            if (env.latest().floorId === floorId) noteFloorReadFailure(floorId);
+          }),
+          dataSource.getAssignments(floorId, more.assignments),
+          day.bookings,
+        ]),
+        FLOOR_LOAD_TIMEOUT_MS,
+        `floor ${floorId}`,
+      );
+    } catch (err) {
+      // Its later pages are never released (`more`): they belong to a load that did not happen.
+      failFloorLoad(dispatch, floorId, err, { revertTo, keep: !switching }, state.planId, env.mayEditPlan);
+      return null;
+    }
+    const [units, assignments, bookings] = loaded;
+    dispatch({ type: 'SELECT_FLOOR_DONE', floorId, units, assignments, bookings, date: state.date });
+    dispatch({ type: 'RECORD_STATES', floorId, states: takeRecordStates(floorId) });
     more.release();
     // The floor loads without outlines a zone list failed to give; the user is told, once, rather
     // than left to take a floor of "Unplaced" rooms for rooms never onboarded (see loadPlanZones).
     noteFloorReadFailure(floorId);
-    loadFloorPlanTypesAndImage(dispatch, floorId, state.planId);
+    day.tell();
+    void loadFloorPlanTypesAndImage(dispatch, floorId, state.planId, env.mayEditPlan);
     return units;
   }
+
+  /**
+   * Store department colours — any number in ONE save. The scheme is one blob (lib/
+   * departmentColorStore), so it is built once from every colour on screen plus all the changes:
+   * a save per colour, each built from the colours as they were before, kept only the last one.
+   *
+   * Not before the saved scheme has been read from where it lives — the app database when it holds
+   * one, else the file store: built on a read that failed, the scheme written would replace every
+   * department's colour the org chose with the defaults.
+   *
+   * With the app database answering, the scheme goes to its function, which lets only admins and
+   * roles given Settings change it; once it is stored, the file store gets a copy too, for the
+   * builds still deployed that read only the file (lib/sharedSettings).
+   */
+  const storeDepartmentColors = (changes: Record<string, { hex: string; name?: string }>) => {
+    const ids = Object.keys(changes);
+    if (!ids.length) return;
+    const reads = env.colorReads.current;
+    if (!reads.shared || !(reads.file || state.settingsDb.colors)) {
+      showToast(reads.failed ? COLOURS_NOT_LOADED : COLOURS_LOADING, 6000);
+      return;
+    }
+    // One the function would refuse is not shown and taken back: it is said at once.
+    if (state.settingsDb.answered && !canChangeSettings(state)) {
+      showToast(COLOURS_NOT_ALLOWED, 6000);
+      return;
+    }
+    const previous = Object.fromEntries(ids.map((id) => [id, state.departmentColors[id]]));
+    for (const id of ids) dispatch({ type: 'SET_DEPARTMENT_COLOR', department: id, hex: changes[id].hex });
+    const colors: Record<string, string> = { ...state.departmentColors };
+    for (const id of ids) colors[id] = changes[id].hex;
+    const scheme: DepartmentColorScheme = Object.fromEntries(
+      Object.entries(colors).map(([id, color]) => [id, { name: id in changes ? (changes[id].name ?? '') : (state.departments.find((d) => d.id === id)?.name ?? ''), color }]),
+    );
+    const notPersisted = (err: unknown) => {
+      // eslint-disable-next-line no-console
+      console.warn('[departments] colour applied but not persisted', err);
+    };
+    if (!state.settingsDb.answered) {
+      void saveDepartmentColors(scheme).catch(notPersisted);
+      return;
+    }
+    void saveDepartmentColorScheme(scheme).then(
+      () => {
+        dispatch({ type: 'SETTINGS_STORED', part: 'colors' });
+        return saveDepartmentColors(scheme).catch(notPersisted);
+      },
+      (err) => {
+        notPersisted(err);
+        // Refused: the plan goes back to the colours that are stored, as a refused responder or grid
+        // save does — a colour left on screen would read as saved.
+        dispatch({ type: 'REVERT_DEPARTMENT_COLORS', previous });
+        showToast(notSavedNotice('department colours', err), 6000);
+      },
+    );
+  };
 
   return {
     // Leaving edit mode with unsaved changes prompts to save/discard first rather than
@@ -548,10 +919,15 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       }
       dispatch({ type: 'TOGGLE_EDIT' });
     },
-    cancelModeSwitch: () => dispatch({ type: 'SET_PENDING_MODE_SWITCH', mode: null }),
+    // Not while "Save changes" is running: the switch it is saving for goes ahead when it lands, and
+    // a Cancel pressed meanwhile would be overridden by it (the dialog disables Cancel too).
+    cancelModeSwitch: () => {
+      if (state.saving) return;
+      dispatch({ type: 'SET_PENDING_MODE_SWITCH', mode: null });
+    },
     confirmSaveAndSwitch: async () => {
       const target = state.pendingModeSwitch;
-      if (!target) return;
+      if (!target || state.saving) return;
       // The modal stays up with a loader on the Save button while persisting (saving flag) —
       // saving must complete before the switch, unlike discard, which is instant.
       dispatch({ type: 'SET_SAVING', value: true });
@@ -566,6 +942,8 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       } finally {
         dispatch({ type: 'SET_SAVING', value: false });
       }
+      // Only the switch still asked for: one dismissed meanwhile stays in Edit.
+      if (env.latest().pendingModeSwitch !== target) return;
       dispatch({ type: 'SET_MODE', mode: target });
       if (target === 'assign' || target === 'book') dispatch({ type: 'SET_PANEL_OPEN', id: 'details', open: true });
       dispatch({ type: 'SET_PENDING_MODE_SWITCH', mode: null });
@@ -648,8 +1026,14 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     setPortfolioSearch: async (query: string) => {
       dispatch({ type: 'SET_PORTFOLIO_SEARCH', query });
       if (!query.trim()) return;
-      const results = await dataSource.searchFloors(query).catch(() => [] as FloorSearchHit[]);
-      dispatch({ type: 'PORTFOLIO_SEARCH_RESULTS', query, results });
+      // A search that could not be answered says so: read as "no floor has that name", a busy
+      // Facilio sent people looking for a floor that exists.
+      let failed: 'busy' | 'error' | undefined;
+      const results = await dataSource.searchFloors(query).catch((err: unknown) => {
+        failed = err instanceof IncompleteListError && err.rateLimited ? 'busy' : 'error';
+        return [] as FloorSearchHit[];
+      });
+      dispatch({ type: 'PORTFOLIO_SEARCH_RESULTS', query, results, failed });
     },
     /**
      * Make a search hit's site/building loaded and expanded so the tree can show the selection.
@@ -674,7 +1058,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
 
     selectFloor: (floorId: string) => {
       if (floorId === state.floorId) return;
-      loadFloor(floorId);
+      void loadFloor(floorId);
     },
 
     /**
@@ -695,16 +1079,36 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
         // scheme are read once at boot and never again, so without this a refresh re-read the
         // desks but still resolved their holders against a roster from whenever the tab opened —
         // and a department added since would have no colour and no name anywhere.
+        const colorsInDb = state.settingsDb.colors;
         const [, employees, departments, scheme] = await Promise.all([
           loadFloor(state.floorId),
           readRoster(dispatch, { refresh: true }),
           fetchDepartments().catch(() => []),
-          loadDepartmentColors().catch(() => ({})),
+          // From where the scheme lives this session. Null when it could not be read — not "no
+          // colours" (see storeDepartmentColors).
+          // The database's answer carries the responders and the access grid too: applied as well,
+          // since they are read anyway.
+          colorsInDb
+            ? loadSharedSettings()
+                .then((stored) => {
+                  if (stored) {
+                    dispatch({ type: 'RESPONDERS_LOADED', roles: stored.roles, responders: stored.responders });
+                    dispatch({ type: 'ACCESS_LOADED', access: stored.access });
+                  }
+                  return stored?.departmentColors ?? null;
+                })
+                .catch(() => null)
+            : loadDepartmentColors().catch(() => null),
         ]);
         if (employees?.length) dispatch({ type: 'EMPLOYEES_LOADED', employees });
         if (departments.length) dispatch({ type: 'DEPARTMENTS_LOADED', departments });
-        const colors = Object.fromEntries(Object.entries(scheme).map(([id, v]) => [id, v.color]));
-        if (Object.keys(colors).length) dispatch({ type: 'DEPARTMENT_COLORS_LOADED', colors });
+        if (scheme && colorsInDb) {
+          dispatch({ type: 'SHARED_SETTINGS_LOADED', settings: null, print: null, colors: scheme });
+        } else if (scheme) {
+          env.colorReads.current.file = true;
+          const colors = Object.fromEntries(Object.entries(scheme).map(([id, v]) => [id, v.color]));
+          if (Object.keys(colors).length) dispatch({ type: 'DEPARTMENT_COLORS_LOADED', colors });
+        }
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn('[refresh] could not re-read the floor', err);
@@ -734,7 +1138,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     fitDesks: (rectW: number, rectH: number, animate = false) => {
       dispatch({ type: 'MARK_USER_ZOOMED', value: false });
       dispatch({ type: 'SET_VIEW', view: fitUnitsView(planMarkers(state), rectW, rectH, viewInsets(state)), animate });
-      if (animate) setTimeout(() => dispatch({ type: 'SET_VIEW', view: fitUnitsView(planMarkers(state), rectW, rectH, viewInsets(state)), animate: false }), 380);
+      if (animate) settleJump(dispatch, () => fitUnitsView(planMarkers(state), rectW, rectH, viewInsets(state)));
     },
     zoomIn: (rectW: number, rectH: number) => {
       dispatch({ type: 'MARK_USER_ZOOMED', value: true });
@@ -754,15 +1158,8 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       const u = unitById(state, id);
       if (!u) return;
       if (u.plan !== state.planId) dispatch({ type: 'SET_PLAN', planId: u.plan });
-      const view = focusUnitView(u, rectW, rectH, state.view.z, viewInsets(state));
-      dispatch({ type: 'SET_VIEW', view, animate: true });
-      dispatch({ type: 'MARK_USER_ZOOMED', value: true });
       if (opts?.select !== false) dispatch({ type: 'SELECT_UNIT', id });
-      // Pulses the marker for ~2s so it's easy to spot after jumping to it — separate from
-      // selection, so callers that skip selecting (e.g. "My desk") still get the visual cue.
-      dispatch({ type: 'HIGHLIGHT_UNIT', id });
-      setTimeout(() => dispatch({ type: 'HIGHLIGHT_UNIT', id: null }), 2000);
-      setTimeout(() => dispatch({ type: 'SET_VIEW', view, animate: false }), 380);
+      pulseUnit(dispatch, id, focusUnitView(u, rectW, rectH, state.view.z, viewInsets(state)));
     },
 
     /**
@@ -776,18 +1173,18 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       const md = state.myDesk;
       if (!md?.floorId) return;
       let units: Unit[] = state.units;
-      if (md.floorId !== state.floorId) units = await loadFloor(md.floorId);
+      if (md.floorId !== state.floorId) {
+        const loaded = await loadFloor(md.floorId);
+        // Not loaded: the user has been told, and is not on the desk's floor to be shown it.
+        if (!loaded) return;
+        units = loaded;
+      }
       const byRecord = units.find((x) => x.id === String(md.recordId) && x.type === 'workstation');
       const geoId = byRecord ? null : await findUnitIdForDeskRecord(md.floorId, md.recordId).catch(() => null);
       const u = byRecord ?? (geoId ? units.find((x) => x.id === geoId) : null) ?? null;
       if (u) {
         if (u.plan !== state.planId) dispatch({ type: 'SET_PLAN', planId: u.plan });
-        const view = focusUnitView(u, rectW, rectH, state.view.z, viewInsets(state));
-        dispatch({ type: 'SET_VIEW', view, animate: true });
-        dispatch({ type: 'MARK_USER_ZOOMED', value: true });
-        dispatch({ type: 'HIGHLIGHT_UNIT', id: u.id });
-        setTimeout(() => dispatch({ type: 'HIGHLIGHT_UNIT', id: null }), 2000);
-        setTimeout(() => dispatch({ type: 'SET_VIEW', view, animate: false }), 380);
+        pulseUnit(dispatch, u.id, focusUnitView(u, rectW, rectH, state.view.z, viewInsets(state)));
       } else {
         showToast(`Your desk ${md.name} is on this floor`);
       }
@@ -810,9 +1207,9 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
      * The plan's popover and the sidebar show the SAME record, so a transition fired in one leaves
      * the other holding the state and the holder the write just replaced. A single bump they both
      * watch is the only thing that keeps them agreeing, and it is what "reload the record" means
-     * here — the read itself is never cached.
+     * here. With `ids`, only the surfaces showing those records re-read (recordVersions).
      */
-    recordChanged: () => dispatch({ type: 'RECORD_CHANGED' }),
+    recordChanged: (ids?: string[]) => dispatch({ type: 'RECORD_CHANGED', ids }),
 
     /**
      * Re-read who holds what on this floor, from the org.
@@ -821,7 +1218,27 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
      * and neither shows on the marker or in the sidebar until the map is re-read. Cheaper than a
      * full floor refresh, which would also re-fetch the plan image for a change that can't affect it.
      */
-    refreshAssignments: reloadAssignments,
+    /**
+     * Ask for the roster again — the People lists' Retry after boot could not read it at all. A
+     * roster that is there already is kept until the new one lands (Refresh re-reads it as well).
+     */
+    reloadRoster: async () => {
+      if (state.rosterStatus === 'loading') return;
+      const had = state.employees.length > 0;
+      if (!had) dispatch({ type: 'ROSTER_STATUS', status: 'loading' });
+      const employees = await readRoster(dispatch, { refresh: had });
+      if (employees?.length) dispatch({ type: 'EMPLOYEES_LOADED', employees });
+      else if (!had) dispatch({ type: 'ROSTER_STATUS', status: 'failed' });
+    },
+    /**
+     * Re-read holders from the org: with `unitIds`, those units' and the desks `people` hold on this
+     * floor (resolving with every id re-read); without, the whole floor's (resolving with none).
+     */
+    refreshAssignments: async (unitIds?: string[], people?: string[]): Promise<string[]> => {
+      if (unitIds?.length) return reloadHolders(unitIds, people);
+      await reloadAssignments();
+      return [];
+    },
 
     /**
      * Clicking a spot with a desk/locker/parking tool no longer silently mints a new record —
@@ -940,7 +1357,28 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
         ...(type === 'workstation' ? { deskType: 'ASSIGNED' as const } : {}),
       };
       dispatch({ type: 'SET_PENDING_PLACEMENT', placement: null });
-      const unit = await dataSource.createUnit(resolveSpaceLoc(state.portfolio, state.floorId), base).catch(() => base);
+      const loc = resolveSpaceLoc(state.portfolio, state.floorId);
+      if (isFacilioApiConfigured && isRealFloorId(state.floorId)) {
+        // On an org floor the new desk IS its record, so it is created by the org's own tier alone,
+        // and a create Facilio refuses adds nothing. Through the tier chain a refusal fell to this
+        // browser's store, which always "succeeds": the toast said added, and the desk existed
+        // here only, with no record behind it.
+        let created: Unit;
+        try {
+          created = await new FacilioApiDataSource().createUnit(loc, base);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn('[facilio-api] create refused', err);
+          const reason = String((err as Error)?.message ?? '').replace(/^facilio-api:\s*/, '') || 'Facilio refused it';
+          showToast(`Not created in Facilio — ${reason}`, 6000);
+          return;
+        }
+        dispatch({ type: 'ADD_UNIT', unit: created });
+        dataSource.saveUnits(state.floorId, [...state.units, created]);
+        showToast(`${label} added`);
+        return;
+      }
+      const unit = await dataSource.createUnit(loc, base).catch(() => base);
       dispatch({ type: 'ADD_UNIT', unit });
       dataSource.saveUnits(state.floorId, [...state.units, unit]);
       showToast(`${label} added`);
@@ -998,9 +1436,25 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
         // The plan it was traced over — its points are in that image's coordinates.
         plan: planForPlacement(state.planId, zoneType),
       };
-      // A drawn zone is a real space too — create it on the connector (category "Room"), then
-      // persist its polygon locally. Falls back to the local record if the connector isn't there.
-      const unit = await dataSource.createUnit(resolveSpaceLoc(state.portfolio, state.floorId), base).catch(() => base);
+      // A drawn zone is a real space too — created in the org (category "Room"), its polygon then
+      // persisted. On an org floor a create Facilio refused adds nothing, and the outline stays drawn
+      // to try again: "created" over a room that existed in this browser alone was the old answer.
+      // Elsewhere (a demo floor) the local record stands in, as it always did.
+      const loc = resolveSpaceLoc(state.portfolio, state.floorId);
+      let unit: Unit;
+      if (isFacilioApiConfigured && isRealFloorId(state.floorId)) {
+        try {
+          unit = await dataSource.createUnit(loc, base);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn('[facilio-api] create refused', err);
+          const reason = String((err as Error)?.message ?? '').replace(/^[\w-]+:\s*/, '') || 'Facilio refused it';
+          showToast(`Not created in Facilio — ${reason}`, 6000);
+          return;
+        }
+      } else {
+        unit = await dataSource.createUnit(loc, base).catch(() => base);
+      }
       dispatch({ type: 'CLOSE_DRAFT', unit });
       dataSource.saveUnits(state.floorId, [...state.units, unit]);
       showToast(`${label} created — rename it in the Selection panel`);
@@ -1143,8 +1597,8 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     markAssigned: (unitId: string, contactId: string) => {
       const next = { ...state.assignments, [unitId]: contactId };
       dispatch({ type: 'ASSIGN', unitId, contactId, assignments: next });
-      // An org write just completed against this record — the same announcement `assign` makes.
-      dispatch({ type: 'RECORD_CHANGED' });
+      // The caller announces the change (recordChanged) once it has re-read the holders it touched
+      // (refreshAssignments) — announced here as well, every surface on the record would read it twice.
       void dataSource.saveUnits(state.floorId, state.units).catch(() => {});
     },
 
@@ -1171,6 +1625,9 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       next[unitId] = contactId;
       dispatch({ type: 'ASSIGN', unitId, contactId, assignments: next });
       const prevName = prevContactId ? nameOf(prevContactId) : null;
+      // What this write can change: the desk, and the desks the person held before (a desk move can
+      // clear one) — re-read, and announced, rather than the whole floor.
+      let changed = [unitId];
       // The record is being written: its marker spins and both surfaces showing it stop reporting
       // a holder they are about to replace — for the whole write, the org's included, so a second
       // drop cannot land mid-move. Dropped again below whatever the write does.
@@ -1184,7 +1641,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
           const out = await assignUnitReal(target, contactId);
           if (!out.ok) showToast(`Could not assign ${target.label} in Facilio — ${out.reason}`, 6000);
           else showToast(`${nameOf(contactId)} assigned to ${target.label}` + (prevName ? ` — replaced ${prevName}` : ''));
-          await reloadAssignments();
+          changed = await reloadHolders([unitId], [contactId]);
         } else {
           showToast(`${nameOf(contactId)} assigned to ${target.label}` + (prevName ? ` — replaced ${prevName}` : ''));
         }
@@ -1195,7 +1652,7 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
         // the person who held it before. Signalled HERE rather than at the call sites: a drag onto
         // a marker, the mobile sheet and the people picker all land in this function, and three
         // call sites each remembering to announce the same change is three chances to forget.
-        dispatch({ type: 'RECORD_CHANGED' });
+        dispatch({ type: 'RECORD_CHANGED', ids: changed });
       }
     },
     vacate: async (unitId: string) => {
@@ -1216,18 +1673,37 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
           const out = await vacateUnitReal(target, prevContactId);
           if (!out.ok) showToast(`Could not vacate ${target.label} in Facilio — ${out.reason}`, 6000);
           else showToast(`${target.label} vacated` + (prevName ? ` — ${prevName} unassigned` : ''));
-          await reloadAssignments();
+          await reloadHolders([unitId]);
         } else if (target) {
           showToast(`${target.label} vacated` + (prevName ? ` — ${prevName} unassigned` : ''));
         }
       } finally {
         dispatch({ type: 'SET_UNIT_BUSY', id: null });
-        dispatch({ type: 'RECORD_CHANGED' });
+        dispatch({ type: 'RECORD_CHANGED', ids: [unitId] });
       }
     },
+    /**
+     * Pick the day the plan shows: its bookings are read, then the day changes with them. The
+     * latest pick wins (dateSeq) and a read for a floor since left is not applied (SET_DATE). A read
+     * Facilio refused for rate leaves the day as it was — a minute later it will answer. Any other
+     * failure (a role that may not read bookings) still moves to the day, with none shown, and says
+     * the day's bookings could not be read, as a floor opened that way does (readDayBookings).
+     */
     setDate: async (value: string) => {
-      const bookings = await dataSource.getBookings(state.floorId, value);
-      dispatch({ type: 'SET_DATE', value, bookings });
+      const seq = ++dateSeq;
+      const floorId = state.floorId;
+      try {
+        const bookings = await dataSource.getBookings(floorId, value);
+        if (seq !== dateSeq) return;
+        dispatch({ type: 'SET_DATE', value, bookings, floorId });
+      } catch (err) {
+        if (seq !== dateSeq) return;
+        // eslint-disable-next-line no-console
+        console.warn(`[bookings] could not read ${value} on floor ${floorId}`, err);
+        const busy = err instanceof IncompleteListError && err.rateLimited;
+        if (!busy) dispatch({ type: 'SET_DATE', value, bookings: [], floorId });
+        showToast(busy ? FLOOR_BUSY : DAY_NOT_LOADED, 6000);
+      }
     },
     setTimeRange: (start: number, end: number) => dispatch({ type: 'SET_TIME_RANGE', start, end }),
     openBookModal: () => dispatch({ type: 'SET_BOOK_MODAL', open: true }),
@@ -1252,9 +1728,10 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
       const clean = sanitizeRoles(roles);
       void persistShared(() => saveResponderRoles(clean), 'responder roles');
     },
-    cancelBooking: async (id: string) => {
+    /** Cancel a booking: true once it is cancelled, false when it was refused (and the user told why). */
+    cancelBooking: async (id: string): Promise<boolean> => {
       // With no Facilio host there is nowhere to cancel it — this browser's copy is not the booking.
-      if (refuseOrgWrite(showToast)) return;
+      if (refuseOrgWrite(showToast)) return false;
       // Persist BEFORE dispatching: CANCEL_BOOKING bumps bookingsNonce, which refetches the
       // calendar — if the store still held the booking at that moment it would resurrect.
       try {
@@ -1266,10 +1743,11 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
         // eslint-disable-next-line no-console
         console.warn('[bookings] cancel failed', err);
         showToast(`Not cancelled — ${(err as Error)?.message || 'Facilio refused it'}`, 6000);
-        return;
+        return false;
       }
       dispatch({ type: 'CANCEL_BOOKING', id });
       showToast('Booking cancelled');
+      return true;
     },
 
     /** Which real module bookings target (Space vs Facility) — mutually exclusive, set in Settings. */
@@ -1329,8 +1807,12 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
 
       // The clash check reads this resource's bookings over every day the window touches — the
       // floor's single-day slice would miss a booking on another floor's record or on day two.
+      // Strict, so a read that stopped part-way still gives the bookings it did read, to check
+      // against, rather than passing them off as all of them (lib/facilioApiDataSource).
       const existing = isFacilioApiConfigured
-        ? await fetchOrgBookingsForRange(form.date, endDate, { resourceField: isRoomLike(unit.type) ? 'space' : 'desk', resourceIds: [unit.id] }).catch(() => [] as Booking[])
+        ? await fetchOrgBookingsForRange(form.date, endDate, { resourceField: isRoomLike(unit.type) ? 'space' : 'desk', resourceIds: [unit.id], strict: true }).catch((err: unknown) =>
+            err instanceof IncompleteListError ? (err.rows as Booking[]) : ([] as Booking[]),
+          )
         : await dataSource.getBookings(state.floorId, form.date).catch(() => [] as Booking[]);
       const absStart = form.start;
       const absEnd = dayOffset * 1440 + form.end;
@@ -1377,7 +1859,9 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
         // own day list shows it until then. Its first day only — the re-read brings the segments.
         dispatch({
           type: 'ADD_BOOKING',
-          booking: { id: realId != null ? String(realId) : 'b' + Date.now(), unitId: unit.id, date: form.date, start: form.start, end: dayOffset > 0 ? 1440 : form.end, by: form.reservedBy || form.host || state.bookBy, purpose: form.name, module: 'space', name: form.name },
+          // `host` as the form had it, so the booking is found for that person too until the re-read
+          // brings the org's own row (selectors.spaceOfPerson).
+          booking: { id: realId != null ? String(realId) : 'b' + Date.now(), unitId: unit.id, date: form.date, start: form.start, end: dayOffset > 0 ? 1440 : form.end, by: form.reservedBy || form.host || state.bookBy, ...(form.host ? { host: form.host } : {}), purpose: form.name, module: 'space', name: form.name },
         });
         showToast(`${unit.label} booked`);
         return true;
@@ -1492,29 +1976,17 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
     setColorByView: (value: AppState['colorByView']) => dispatch({ type: 'SET_COLOR_BY_VIEW', value }),
     setPrintScope: (value: AppState['printScope']) => dispatch({ type: 'SET_PRINT_SCOPE', value }),
     /**
-     * A department's colour is org data, not a browser preference: it goes to the app's own
-     * `fp_department_color` table keyed by the department's record id, so a rename in Facilio
-     * keeps the colour and anything else can read the scheme. Applied locally first so the plan
+     * A department's colour is org data, not a browser preference: it goes into the org's colour
+     * scheme keyed by the department's record id, so a rename in Facilio keeps the colour (see
+     * storeDepartmentColors for where the scheme is kept). Applied locally first so the plan
      * recolours under the click rather than after the round trip.
      */
-    setDepartmentColor: (departmentId: string, hex: string, departmentName = '') => {
-      dispatch({ type: 'SET_DEPARTMENT_COLOR', department: departmentId, hex });
-      // The whole scheme goes along because the file and browser tiers store it as one blob —
-      // only a database can write a single department's row (see lib/departmentColorStore).
-      const scheme = Object.fromEntries(
-        Object.entries({ ...state.departmentColors, [departmentId]: hex }).map(([id, color]) => [
-          id,
-          { name: id === departmentId ? departmentName : (state.departments.find((d) => d.id === id)?.name ?? ''), color },
-        ]),
-      );
-      void saveDepartmentColor(departmentId, departmentName, hex, scheme).catch((err) => {
-        // eslint-disable-next-line no-console
-        console.warn('[departments] colour applied but not persisted', err);
-      });
-    },
+    setDepartmentColor: (departmentId: string, hex: string, departmentName = '') => storeDepartmentColors({ [departmentId]: { hex, name: departmentName } }),
+    /** Several departments' colours at once — Settings' Save — in one save of the scheme. */
+    setDepartmentColors: (changes: Record<string, { hex: string; name?: string }>) => storeDepartmentColors(changes),
     setModuleEnabled: (module: ModuleKey, enabled: boolean) => dispatch({ type: 'SET_MODULE_ENABLED', module, enabled }),
     setPlanLabel: (kind: LabelledType, value: PlanLabel) => dispatch({ type: 'SET_PLAN_LABEL', kind, value }),
-    /** The parking register, for everyone who prints parking (the settings blob). */
+    /** A register's print choices, for everyone who prints it (saved with the print settings — see persistSettings). */
     setPrintRegister: (kind: RegisterKind, value: RegisterPrint) => dispatch({ type: 'SET_PRINT_REGISTER', kind, value }),
     /**
      * Fetches the asset catalog on first use of the Edit-mode asset picker. Idempotent: the guard
@@ -1621,14 +2093,147 @@ function buildActions(state: AppState, dispatch: Dispatch<Action>, canvasRectRef
  */
 const BUSY_TIMEOUT_MS = 20000;
 
+/**
+ * How long a plan image's object URL lives on once nothing on screen shows it any more (a Refresh or
+ * a return to the floor replaced it): long enough for the reads still in flight on it — the
+ * georeference's measuring, the copy kept in this browser — to finish first.
+ */
+const IMAGE_URL_GRACE_MS = 30_000;
+
+/**
+ * The settings as last stored: whole (as the file store keeps them) and in the two parts the app
+ * database keeps apart (lib/settingsStore splitSettings), each with its JSON to tell a change by.
+ * Moved on by each save that went through — a refused one leaves it, so the part goes again with
+ * the next change.
+ */
+interface StoredSettings {
+  whole: string;
+  parts: { settings: SettingsConfig; print: SettingsConfig };
+  json: { settings: string; print: string };
+}
+
+function storedSettings(cfg: SettingsConfig): StoredSettings {
+  const parts = splitSettings(cfg);
+  return { whole: JSON.stringify(cfg), parts, json: { settings: JSON.stringify(parts.settings), print: JSON.stringify(parts.print) } };
+}
+
+/**
+ * Save what changed in the settings since they were last stored.
+ *
+ * Without the app database (`npm run dev`, or a database that could not be read at boot): the
+ * whole blob to the file store, else this browser, as before.
+ *
+ * With it, each part through its function, and only when that part changed: the settings when the
+ * viewer has Settings — without it the function would refuse them, and the one way to change them
+ * without Settings is a new marker in the Edit view, so that is said rather than sent — and the
+ * print settings for anyone, as the print window offers them to everyone who prints. A refusal is
+ * said with the function's reason. Once the database took a part, the file store is written with
+ * the settings as stored, for the builds still deployed that read only the file — never with a part
+ * the database refused.
+ */
+async function persistSettings(state: AppState, stored: StoredSettings, dispatch: Dispatch<Action>): Promise<void> {
+  const cfg = settingsFromState(state);
+  if (!state.settingsDb.answered) {
+    const whole = JSON.stringify(cfg);
+    if (whole === stored.whole) return;
+    stored.whole = whole;
+    await saveSettings(cfg);
+    return;
+  }
+  const parts = splitSettings(cfg);
+  const changed = (part: keyof StoredSettings['json']) => JSON.stringify(parts[part]) !== stored.json[part];
+  const send = async (part: keyof StoredSettings['json'], write: (c: SettingsConfig) => Promise<void>, what: string): Promise<boolean> => {
+    if (!changed(part)) return false;
+    try {
+      await write(parts[part]);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`[shared-settings] the ${what} were not saved:`, (err as Error)?.message ?? err);
+      postToast(dispatch, notSavedNotice(what, err), 6000);
+      return false;
+    }
+    stored.parts[part] = parts[part];
+    stored.json[part] = JSON.stringify(parts[part]);
+    dispatch({ type: 'SETTINGS_STORED', part });
+    return true;
+  };
+  const mayChangeSettings = canChangeSettings(state);
+  if (changed('settings') && !mayChangeSettings) postToast(dispatch, SETTINGS_NOT_ALLOWED, 6000);
+  const [tookSettings, tookPrint] = await Promise.all([mayChangeSettings ? send('settings', saveAppSettings, 'settings') : false, send('print', savePrintSettings, 'print settings')]);
+  if (tookSettings) {
+    await saveSettings({ ...stored.parts.settings, ...stored.parts.print });
+  } else if (tookPrint) {
+    // Only the print settings went in. This tab's copy of the rest is from when it opened — an
+    // admin may have changed them since — so the copy for the older builds is built from the
+    // database's settings as they are now, or not written at all.
+    const now = await loadSharedSettings().catch(() => null);
+    if (now?.appSettings) await saveSettings({ ...now.appSettings, ...stored.parts.print });
+  }
+}
+
 export function FloorplanProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, undefined, buildInitialState);
+  const [state, rawDispatch] = useReducer(reducer, undefined, buildInitialState);
+  /** The state as first built, for the settings as loaded to be replayed onto (see the autosave). */
+  const initialStateRef = useRef(state);
+  /**
+   * Until the settings are ready to save: the user's changes to them and the loads that set them,
+   * each in order, and whether a load landed after a change (and so may have put it back). Kept by
+   * the one dispatch every action goes through.
+   */
+  const settingsBootRef = useRef<{ ready: boolean; early: boolean; changes: Action[]; loads: Action[]; loadAfterChange: boolean }>({
+    ready: false,
+    early: false,
+    changes: [],
+    loads: [],
+    loadAfterChange: false,
+  });
+  const dispatchRef = useRef<Dispatch<Action> | null>(null);
+  if (!dispatchRef.current) {
+    dispatchRef.current = (action: Action) => {
+      const boot = settingsBootRef.current;
+      if (!boot.ready) {
+        if (USER_SETTINGS_ACTIONS.has(action.type)) {
+          boot.early = true;
+          boot.changes.push(action);
+        } else if (SETTINGS_LOAD_ACTIONS.has(action.type)) {
+          boot.loads.push(action);
+          if (boot.changes.length) boot.loadAfterChange = true;
+        }
+      }
+      rawDispatch(action);
+    };
+  }
+  const dispatch = dispatchRef.current;
   const canvasRectRef = useRef<DOMRect | null>(null);
   const loadedRef = useRef(false);
   /** Set once boot has chosen the floor to open on; the url stays untouched until then. */
   const floorBootedRef = useRef(false);
-  const settingsLoadedRef = useRef(false);
+  /** Set by the first SUCCESSFUL read of the settings blob (none stored counts): autosave waits on it. */
+  const [settingsFileRead, setSettingsFileRead] = useState(false);
+  /** Set once the app database has answered at boot, or could not be asked (lib/sharedSettings). */
+  const [sharedRead, setSharedRead] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>();
+  /** The settings as last stored — what a change is measured against (see the autosave below). */
+  const storedSettingsRef = useRef<StoredSettings | null>(null);
+  /** Settings saves, one after another: a slow one never lands after the next. */
+  const settingsSaves = useRef<Promise<void>>(Promise.resolve());
+  /** The state as last rendered, for the actions and effects that await and must look again after. */
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  /** Which reads of the saved department colours have answered; colour saves wait on them. */
+  const colorReadsRef = useRef<ColorReads>({ shared: false, file: false, failed: false });
+  /**
+   * The app database's first answer at boot (undefined: it could not be asked), shared by the reads
+   * that depend on it — the settings and colour files are not downloaded for a part it holds.
+   */
+  const sharedReadRef = useRef<Promise<SharedSettings | null | undefined> | null>(null);
+  /** The database's settings row is too large to read: settings changes are held for the session. */
+  const settingsTooLargeRef = useRef(false);
+  const firstSharedRead = () => (sharedReadRef.current ??= loadSharedSettings().catch(() => undefined));
+  const env = useMemo<ActionEnv>(
+    () => ({ latest: () => stateRef.current, mayEditPlan: () => canEdit(stateRef.current), colorReads: colorReadsRef }),
+    [],
+  );
 
   /**
    * A record can be marked busy but never unmarked.
@@ -1708,40 +2313,174 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
       .catch(() => dispatch({ type: 'SET_VIEWER_ROLE', role: fallback }));
   }, []);
 
-  // Load persisted settings (vibe-db when deployed, else localStorage) once on mount.
+  // Load persisted settings (the app file store when deployed, else localStorage) once on mount.
+  // Autosave starts only once a read has SUCCEEDED — "nothing stored" is a success. A read that
+  // failed is not "no settings": saving then would put this browser's defaults over the org's
+  // settings. It is tried once more after a pause; until one works, settings changes are not saved.
+  // A part the app database holds is not taken from here (APPLY_SETTINGS), whichever lands last.
+  //
+  // Not downloaded at all when the app database holds both parts: its rows win, so the file's copy
+  // would be read only to be ignored. Retried with a growing pause while it fails (not while the tab
+  // is hidden), rather than once — after two failures every change that session went unsaved.
   useEffect(() => {
-    loadSettings()
-      .then((cfg) => {
-        if (cfg) dispatch({ type: 'APPLY_SETTINGS', config: cfg });
-      })
-      .finally(() => {
-        settingsLoadedRef.current = true;
-      });
-  }, []);
-
-  // The first responders and the access grid, from the app database when there is one
-  // (lib/sharedSettings) — one call for both. Read in parallel with the settings blob; once the
-  // database has answered for something, the blob's copy of it is ignored.
-  useEffect(() => {
-    void loadSharedSettings().then((data) => {
-      if (!data) return;
-      dispatch({ type: 'RESPONDERS_LOADED', roles: data.roles, responders: data.responders });
-      dispatch({ type: 'ACCESS_LOADED', access: data.access });
+    let alive = true;
+    let cancelRetry = () => {};
+    const load = (attempt: number) =>
+      loadSettings().then(
+        (cfg) => {
+          if (!alive) return;
+          if (cfg) dispatch({ type: 'APPLY_SETTINGS', config: cfg });
+          setSettingsFileRead(true);
+        },
+        (err) => {
+          if (!alive) return;
+          // eslint-disable-next-line no-console
+          console.warn('[settings] could not be read — changes to them are not saved until they are; trying again shortly', err);
+          cancelRetry = retryWhenVisible(storeRetryDelay(attempt), () => void load(attempt + 1));
+        },
+      );
+    void firstSharedRead().then((data) => {
+      if (!alive) return;
+      if (data?.appSettingsRead && data.appSettings && data.printSettings) return;
+      void load(0);
     });
+    return () => {
+      alive = false;
+      cancelRetry();
+    };
   }, []);
 
-  // Persist settings (as one JSON string) whenever a config slice changes — debounced so a
-  // color-picker drag or rapid toggles collapse into a single write. Skipped until the initial
-  // load has run, so we never clobber stored config with defaults before it arrives.
+  // A plan image fetched from the org is an object URL, held in memory until it is revoked. One a
+  // Refresh or a return to the floor replaced is revoked — once nothing shows it any more, after a
+  // grace for the reads still using it. A URL still in `floorImages` (the image a floor goes back
+  // to) is never revoked; a data URL needs no revoking. Done here rather than in the reducer, which
+  // must stay free of side effects (StrictMode runs it twice).
+  const shownImagesRef = useRef(state.floorImages);
   useEffect(() => {
-    if (!settingsLoadedRef.current) return;
+    const before = shownImagesRef.current;
+    shownImagesRef.current = state.floorImages;
+    if (before === state.floorImages) return;
+    const shown = new Set(Object.values(state.floorImages));
+    const dropped = Object.values(before).filter((url) => url.startsWith('blob:') && !shown.has(url));
+    if (!dropped.length) return;
+    // Not cleared on the next change: these must still be revoked if the images change again first.
+    setTimeout(() => {
+      const still = new Set(Object.values(stateRef.current.floorImages));
+      for (const url of dropped) if (!still.has(url)) URL.revokeObjectURL(url);
+    }, IMAGE_URL_GRACE_MS);
+  }, [state.floorImages]);
+
+  // The first responders, the access grid and the rest of the settings — print settings and
+  // department colours too — from the app database when there is one (lib/sharedSettings), in one
+  // call. Read in parallel with the file store; once the database holds a part, the file store's
+  // copy of it is ignored. The grid and the responders first: the settings applied after them
+  // follow their rules (APPLY_SETTINGS's access and responders). The settings only when the
+  // function could read their table: until it is imported they stay with the file store.
+  //
+  // A database that could not be asked is NOT "no database" (lib/sharedSettings): the settings are
+  // held — not saved to the file store, where the next load would ignore them — and it is asked
+  // again with a growing pause until it answers. One whose settings row is too large to hand back
+  // holds them for the session, and says why; one whose settings table is not imported yet leaves
+  // them with the file store, as before.
+  useEffect(() => {
+    let alive = true;
+    let cancelRetry = () => {};
+    let told = false;
+    const tell = (message: string) => {
+      if (told) return;
+      told = true;
+      postToast(dispatch, message, 8000);
+    };
+    const ask = (attempt: number, read: Promise<SharedSettings | null | undefined>) =>
+      read.then((data) => {
+        if (!alive) return;
+        const again = () => {
+          cancelRetry = retryWhenVisible(storeRetryDelay(attempt), () => void ask(attempt + 1, loadSharedSettings().catch(() => undefined)));
+        };
+        if (data === undefined) {
+          colorReadsRef.current.failed = true;
+          return again();
+        }
+        if (data) {
+          dispatch({ type: 'RESPONDERS_LOADED', roles: data.roles, responders: data.responders });
+          dispatch({ type: 'ACCESS_LOADED', access: data.access });
+          if (data.appSettingsError === 'too-large') {
+            settingsTooLargeRef.current = true;
+            // The print settings and the colours have rows of their own, read apart from it: they
+            // load, and the colours, saved to their own row, can still be changed. The settings —
+            // and the print settings, saved alongside them — stay held (sharedRead is never set).
+            if (data.printSettings || data.departmentColors) dispatch({ type: 'SHARED_SETTINGS_LOADED', settings: null, print: data.printSettings, colors: data.departmentColors });
+            if (data.departmentColors) colorReadsRef.current.shared = true;
+            else colorReadsRef.current.failed = true;
+            return tell(SETTINGS_TOO_LARGE);
+          }
+          if (data.appSettingsRead) dispatch({ type: 'SHARED_SETTINGS_LOADED', settings: data.appSettings, print: data.printSettings, colors: data.departmentColors });
+        }
+        colorReadsRef.current.shared = true;
+        setSharedRead(true);
+      });
+    void ask(0, firstSharedRead());
+    return () => {
+      alive = false;
+      cancelRetry();
+    };
+  }, []);
+
+  /*
+   * Saving the settings waits for BOTH reads: the app database's, which says where they live, and
+   * the file store's — which must have SUCCEEDED (see the load above), unless the database holds
+   * both parts the file would otherwise give. Before that, a save could put defaults over the
+   * org's settings, or send to the file store what belongs in the database.
+   */
+  const settingsReady = sharedRead && (settingsFileRead || (state.settingsDb.settings && state.settingsDb.print));
+
+  // Persist settings whenever a config slice changes — debounced so a color-picker drag or rapid
+  // toggles collapse into a single write. The first run once both reads are in only takes note of
+  // the settings as loaded: what is sent is a CHANGE from them (persistSettings), never the load
+  // itself — sent back to the database, a non-admin's boot would be refused on every page load.
+  //
+  // A change made before then is held, and said once. It is sent when they are ready: the settings
+  // are measured against the loads alone (replayed onto the state as first built), not against
+  // what is on screen, which already carries the change and would read as stored.
+  const earlyNoticeRef = useRef(false);
+  useEffect(() => {
+    const boot = settingsBootRef.current;
+    if (!settingsReady) {
+      if (boot.early && !earlyNoticeRef.current) {
+        earlyNoticeRef.current = true;
+        // Held for good when the stored row is too large to read: "saved once loaded" would be untrue.
+        postToast(dispatch, settingsTooLargeRef.current ? SETTINGS_TOO_LARGE : SETTINGS_NOT_READY, 6000);
+      }
+      return;
+    }
+    if (!storedSettingsRef.current) {
+      boot.ready = true;
+      const asLoaded = boot.early ? boot.loads.reduce(reducer, initialStateRef.current) : state;
+      storedSettingsRef.current = storedSettings(settingsFromState(asLoaded));
+      const { changes, loadAfterChange } = boot;
+      boot.loads = [];
+      boot.changes = [];
+      if (!boot.early) return;
+      // A load that landed after the change may have put the stored value back on screen: the
+      // changes are applied again, over the settings as loaded. Where that changes the screen, this
+      // effect runs again and sends that; where it does not, what is on screen already is the change.
+      if (loadAfterChange) changes.forEach(rawDispatch);
+    }
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      void saveSettings(settingsFromState(state));
+      const stored = storedSettingsRef.current!;
+      // Each save says its own failures; a throw here must not stop every save after it.
+      settingsSaves.current = settingsSaves.current
+        .then(() => persistSettings(state, stored, dispatch))
+        .catch((err) => {
+          // eslint-disable-next-line no-console
+          console.warn('[settings] a save did not finish:', (err as Error)?.message ?? err);
+        });
     }, 500);
     return () => clearTimeout(saveTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
+    settingsReady,
     state.accessStoredInDb ? null : state.access,
     state.moduleColors,
     state.colorBy,
@@ -1772,13 +2511,32 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
       // The department master list and the saved colour scheme: one read each, at boot. Both are
       // small, both are org-wide, and Settings must be able to colour a department whose desks
       // are all on a floor this session never opens.
-      void Promise.all([fetchDepartments().catch(() => []), loadDepartmentColors().catch(() => ({}))]).then(
-        ([departments, scheme]) => {
+      void fetchDepartments()
+        .catch(() => [])
+        .then((departments) => {
           if (departments.length) dispatch({ type: 'DEPARTMENTS_LOADED', departments });
-          const colors = Object.fromEntries(Object.entries(scheme).map(([id, v]) => [id, v.color]));
-          if (Object.keys(colors).length) dispatch({ type: 'DEPARTMENT_COLORS_LOADED', colors });
-        },
-      );
+        });
+      // The scheme on its own: a read that FAILED is not "no colours", and colour saves wait for one
+      // that worked (storeDepartmentColors) — tried once more after a pause, and again on Refresh.
+      // Not applied once the app database holds a scheme (DEPARTMENT_COLORS_LOADED).
+      const loadColors = (again: boolean) =>
+        loadDepartmentColors().then(
+          (scheme) => {
+            colorReadsRef.current.file = true;
+            const colors = Object.fromEntries(Object.entries(scheme).map(([id, v]) => [id, v.color]));
+            if (Object.keys(colors).length) dispatch({ type: 'DEPARTMENT_COLORS_LOADED', colors });
+          },
+          (err) => {
+            colorReadsRef.current.failed = true;
+            // eslint-disable-next-line no-console
+            console.warn(`[departments] the saved colours could not be read — colour changes are not saved until they are${again ? '; trying again shortly' : ''}`, err);
+            if (again) setTimeout(() => void loadColors(false), STORE_RETRY_MS);
+          },
+        );
+      // Not downloaded when the app database holds the scheme: its row wins (storeDepartmentColors).
+      void firstSharedRead().then((data) => {
+        if (!(data?.appSettingsRead && data.departmentColors)) void loadColors(true);
+      });
 
       // The org's clock, for every booking read and write, resolved before the first of them — and
       // the booking window then set on now by it (it opened on now by this device's clock).
@@ -1787,12 +2545,21 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
           .catch(() => null)
           .then(() => dispatch({ type: 'SET_WINDOW_NOW', minutes: orgNow().minutes }));
       }
+      let sitesFailed = false;
       const [portfolio, employees, myDesk, urlFloorId, peopleId] = await Promise.all([
         // The demo seed stands in only under the dev server (featureFlags.DEMO_DATA). Deployed, an
         // org list that fails or comes back empty stays empty — never made-up sites or people.
-        dataSource.getPortfolio().catch(() => (DEMO_DATA ? MOCK_PORTFOLIO : [])),
+        dataSource.getPortfolio().catch((err) => {
+          // eslint-disable-next-line no-console
+          console.warn('[boot] the site list could not be read', err);
+          sitesFailed = true;
+          return DEMO_DATA ? MOCK_PORTFOLIO : [];
+        }),
         // Never a silent empty roster: what Facilio gave, and a word when it gave less (readRoster).
-        readRoster(dispatch).then((employees) => employees ?? []),
+        readRoster(dispatch).then((employees) => {
+          if (!employees?.length) dispatch({ type: 'ROSTER_STATUS', status: 'failed' });
+          return employees ?? [];
+        }),
         isFacilioApiConfigured ? fetchMyDesk().catch(() => null) : Promise.resolve(null),
         readUrlFloorId().catch(() => null),
         isFacilioApiConfigured ? fetchCurrentPeopleId().catch(() => null) : Promise.resolve(null),
@@ -1831,28 +2598,42 @@ export function FloorplanProvider({ children }: { children: ReactNode }) {
         // eslint-disable-next-line no-console
         console.warn('[boot] no floor to open — the portfolio came back empty');
         dispatch({ type: 'SELECT_FLOOR_DONE', floorId: state.floorId, units: [], assignments: {}, bookings: [] });
+        // No plan image will ever be asked for, so its loading animation comes down here — and the
+        // user is told why the plan is empty, rather than left watching it shimmer.
+        dispatch({ type: 'SET_FLOOR_IMAGE_LOADING', value: false });
+        postToast(dispatch, sitesFailed ? SITES_NOT_LOADED : NO_FLOORS_SHARED, 8000);
         return;
       }
       const floorId = firstRealFloor ?? state.floorId;
       if (floorId !== state.floorId) dispatch({ type: 'SELECT_FLOOR_START', floorId });
 
       const more = floorMore(dispatch, floorId);
-      const [units, assignments, bookings] = await Promise.all([
-        dataSource.getUnits(floorId, more.units),
-        dataSource.getAssignments(floorId, more.assignments),
-        dataSource.getBookings(floorId, state.date),
-      ]);
-      dispatch({ type: 'SELECT_FLOOR_DONE', floorId, units, assignments, bookings });
-      more.release();
-      loadFloorPlanTypesAndImage(dispatch, floorId, state.planId);
-      // From here on the url follows the floor on screen (see the effect below). Written now too,
-      // so a session that opened on the desk's floor has a link to it straight away.
-      floorBootedRef.current = true;
-      writeUrlFloorId(floorId);
+      try {
+        const day = readDayBookings(dispatch, floorId, state.date);
+        const [units, assignments, bookings] = await withTimeout(
+          Promise.all([dataSource.getUnits(floorId, more.units), dataSource.getAssignments(floorId, more.assignments), day.bookings]),
+          FLOOR_LOAD_TIMEOUT_MS,
+          `floor ${floorId}`,
+        );
+        dispatch({ type: 'SELECT_FLOOR_DONE', floorId, units, assignments, bookings, date: state.date });
+        dispatch({ type: 'RECORD_STATES', floorId, states: takeRecordStates(floorId) });
+        more.release();
+        day.tell();
+        void loadFloorPlanTypesAndImage(dispatch, floorId, state.planId, env.mayEditPlan);
+      } catch (err) {
+        // Facilio busy, or a list it could not finish: said, and the skeleton comes down — Refresh
+        // loads it again. Nothing was on screen before, so nothing is kept (failFloorLoad).
+        failFloorLoad(dispatch, floorId, err, { keep: false }, state.planId, env.mayEditPlan);
+      } finally {
+        // From here on the url follows the floor on screen (see the effect below). Written now too,
+        // so a session that opened on the desk's floor has a link to it straight away.
+        floorBootedRef.current = true;
+        writeUrlFloorId(floorId);
+      }
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const actions = useMemo(() => buildActions(state, dispatch, canvasRectRef), [state]);
+  const actions = useMemo(() => buildActions(state, dispatch, canvasRectRef, env), [state, env]);
 
   const value = useMemo(() => ({ state, actions }), [state, actions]);
 

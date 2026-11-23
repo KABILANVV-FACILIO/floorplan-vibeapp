@@ -15,6 +15,8 @@ export interface SpaceBookingRow {
   bookingStartTime?: number;
   bookingEndTime?: number;
   reservedBy?: { id?: number | string } | null;
+  /** Who hosts it — set when the form named a host, often the same person as `reservedBy`. */
+  host?: { id?: number | string } | null;
   name?: string | null;
   approvalFlowId?: number | null;
   approvalStatus?: unknown;
@@ -87,6 +89,10 @@ export function bookingSegmentsFromRow(row: SpaceBookingRow, tz: string | null, 
     unitId: String(unitId),
     floorId,
     by: row.reservedBy?.id != null ? String(row.reservedBy.id) : '',
+    // The host, when the row names one: who the booking is FOR, which is what "the space a person
+    // has booked" matches on alongside `by` (selectors.spaceOfPerson). Left off a row without one,
+    // so such a booking reads exactly as it did.
+    ...(row.host?.id != null && row.host.id !== '' ? { host: String(row.host.id) } : {}),
     purpose: row.name ?? '',
     module: 'space' as const,
     name: row.name ?? '',

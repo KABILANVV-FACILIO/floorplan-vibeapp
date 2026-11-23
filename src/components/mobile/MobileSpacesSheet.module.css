@@ -59,7 +59,8 @@
   border: 1px solid var(--ink-200);
   border-radius: var(--radius-lg);
   padding: 0 12px;
-  font: 400 13px/1 var(--font-sans);
+  /* 16px: a phone zooms the whole page into any field smaller than that when it takes the focus. */
+  font: 400 16px/1 var(--font-sans);
   color: var(--ink-900);
   background: var(--ink-050);
   box-sizing: border-box;

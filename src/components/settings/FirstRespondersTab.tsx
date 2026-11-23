@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { useLivePeople } from '../../hooks/useLivePeople';
-import { badgeLetters, newRoleId, sanitizeResponders, sanitizeRoles } from '../../lib/firstResponders';
+import { badgeLetters, fewNames, newRoleId, sanitizeResponders, sanitizeRoles } from '../../lib/firstResponders';
 import { RESPONDER_COLORS, RESPONDER_ICONS } from '../../lib/types';
 import type { Employee, FirstResponder, ResponderRole, ResponderRoleDef, ResponderShape } from '../../lib/types';
-import { departmentDisplayName } from '../../lib/displayNames';
+import { departmentDisplayName, personDisplayName } from '../../lib/displayNames';
 import { ResponderGlyph } from '../canvas/ResponderBadge';
 import { CardHead, StagedModal, SummaryRow } from './SettingsScreen';
 import styles from './SettingsScreen.module.css';
@@ -28,6 +28,8 @@ const SHAPES: { id: ResponderShape; name: string }[] = [
 export function FirstRespondersTab() {
   const { state } = useFloorplanData();
   const [editing, setEditing] = useState<'people' | 'roles' | null>(null);
+  /** Roles whose summary shows every name rather than the first few and "+N others". */
+  const [showAll, setShowAll] = useState<Set<string>>(new Set());
   const list = state.firstResponders;
   const roles = state.responderRoles;
 
@@ -42,6 +44,12 @@ export function FirstRespondersTab() {
         />
         {roles.map((role) => {
           const people = list.filter((r) => r.roles.includes(role.id));
+          // Names as the rest of the app shows them — "Johar Ali", not "251850 - Johar Ali".
+          const names = people.map((p) => personDisplayName(p.name));
+          // The first few, then "+N others": a button (keyboard and touch reach it, where a hover-only
+          // tooltip didn't) naming everyone, which spells the whole list out when pressed.
+          const all = showAll.has(role.id);
+          const few = all ? { names, more: 0 } : fewNames(names);
           return (
             <SummaryRow
               key={role.id}
@@ -53,7 +61,23 @@ export function FirstRespondersTab() {
                 </span>
               }
             >
-              <span className={own.names}>{people.length ? people.map((p) => p.name).join(', ') : '—'}</span>
+              <span className={own.names}>
+                {people.length ? few.names.join(', ') : '—'}
+                {few.more > 0 && (
+                  <>
+                    {' '}
+                    <button
+                      type="button"
+                      className={own.more}
+                      data-tip={names.join(', ')}
+                      aria-label={`+${few.more} ${few.more === 1 ? 'other' : 'others'} — all ${names.length} ${role.plural.toLowerCase()}: ${names.join(', ')}`}
+                      onClick={() => setShowAll((s) => new Set(s).add(role.id))}
+                    >
+                      +{few.more} {few.more === 1 ? 'other' : 'others'}
+                    </button>
+                  </>
+                )}
+              </span>
             </SummaryRow>
           );
         })}
@@ -172,11 +196,11 @@ function RoleSection({
           {people.map((r) => (
             <li key={r.employeeId} className={own.row}>
               <span className={own.person}>
-                <span className={own.personName}>{r.name}</span>
+                <span className={own.personName}>{personDisplayName(r.name)}</span>
                 {dept(r.employeeId) && <span className={own.personDept}>{dept(r.employeeId)}</span>}
               </span>
               <span>
-                <button type="button" className={own.remove} aria-label={`Remove ${r.name} as a ${role.name.toLowerCase()}`} data-tip="Remove" onClick={() => onRemove(r.employeeId)}>
+                <button type="button" className={own.remove} aria-label={`Remove ${personDisplayName(r.name)} as a ${role.name.toLowerCase()}`} data-tip="Remove" onClick={() => onRemove(r.employeeId)}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                     <path d="M18 6L6 18M6 6l12 12" />
                   </svg>
@@ -247,7 +271,7 @@ function PersonAdder({ role, exclude, employees, onAdd }: { role: ResponderRoleD
               setOpen(false);
             }}
           >
-            <span className={own.personName}>{p.name}</span>
+            <span className={own.personName}>{personDisplayName(p.name)}</span>
             <span className={own.personDept}>{[p.hrmsEmployeeId, departmentDisplayName(p.department)].filter(Boolean).join(' · ')}</span>
           </button>
         ))}
@@ -459,7 +483,7 @@ function RoleEditor({
                   type="button"
                   role="radio"
                   aria-checked={role.color.toUpperCase() === c.toUpperCase()}
-                  aria-label={c}
+                  aria-label={`Colour ${c}`}
                   className={[own.swatch, role.color.toUpperCase() === c.toUpperCase() ? own.swatchOn : ''].join(' ')}
                   style={{ background: c }}
                   onClick={() => onPatch({ color: c })}

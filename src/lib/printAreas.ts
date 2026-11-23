@@ -230,9 +230,11 @@ const CHIP_PITCH_OF_CLOSEST = 1.25;
  * the floor must sit that close to count, so one stray pair can't shrink everything (chipSizeNear
  * handles a pair).
  */
-export function chipPitch(points: DeskPoint[]): number {
+export function chipPitch(points: DeskPoint[], nearest?: Map<string, number>): number {
   if (points.length < 2) return 100;
-  const nn = [...nearestDistances(points).values()].sort((a, b) => a - b);
+  // `nearest` when the caller has already worked it out for these points (nearestDistances is
+  // every desk against every other — on a 400-desk floor, not something to do twice).
+  const nn = [...(nearest ?? nearestDistances(points)).values()].sort((a, b) => a - b);
   if (!nn.length) return 100;
   return Math.min(nn[Math.floor(nn.length / 2)], nn[Math.floor(nn.length / 4)] * CHIP_PITCH_OF_CLOSEST);
 }

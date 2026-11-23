@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { moduleColor } from '../../lib/unitStatus';
 import { AMENITY_META, isRoomLike, TYPE_META } from '../../lib/types';
-import { activeDepartments, colorByOf, enabledTypes } from '../../state/selectors';
+import { activeDepartments, colorByOf, departmentColorIds, enabledTypes } from '../../state/selectors';
 import { departmentColor, departmentsIn } from '../../lib/departmentColors';
 import { departmentDisplayName } from '../../lib/displayNames';
 import type { AmenityIcon, ResponderRoleDef } from '../../lib/types';
@@ -24,6 +24,8 @@ export function departmentsLabel(departments: string[]): string {
 
 /** One key entry: a colour swatch, or — for a first responder — the badge the plan draws. */
 export interface LegendItem {
+  /** Unique within one legend — two departments can share a display name (cost-centre codes dropped). */
+  key: string;
   label: string;
   color: string;
   glyph?: ResponderRoleDef;
@@ -46,6 +48,7 @@ export function legendItems(state: AppState): LegendItem[] {
     // Derived from the enabled modules rather than a fixed list, so the legend never advertises
     // a module the plan can't show.
     items = enabledTypes(state, ['workstation', 'locker', 'parking', 'room', 'delivery']).map((t) => ({
+      key: `type:${t}`,
       label: TYPE_META[t].name,
       color: isRoomLike(t) ? 'rgba(60,34,157,0.62)' : moduleColor(state, t, 'free'),
     }));
@@ -53,26 +56,27 @@ export function legendItems(state: AppState): LegendItem[] {
     // The legend has to name what the colours MEAN, and in this mode they mean departments — a
     // "Free / Assigned" key beside department-coloured desks would be a straight lie.
     const present = departmentsIn(state.units);
-    const ids = present.map((d) => d.id);
+    // Coloured over the same set the plan and Settings use (departmentColorIds).
+    const ids = departmentColorIds(state);
     // With departments ticked the rest are faded, so the key names the ticked ones only.
     const ticked = activeDepartments(state);
     items = present
       .filter((d) => !ticked.length || ticked.includes(d.name))
-      .map((d) => ({ label: departmentDisplayName(d.name), color: departmentColor(d.id, state.departmentColors, ids) }));
+      .map((d) => ({ key: `dept:${d.id}`, label: departmentDisplayName(d.name), color: departmentColor(d.id, state.departmentColors, ids) }));
     // Desks with no department on their record keep the state colours, so the key says so.
     if (!ticked.length && state.units.some((u) => u.type === 'workstation' && !u.department)) {
-      items.push({ label: 'No department', color: moduleColor(state, 'workstation', 'free') });
+      items.push({ key: 'dept:none', label: 'No department', color: moduleColor(state, 'workstation', 'free') });
     }
   } else if (state.mode === 'assign') {
     items = [
-      { label: 'Free', color: moduleColor(state, 'workstation', 'free') },
-      { label: 'Assigned', color: moduleColor(state, 'workstation', 'assigned') },
+      { key: 'state:free', label: 'Vacant', color: moduleColor(state, 'workstation', 'free') },
+      { key: 'state:assigned', label: 'Assigned', color: moduleColor(state, 'workstation', 'assigned') },
     ];
   } else {
     items = [
-      { label: 'Available', color: moduleColor(state, 'room', 'available') },
-      { label: 'Booked', color: moduleColor(state, 'room', 'booked') },
-      { label: 'Not bookable', color: 'var(--ink-400)' },
+      { key: 'state:available', label: 'Available', color: moduleColor(state, 'room', 'available') },
+      { key: 'state:booked', label: 'Booked', color: moduleColor(state, 'room', 'booked') },
+      { key: 'state:notBookable', label: 'Not bookable', color: 'var(--ink-400)' },
     ];
   }
 
@@ -82,13 +86,13 @@ export function legendItems(state: AppState): LegendItem[] {
     new Set(state.units.filter((u) => u.type === 'amenity' && u.icon).map((u) => u.icon as AmenityIcon)),
   );
   for (const icon of presentAmenities) {
-    items.push({ label: AMENITY_META[icon].name, color: AMENITY_META[icon].color });
+    items.push({ key: `amenity:${icon}`, label: AMENITY_META[icon].name, color: AMENITY_META[icon].color });
   }
 
   // The responder badges, in every mode, but only for a role someone on this floor holds — a key
   // to a badge the plan doesn't draw would send people looking for it.
   for (const role of rolesOnFloor(respondersOnFloor(state), state.responderRoles)) {
-    items.push({ label: role.name, color: role.color, glyph: role });
+    items.push({ key: `role:${role.id}`, label: role.name, color: role.color, glyph: role });
   }
 
   return items;
@@ -143,7 +147,7 @@ export function Legend() {
       <FloorResponders />
       {items.map((it) => (
         <span
-          key={it.label}
+          key={it.key}
           style={{
             display: 'inline-flex',
             alignItems: 'center',

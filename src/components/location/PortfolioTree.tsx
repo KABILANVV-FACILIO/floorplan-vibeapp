@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { activateOnKey } from '../../lib/keyboard';
 import type { FloorSearchHit } from '../../lib/types';
@@ -26,11 +27,67 @@ interface FlatNode {
  *
  * Only `loading…` and `no plan` are badged. An expanded node with nothing under it already reads
  * as empty; labelling it "no floors" / "no buildings" just adds noise to a tree of 431 buildings.
+ *
+ * The search asks the org once the typing pauses (SEARCH_PAUSE_MS), not on every keystroke: each
+ * letter used to be its own `floor` list request, so typing a building's name spent a dozen calls
+ * of the user's budget on queries nobody was waiting for. The box itself answers every keystroke —
+ * it shows what is typed, and the hits list says "Searching…" until the search has been sent and
+ * answered.
  */
+const SEARCH_PAUSE_MS = 300;
+
 export function PortfolioTree() {
   const { state, actions } = useFloorplanData();
-  const query = state.portfolioSearch;
+  // What is in the box. The app's query (state.portfolioSearch) follows it after the pause.
+  const [text, setText] = useState(state.portfolioSearch);
+  const textRef = useRef(text);
+  textRef.current = text;
+  /** The query last handed to the app — so a change the app makes ITSELF can be told apart. */
+  const sent = useRef(state.portfolioSearch);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Read at send time: `actions` is rebuilt on every render.
+  const actionsRef = useRef(actions);
+  actionsRef.current = actions;
+
+  // The app clears the query itself when a hit is opened (revealSearchHit), and the box must show
+  // that. Only a value the box didn't send is taken back into it, so a slow round-trip can never
+  // overwrite letters typed since.
+  useEffect(() => {
+    if (state.portfolioSearch === sent.current) return;
+    sent.current = state.portfolioSearch;
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    setText(state.portfolioSearch);
+  }, [state.portfolioSearch]);
+
+  function send(q: string) {
+    timer.current = null;
+    sent.current = q;
+    void actionsRef.current.setPortfolioSearch(q);
+  }
+
+  function onType(q: string) {
+    setText(q);
+    if (timer.current) clearTimeout(timer.current);
+    // Emptied: straight back to the tree, nothing to ask the org.
+    if (!q.trim()) send(q);
+    else timer.current = setTimeout(() => send(q), SEARCH_PAUSE_MS);
+  }
+
+  // Leaving with a search still waiting sends it, as typing it always did.
+  useEffect(
+    () => () => {
+      if (!timer.current) return;
+      clearTimeout(timer.current);
+      void actionsRef.current.setPortfolioSearch(textRef.current);
+    },
+    []
+  );
+
+  const query = text;
   const searching = query.trim().length > 0;
+  // Typed, but not yet asked — or asked and not yet answered.
+  const pending = query !== state.portfolioSearch || state.portfolioSearching;
 
   const items: FlatNode[] = [];
   if (!searching) {
@@ -108,16 +165,22 @@ export function PortfolioTree() {
           className={search.searchInput}
           placeholder="Search floors or buildings"
           value={query}
-          onChange={(e) => void actions.setPortfolioSearch(e.target.value)}
+          onChange={(e) => onType(e.target.value)}
           aria-label="Search floors"
         />
       </div>
 
       {searching ? (
         <div className={styles.list}>
-          {state.portfolioSearching && state.portfolioSearchResults.length === 0 && <div className={styles.row} style={{ color: 'var(--ink-500)' }}>Searching…</div>}
-          {!state.portfolioSearching && state.portfolioSearchResults.length === 0 && (
-            <div className={styles.row} style={{ color: 'var(--ink-500)' }}>No floors match “{query.trim()}”.</div>
+          {pending && state.portfolioSearchResults.length === 0 && <div className={styles.row} style={{ color: 'var(--ink-500)' }}>Searching…</div>}
+          {!pending && state.portfolioSearchResults.length === 0 && (
+            <div className={styles.row} style={{ color: 'var(--ink-500)' }} role={state.portfolioSearchFailed ? 'alert' : undefined}>
+              {state.portfolioSearchFailed === 'busy'
+                ? 'Facilio is busy — search again in a minute.'
+                : state.portfolioSearchFailed === 'error'
+                  ? 'Couldn’t search floors — try again.'
+                  : <>No floors match “{query.trim()}”.</>}
+            </div>
           )}
           {state.portfolioSearchResults.map((hit) => (
             <div

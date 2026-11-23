@@ -4,12 +4,20 @@ import { initials, visibleUnits } from '../../state/selectors';
 import { byPersonName, departmentDisplayName, employeeNumber, personDisplayName } from '../../lib/displayNames';
 import { facilioRecordUrl } from '../../lib/facilioApi';
 import { useLivePeople } from '../../hooks/useLivePeople';
+import { SkeletonRows } from '../primitives/Skeleton';
 import styles from './PeopleView.module.css';
 
-/** Simple directory of employees. Assigned desks are derived from `state.assignments`. */
+/**
+ * Simple directory of employees. Assigned desks are derived from `state.assignments`.
+ *
+ * Nothing to show is told apart from nothing having arrived: shimmer rows while the org is asked,
+ * "Couldn't load people · Retry" when a read failed and left nothing to show (useLivePeople says
+ * so — it used to be guessed from an empty list), "No people match …" only for a search that was
+ * typed, and "Couldn't search people · Retry" when that search itself failed.
+ */
 export function PeopleView() {
-  const { state } = useFloorplanData();
   const [search, setSearch] = useState('');
+  const { state, actions } = useFloorplanData();
 
   const deskByContact = useMemo(() => {
     const map: Record<string, string> = {};
@@ -23,9 +31,10 @@ export function PeopleView() {
     return map;
   }, [state.assignments, state.units, state.enabledModules]);
 
-  // The org's own list, re-read each time this page opens and filtered at the org as you type —
-  // the roster in state is only the fallback until it answers (see useLivePeople).
-  const { people: live } = useLivePeople(search, state.employees);
+  // The roster the app holds (read at boot and on Refresh), and the org's own answer for what is
+  // typed — opening the page asks nothing (see useLivePeople). Retry searches again; what was
+  // typed stays.
+  const { people: live, loading: waiting, loadFailed, retry } = useLivePeople(search, state.employees, { rosterStatus: state.rosterStatus, reloadRoster: actions.reloadRoster });
   const people = live.slice().sort(byPersonName);
 
   return (
@@ -34,18 +43,32 @@ export function PeopleView() {
         <div className={styles.head}>
           <div>
             <h1 className={styles.h1}>People</h1>
-            <p className={styles.sub}>{people.length} people</p>
+            <p className={styles.sub}>{waiting && people.length === 0 ? 'Loading people…' : `${people.length} people`}</p>
           </div>
           <input
             className={styles.search}
             placeholder="Search by name, HRMS Employee ID, email or department"
+            aria-label="Search people by name, HRMS Employee ID, email or department"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
 
-        {people.length === 0 ? (
-          <div className={styles.empty}>No people match “{search}”.</div>
+        {people.length === 0 && waiting ? (
+          <div className={styles.list} aria-busy>
+            <SkeletonRows rows={8} avatar />
+          </div>
+        ) : people.length === 0 && loadFailed ? (
+          <div className={styles.empty} role="alert">
+            {search.trim() ? 'Couldn’t search people.' : 'Couldn’t load people.'}{' '}
+            <button type="button" className={styles.retry} onClick={retry}>
+              Retry
+            </button>
+          </div>
+        ) : people.length === 0 && search.trim() ? (
+          <div className={styles.empty}>No people match “{search.trim()}”.</div>
+        ) : people.length === 0 ? (
+          <div className={styles.empty}>No people in this org yet.</div>
         ) : (
           <div className={styles.list}>
             {people.map((c) => {
@@ -62,7 +85,7 @@ export function PeopleView() {
                   </div>
                   {desk && <span className={styles.deskPill}>{desk}</span>}
                   {real && (
-                    <a className={styles.openLink} href={real} target="_blank" rel="noreferrer" data-tip="Open record in Facilio">
+                    <a className={styles.openLink} href={real} target="_blank" rel="noreferrer" data-tip="Open record in Facilio" aria-label={`Open ${personDisplayName(c.name)}'s record in Facilio`}>
                       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
                         <path d="M15 3h6v6M10 14L21 3" />

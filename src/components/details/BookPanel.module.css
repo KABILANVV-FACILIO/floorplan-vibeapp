@@ -91,6 +91,15 @@
 .cancelLink:hover {
   text-decoration: underline;
 }
+/* While its cancel is on its way: no second press, and the spinner says why. */
+.cancelLink:disabled {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ink-400);
+  cursor: default;
+  text-decoration: none;
+}
 
 .timeline {
   position: relative;

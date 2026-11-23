@@ -60,7 +60,7 @@ const HELD_SORTS = (one: string): RegisterCatalog['sorts'] => [
   { value: 'dept', label: 'Department', text: 'department' },
   { value: 'emp', label: 'Assigned person', text: 'assigned person' },
 ];
-const held = (one: string, many: string): Pick<RegisterCatalog, 'rowChoices' | 'rowsText'> => ({
+const held = (many: string): Pick<RegisterCatalog, 'rowChoices' | 'rowsText'> => ({
   rowChoices: { all: `All ${many}`, assigned: 'Assigned only', vacant: 'Vacant only' },
   rowsText: { all: `All ${many}`, assigned: `Assigned ${many} only`, vacant: `Vacant ${many} only` },
 });
@@ -89,7 +89,7 @@ export const REGISTERS: Record<RegisterKind, RegisterCatalog> = {
       { key: 'since', group: 'dates', label: 'Occupied since', head: 'Occupied', width: 1.3 },
       { key: 'released', group: 'dates', label: 'Released on', head: 'Released', width: 1.3 },
     ],
-    ...held('stall', 'stalls'),
+    ...held('stalls'),
     sorts: HELD_SORTS('stall'),
     source: `From the parking stall records and each assigned person’s employee record, ${SOURCE_TAIL}`,
   },
@@ -113,7 +113,7 @@ export const REGISTERS: Record<RegisterKind, RegisterCatalog> = {
       { key: 'loc', group: 'desk', label: 'Location', width: 2.4 },
       ...PERSON,
     ],
-    ...held('desk', 'desks'),
+    ...held('desks'),
     sorts: HELD_SORTS('desk'),
     source: `From the desk records and each assigned person’s employee record, ${SOURCE_TAIL}`,
   },
@@ -133,7 +133,7 @@ export const REGISTERS: Record<RegisterKind, RegisterCatalog> = {
       { key: 'loc', group: 'locker', label: 'Location', width: 2.4 },
       ...PERSON,
     ],
-    ...held('locker', 'lockers'),
+    ...held('lockers'),
     sorts: HELD_SORTS('locker'),
     source: `From the lockers and each assigned person’s employee record, ${SOURCE_TAIL}`,
   },
@@ -178,7 +178,6 @@ const RECORD_FIELD: Record<RegisterKind, Record<string, string>> = {
     qr: 'qrVal',
     type: 'parkingType',
     mode: 'parkingMode',
-    status: 'moduleState',
     area: 'area',
     since: 'occupied_time_parkingstall',
     released: 'released_time_parkingstall',

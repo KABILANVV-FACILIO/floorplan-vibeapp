@@ -16,7 +16,8 @@
   background: #fff;
   border-radius: 16px 16px 0 0;
   box-shadow: 0 -8px 24px rgba(40, 54, 72, 0.24);
-  padding: 10px 10px 12px;
+  /* Clear of the home bar on a phone without a button, as the other sheets are. */
+  padding: 10px 10px calc(12px + env(safe-area-inset-bottom));
 }
 .handle {
   width: 36px;
@@ -69,6 +70,12 @@
   padding: 10px;
   border-radius: var(--radius-lg);
   cursor: pointer;
+  /* A <button> (Tab and Enter reach it), drawn as the row it was. */
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
 }
 .row:hover {
   background: var(--ink-050);

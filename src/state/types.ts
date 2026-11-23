@@ -69,6 +69,8 @@ export interface AppState {
   portfolioSearch: string;
   portfolioSearchResults: FloorSearchHit[];
   portfolioSearching: boolean;
+  /** The search could not be answered — Facilio busy, or another failure — rather than matched nothing. */
+  portfolioSearchFailed: 'busy' | 'error' | null;
   panels: PanelsState;
   stage: { w: number; h: number };
   view: ViewTransform;
@@ -85,9 +87,10 @@ export interface AppState {
 
   units: Unit[];
   /**
-   * Desk/locker/parking records that exist but aren't placed on the plan: deleting a placed
-   * marker moves its record here (the desk itself isn't destroyed), and the edit-mode map
-   * dialog / sidebar drag place them back. In-memory only for now — a refresh rebuilds it empty.
+   * Desk/locker/parking records (and org rooms) that exist but aren't placed on the plan — the
+   * "Available to place" pool. The floor load fills it with the org's records that have no marker
+   * yet; deleting a placed marker moves its record here (the desk itself isn't destroyed), and the
+   * edit-mode map dialog / sidebar drag place them back.
    */
   unplacedUnits: Unit[];
   /** A click-to-place spot awaiting the "which desk goes here?" map dialog (edit mode). */
@@ -106,8 +109,19 @@ export interface AppState {
   /** Mode the user tried to switch to while there were unsaved edit changes — set while the save/discard confirmation is open. */
   pendingModeSwitch: AppMode | null;
   assignments: Assignments;
+  /**
+   * Each desk, locker and stall record's state on this floor, by record id, as a key
+   * ("temporarilyvacant", "reserved" — see lib/recordStates). Read with the holders, no request of
+   * its own; what the occupancy card splits the unheld desks and stalls by.
+   */
+  recordStates: Record<string, string>;
   bookings: Booking[];
   employees: Employee[];
+  /**
+   * The roster's read: 'loading' until boot has it, 'failed' when it could not be read at all (Refresh
+   * or the People lists' Retry asks again), else 'ready' — a part-read roster still finishing is ready.
+   */
+  rosterStatus: 'loading' | 'ready' | 'failed';
   /** Org asset catalog (CMMS connector) — the Edit-mode asset picker's source. */
   assets: Asset[];
   portfolio: Site[];
@@ -139,6 +153,26 @@ export interface AppState {
    * and a callback to whoever owns the button that fired it only ever refreshes that one surface.
    */
   recordNonce: number;
+  /**
+   * Per-record version, bumped for the records an org write changed (keyed by unit id, which is the
+   * record id for an org desk, locker or stall). A surface showing one record re-reads it on its own
+   * bump, not on every write anywhere on the plan; `recordNonce` stays for a change whose records
+   * are not known.
+   */
+  recordVersions: Record<string, number>;
+  /** While a floor switch loads: what the floor being left showed, put back if the switch fails. */
+  floorSwitchFrom: {
+    floorId: string;
+    recordStates: AppState['recordStates'];
+    userZoomed: boolean;
+    navView: AppState['navView'];
+    spaceSearch: string;
+    spaceFilter: AppState['spaceFilter'];
+    spaceDepartments: AppState['spaceDepartments'];
+    /** Its day and that day's bookings: a day picked while the switch loaded read the new floor's. */
+    date: string;
+    bookings: Booking[];
+  } | null;
   draft: [number, number][];
   calib: [number, number][];
   calibLen: string;
@@ -196,15 +230,16 @@ export interface AppState {
   /** The org's own departments (the `department` module), for Settings to colour. */
   departments: { id: string; name: string }[];
   /**
-   * Department RECORD ID -> hex, from the app's `fp_department_color` table. Only the colours
-   * someone actually chose; everything else comes off the default wheel.
+   * Department RECORD ID -> hex, from the saved scheme (the app database's 'departmentColors' row,
+   * else the file store's copy — see lib/departmentColorStore). Only the colours someone actually
+   * chose; everything else comes off the default wheel.
    */
   departmentColors: Record<string, string>;
   slotGranularity: number;
   /**
    * Which modules this org runs. A disabled module is hidden everywhere — canvas, legend, edit
    * tools, filters, panels and its own settings tab — not merely emptied. Persisted with the rest
-   * of settings (vibe DB when deployed).
+   * of settings (the app database's 'settings' row when deployed — see lib/sharedSettings).
    */
   enabledModules: EnabledModules;
   /**
@@ -258,6 +293,15 @@ export interface AppState {
    * from before the move, still shows until then.
    */
   accessStoredInDb: boolean;
+  /**
+   * Where the rest of the org's settings live this session (lib/sharedSettings). `answered`: the
+   * app database answered at boot, so the settings, print settings and department colours are
+   * saved through its function. `settings`, `print`, `colors`: the database HOLDS that part — then
+   * it is that part's only source, and the file store's copy (from before the move, and writable by
+   * any browser) neither overrides it on load nor is read for it again. Each stays false until a
+   * save stores the part: until then the file store's copy shows.
+   */
+  settingsDb: { answered: boolean; settings: boolean; print: boolean; colors: boolean };
   /** The logged-in user's real assigned/booked desk (from servicePortalHome) — powers "My desk" against the real backend, where `assignments` (mock-derived) can't. */
   myDesk: { recordId: number; name: string; floorId: string | null; booked: boolean } | null;
   floorImages: Record<string, string>;

@@ -52,7 +52,7 @@ describe('the first page, then the rest', () => {
     const load = await loadRelated(OPTS, { fetchPage, fetchCount: async () => 2600, perPage: 500 });
     const rest = await load.rest;
     expect(fetchPage).toHaveBeenCalledTimes(6);
-    expect(most).toBe(2); // never more than two in flight (page 1 and the count go together)
+    expect(most).toBe(2); // never more than two in flight (page 1 first, then its count, then the rest two at a time)
     expect([...load.first, ...rest].map((r) => r.id)).toEqual(rows(0, 2600).map((r) => r.id));
   });
 
@@ -63,6 +63,23 @@ describe('the first page, then the rest', () => {
     expect(load.first).toHaveLength(37);
     expect(await load.rest).toEqual([]);
     expect(fetchPage).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks no count when the first page is not full — it was the whole list', async () => {
+    const fetchCount = vi.fn(async () => 300);
+    const load = await loadRelated(OPTS, { fetchPage: server(300), fetchCount, perPage: 500 });
+    expect(fetchCount).not.toHaveBeenCalled();
+    expect(load).toMatchObject({ total: 300, hasMore: false });
+    expect(load.first).toHaveLength(300);
+  });
+
+  it('asks the count once a full first page is in, and still pages on', async () => {
+    const fetchPage = server(1100);
+    const fetchCount = vi.fn(async () => 1100);
+    const load = await loadRelated(OPTS, { fetchPage, fetchCount, perPage: 500 });
+    expect(fetchCount).toHaveBeenCalledTimes(1);
+    expect(await load.rest).toHaveLength(600);
+    expect(fetchPage).toHaveBeenCalledTimes(3);
   });
 
   it('pages on one by one when the count is unavailable', async () => {
@@ -96,5 +113,28 @@ describe('everything, awaited (for saving)', () => {
   it('reports a failed first page as a failure', async () => {
     const failing = vi.fn(async () => ({ error: { code: 1, message: 'nope' }, list: null }));
     expect((await fetchAllRelatedPaged(OPTS, { fetchPage: failing, fetchCount: async () => null, perPage: 500 })).error).toBeTruthy();
+  });
+
+  it('reports a full first page and a failed second one as a failure — never the first page as the whole list', async () => {
+    const fetchPage = vi.fn(async (page: number) => (page === 1 ? { error: null, list: rows(0, 500) } : { error: { code: 1, message: 'nope' }, list: null }));
+    const res = await fetchAllRelatedPaged(OPTS, { fetchPage, perPage: 500 });
+    expect(res.list).toBeNull();
+    expect(res.error?.message).toMatch(/incomplete/);
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the refusal for rate visible on a list that stopped part-way', async () => {
+    const fetchPage = vi.fn(async (page: number) =>
+      page === 1 ? { error: null, list: rows(0, 500) } : { error: { code: 6, message: 'You have reached the maximum number of allowed requests for this API.' }, list: null },
+    );
+    const res = await fetchAllRelatedPaged(OPTS, { fetchPage, perPage: 500 });
+    expect(res.error?.code).toBe(6);
+  });
+
+  it('shows what came for a list that is only displayed (allowPartial)', async () => {
+    const fetchPage = vi.fn(async (page: number) => (page === 1 ? { error: null, list: rows(0, 500) } : { error: { code: 1, message: 'nope' }, list: null }));
+    const res = await fetchAllRelatedPaged(OPTS, { fetchPage, perPage: 500 }, { allowPartial: true });
+    expect(res.error).toBeNull();
+    expect(res.list).toHaveLength(500);
   });
 });

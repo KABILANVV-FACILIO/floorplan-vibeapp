@@ -3,7 +3,7 @@ import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as React
 import type { Unit, PointGeom } from '../../lib/types';
 import type { MarkerModel } from '../../lib/markerModel';
 import type { LabelPlacement, LabelPos, LabelTypography } from '../../lib/labelLayout';
-import { CARD_GAP, CARD_PAD_X, CARD_PAD_Y, DEFAULT_LABEL_TYPOGRAPHY, HALO_TEXT, cardOffset } from '../../lib/labelLayout';
+import { CARD_GAP, CARD_PAD_X, CARD_PAD_Y, DEFAULT_LABEL_TYPOGRAPHY, HALO_TEXT, cardOffset, longHolderType } from '../../lib/labelLayout';
 import { MARKER_ICONS as ICONS } from './markerIcons';
 import { activateOnKey } from '../../lib/keyboard';
 import { ResponderBadges } from './ResponderBadge';
@@ -185,7 +185,28 @@ export const Marker = memo(function Marker({
             }}
           >
             <div style={{ ...LINE, font: `${t.nameWeight} ${t.nameFont}px/${t.nameLine}px var(--font-sans)`, color: 'var(--ink-900)' }}>{label}</div>
-            {labels.sub && holder && <div style={{ ...LINE, font: `${t.subWeight} ${t.subFont}px/${t.subLine}px var(--font-sans)`, color: 'var(--ink-800)' }}>{holder}</div>}
+            {labels.sub && holder && (
+              // A long name a size down, broken at a space onto the second line the layout gave it.
+              <div
+                style={
+                  labels.subSmall
+                    ? {
+                        font: `${t.subWeight} ${longHolderType(t).font}px/${longHolderType(t).line}px var(--font-sans)`,
+                        color: 'var(--ink-800)',
+                        display: '-webkit-box',
+                        WebkitBoxOrient: 'vertical',
+                        WebkitLineClamp: labels.subLines ?? 1,
+                        overflow: 'hidden',
+                        overflowWrap: 'anywhere',
+                        // Two even lines ("Mariam Rashed Ali / Belwatir AlMazrouei"), as the layout measured them.
+                        ['textWrap' as string]: 'balance',
+                      }
+                    : { ...LINE, font: `${t.subWeight} ${t.subFont}px/${t.subLine}px var(--font-sans)`, color: 'var(--ink-800)' }
+                }
+              >
+                {holder}
+              </div>
+            )}
             {labels.dept && dept && (
               <div
                 style={{

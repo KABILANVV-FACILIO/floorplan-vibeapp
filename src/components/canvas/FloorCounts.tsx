@@ -9,7 +9,14 @@ import { parseISO } from '../primitives/Calendar';
 import styles from './FloorCounts.module.css';
 
 const NAME: Record<CountedType, string> = { workstation: 'Desks', parking: 'Parking', room: 'Rooms' };
-const LABEL: Record<string, string> = { occupied: 'Occupied', booked: 'Booked', free: 'Free' };
+/** Each type's three tiles: who holds it, what is set aside, what is left — desks and stalls in their records' own words. */
+const TILES: Record<CountedType, [string, string, string]> = {
+  workstation: ['Occupied', 'Temporarily vacant', 'Vacant'],
+  parking: ['Occupied', 'Reserved', 'Vacant'],
+  room: ['Occupied', 'Booked', 'Free'],
+};
+/** The middle tile's edge on a desk row: Settings has no colour for a state the plan doesn't draw. */
+const TEMPORARILY_VACANT = 'var(--warning-500)';
 /** How many departments the card lists before "Show all": the largest ones, by desks. */
 const TOP_DEPARTMENTS = 5;
 /** The switch's pick, kept per browser: it is the viewer's own, never the org's. */
@@ -89,12 +96,14 @@ function ByDepartment({ lines, total }: { lines: DeptLine[]; total: number }) {
  * opens the card under it; a click keeps the card open until a second click, Escape or a click
  * elsewhere. (A floating card over the plan hid desks; in the Location panel it was out of sight.)
  *
- * The card: every desk, parking stall and room placed on the floor, and how many are occupied,
- * booked in the date and hours picked in the toolbar, and free (selectors.floorCounts) — in the
- * state colours set in Settings. Each type reads as its name, how many in all and how much is taken,
- * then three tiles (Occupied, Booked, Free), each edged in its state colour with the figure over
- * what it counts; a zero is a dash, and a room — never held — shows Occupied as one. Ticked
- * departments narrow desks and stalls; rooms stay whole-floor.
+ * The card: every desk, parking stall and room placed on the floor (selectors.floorCounts), in the
+ * state colours set in Settings. Each type reads as its name, how many in all and how much is taken
+ * (all but the last tile), then three tiles, each edged in its colour with the figure over what it
+ * counts: desks Occupied · Temporarily vacant · Vacant and stalls Occupied · Reserved · Vacant, the
+ * middle one their records' own state (desks and stalls are not booked in this org); rooms Occupied ·
+ * Booked (in the date and hours picked in the toolbar, said under the title) · Free. A zero is a
+ * dash, and a room — never held — shows Occupied as one. Ticked departments narrow desks and stalls;
+ * rooms stay whole-floor.
  *
  * In Assignment view a switch colours the desks by department for this viewer (colorByView, never
  * saved for the org; Settings › Desks › Colour desks by stays the default for everyone): the plan,
@@ -135,9 +144,9 @@ export function FloorCounts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // Counted only when what they read changes — the stage re-renders on every pan and zoom frame.
-  const { units, assignments, bookings, date, start, end, spaceDepartments, enabledModules, departmentColors, employees, colorByView, colorBy, mode } = state;
+  const { units, assignments, recordStates, bookings, date, start, end, spaceDepartments, enabledModules, departmentColors, employees, colorByView, colorBy, mode } = state;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const rows = useMemo(() => floorCounts(state), [units, assignments, bookings, date, start, end, spaceDepartments, enabledModules, employees]);
+  const rows = useMemo(() => floorCounts(state), [units, assignments, recordStates, bookings, date, start, end, spaceDepartments, enabledModules, employees]);
   const freeDesk = moduleColor(state, 'workstation', 'free');
   const deptLines = useMemo(
     () => (mode === 'assign' && colorByOf(state) === 'department' ? deskDepartmentCounts(state, freeDesk) : null),
@@ -147,13 +156,16 @@ export function FloorCounts() {
   if (!rows.length || (mode !== 'assign' && mode !== 'book')) return null;
 
   const partsOf = (row: FloorCount): Part[] => {
+    const [held, aside, rest] = TILES[row.type];
     const parts: Part[] = [
-      { key: 'occupied', label: 'occupied', n: row.occupied, color: moduleColor(state, row.type, 'assigned') },
-      { key: 'booked', label: 'booked', n: row.booked, color: moduleColor(state, row.type, 'booked') },
-      { key: 'free', label: 'free', n: row.free, color: moduleColor(state, row.type, row.type === 'room' ? 'available' : 'free') },
+      { key: 'occupied', label: held, n: row.occupied, color: moduleColor(state, row.type, 'assigned') },
+      { key: 'aside', label: aside, n: row.aside, color: row.type === 'workstation' ? TEMPORARILY_VACANT : moduleColor(state, row.type, 'booked') },
+      { key: 'free', label: rest, n: row.free, color: moduleColor(state, row.type, row.type === 'room' ? 'available' : 'free') },
     ];
     return row.type === 'room' ? parts.slice(1) : parts;
   };
+  // The window under the title is what the Rooms row's Booked counts; nothing else reads it.
+  const hasRooms = rows.some((r) => r.type === 'room');
   // The switch: Assignment view only (Booking view asks what is free, which a team colour can't
   // say), and only where a desk on the floor carries a department to colour by.
   const canColourByDept = state.mode === 'assign' && rows.some((r) => r.type === 'workstation') && departmentsIn(state.units).length > 0;
@@ -179,7 +191,8 @@ export function FloorCounts() {
         type="button"
         className={[styles.chip, open ? styles.chipOn : ''].join(' ')}
         aria-expanded={open}
-        aria-label="Occupancy of this floor"
+        // What the chip shows, said: "Occupancy: Desks 95 of 122, Rooms 1 of 18".
+        aria-label={`Occupancy: ${rows.map((row) => `${NAME[row.type]} ${row.total - row.free} of ${row.total}`).join(', ')}`}
         onClick={() => {
           setPinned((p) => !p);
           setHovered(!pinned);
@@ -188,11 +201,11 @@ export function FloorCounts() {
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden>
           <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />
         </svg>
-        {/* Taken (occupied or booked) of all, per type — the card says the rest. */}
+        {/* Taken (all but vacant or free) of all, per type — the card says the rest. */}
         {rows.map((row, i) => (
           <span key={row.type} className={styles.chipPart}>
             {i > 0 && <span className={styles.chipSep}>·</span>}
-            {NAME[row.type]} <b>{row.occupied + row.booked}</b>/{row.total}
+            {NAME[row.type]} <b>{row.total - row.free}</b>/{row.total}
           </span>
         ))}
         <svg className={styles.chipCaret} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden>
@@ -205,9 +218,11 @@ export function FloorCounts() {
           <div className={styles.head}>
             <div className={styles.headText}>
               <div className={styles.title}>Occupancy</div>
-              <div className={styles.sub}>
-                Bookings for {day}, {fmtTime(start)}–{fmtTime(end)}
-              </div>
+              {hasRooms && (
+                <div className={styles.sub}>
+                  Room bookings for {day}, {fmtTime(start)}–{fmtTime(end)}
+                </div>
+              )}
             </div>
           </div>
 
@@ -239,7 +254,7 @@ export function FloorCounts() {
             // The card counts the whole floor, whichever plan is on screen ("On this floor"); the one
             // row that needs a word is Rooms under ticked departments, which it does not narrow.
             const hint = row.type === 'room' && departments.length ? 'whole floor' : '';
-            const taken = Math.round(((row.occupied + row.booked) / row.total) * 100);
+            const taken = Math.round(((row.total - row.free) / row.total) * 100);
             return (
               <div key={row.type} className={styles.row}>
                 <div className={styles.rowHead}>
@@ -259,7 +274,7 @@ export function FloorCounts() {
                   )}
                   {parts.map((p) => (
                     <div key={p.key} className={styles.tile} style={{ borderTopColor: p.color }}>
-                      <dt className={styles.tileLabel}>{LABEL[p.key]}</dt>
+                      <dt className={styles.tileLabel}>{p.label}</dt>
                       <dd className={[styles.tileValue, p.n ? '' : styles.tileNone].join(' ')}>{p.n || '–'}</dd>
                     </div>
                   ))}

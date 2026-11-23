@@ -35,6 +35,8 @@ const tables: Record<string, unknown[]> = { desks, lockers: [], parkingstall: []
 const calls: string[] = [];
 /** Pages the org refuses, as "<module> p<n>". */
 const failing = new Set<string>();
+/** Pages whose request THROWS instead of answering (a bridge that gave up), as "<module> p<n>". */
+const throwing = new Map<string, Error>();
 let releasePageTwo: () => void = () => {};
 const pageTwoGate = new Promise<void>((r) => (releasePageTwo = r));
 
@@ -58,6 +60,8 @@ vi.mock('./facilioApi', () => ({
       // Hold the later pages until the test has seen the first answer.
       if (params.page > 1) await pageTwoGate;
       if (failing.has(`${opts.relatedModuleName} p${params.page}`)) return { error: { code: 500, message: 'down' }, list: null };
+      const thrown = throwing.get(`${opts.relatedModuleName} p${params.page}`);
+      if (thrown) throw thrown;
       const all = tables[opts.relatedModuleName];
       return { error: null, list: all.slice((params.page - 1) * params.perPage, params.page * params.perPage) };
     }),
@@ -69,6 +73,7 @@ vi.spyOn(console, 'info').mockImplementation(() => {});
 const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
 const { FacilioApiDataSource, takeFloorReadFailure } = await import('./facilioApiDataSource');
+const { IncompleteListError } = await import('./rateLimit');
 
 describe('loading a floor bigger than one page', () => {
   it('draws from the first pages, and hands over the rest when it arrives', async () => {
@@ -89,7 +94,7 @@ describe('loading a floor bigger than one page', () => {
     expect(Object.keys(assignments)).toHaveLength(167); // holders among the first 500 desks
     expect(onMore).not.toHaveBeenCalled();
 
-    // Each list asked for its count; the desks list was read ONCE for both calls.
+    // A list whose first page came back full asked for its count; the desks list was read ONCE for both calls.
     expect(calls.filter((c) => c === 'desks p1')).toHaveLength(1);
     expect(calls.some((c) => c.endsWith('/relatedList/desks/floor/count'))).toBe(true);
 
@@ -136,5 +141,23 @@ describe('loading a floor bigger than one page', () => {
     await vi.waitFor(() => expect(onMore).toHaveBeenCalled());
     expect(takeFloorReadFailure(FLOOR)).toBe(false);
     failing.clear();
+  });
+});
+
+describe('re-reading who holds what after a change', () => {
+  it('rejects with an IncompleteListError — never "nobody" — when a list request throws', async () => {
+    throwing.set('desks p1', new Error('bridge gave up'));
+    const err = await new FacilioApiDataSource().getAssignments(FLOOR).catch((e) => e);
+    expect(err).toBeInstanceOf(IncompleteListError);
+    expect(err.rateLimited).toBe(false);
+    throwing.clear();
+  });
+
+  it('says it was a refusal for rate when the thrown error is one', async () => {
+    throwing.set('lockers p1', Object.assign(new Error('Too Many Requests'), { response: { status: 429 } }));
+    const err = await new FacilioApiDataSource().getAssignments(FLOOR).catch((e) => e);
+    expect(err).toBeInstanceOf(IncompleteListError);
+    expect(err.rateLimited).toBe(true);
+    throwing.clear();
   });
 });

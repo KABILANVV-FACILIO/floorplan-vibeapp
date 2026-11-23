@@ -8,7 +8,7 @@ import { Modal, ModalFooter, ModalHeader } from '../primitives/Modal';
 import { computePlacement, Select } from '../primitives/Select';
 
 type Placement = ReturnType<typeof computePlacement>;
-import { markerSubTexts, moduleEnabled, unitPlanLabel } from '../../state/selectors';
+import { departmentColorIds, markerSubTexts, moduleEnabled, unitPlanLabel } from '../../state/selectors';
 import type { AppState } from '../../state/types';
 import { useRecordFields } from '../../hooks/useRecordFields';
 import { Button } from '../primitives/Button';
@@ -264,8 +264,11 @@ function SwatchPick({ palette, current, label, onPick }: { palette: readonly str
       {palette.map((hex) => (
         <button
           key={hex}
+          type="button"
           className={styles.swatchBtn}
-          aria-label={label}
+          // Each swatch its own name: seven buttons all called "Vacant colour" said nothing of which
+          // colour each one is.
+          aria-label={`${label} colour ${hex}`}
           aria-pressed={current === hex}
           style={{ background: hex, boxShadow: current === hex ? '0 0 0 2px #fff, 0 0 0 4px var(--blue-500)' : 'none' }}
           onClick={() => onPick(hex)}
@@ -1045,7 +1048,9 @@ function DepartmentColors() {
   // still gets a colour. The floor's own departments stand in when that list is unavailable
   // (the local tier), so Settings is never empty when the plan is clearly coloured.
   const departments = state.departments.length ? state.departments : departmentsIn(state.units);
-  const ids = departments.map((d) => d.id);
+  // The set the plan resolves default colours over too (departmentColorIds), so each swatch here
+  // is the colour that department's desks are drawn in.
+  const ids = departmentColorIds(state);
   const on = state.colorBy === 'department';
 
   return (
@@ -1063,7 +1068,7 @@ function DepartmentColors() {
 
       <SummaryRow
         name={on ? 'Department' : 'Availability'}
-        desc={on ? 'Each desk takes its department’s colour, keeping the holder’s initials.' : 'Free and assigned desks take the state colours above.'}
+        desc={on ? 'Each desk takes its department’s colour, keeping the holder’s initials.' : 'Vacant and assigned desks take the state colours above.'}
       >
         <span className={[styles.pill, styles.pillOn].join(' ')}>{on ? 'By department' : 'By availability'}</span>
       </SummaryRow>
@@ -1089,10 +1094,10 @@ function DepartmentColors() {
   );
 }
 
-function DepartmentColorsModal({ onClose }: { onClose: () => void }) {
+export function DepartmentColorsModal({ onClose }: { onClose: () => void }) {
   const { state, actions } = useFloorplanData();
   const departments = state.departments.length ? state.departments : departmentsIn(state.units);
-  const ids = departments.map((d) => d.id);
+  const ids = departmentColorIds(state);
 
   const [colorBy, setColorBy] = useState(state.colorBy);
   const [draft, setDraft] = useState<Record<string, string>>(() => {
@@ -1112,9 +1117,13 @@ function DepartmentColorsModal({ onClose }: { onClose: () => void }) {
       onCancel={onClose}
       onSave={() => {
         if (colorBy !== state.colorBy) actions.setColorBy(colorBy);
+        // Every changed colour in ONE save: the scheme is stored as one blob, and a save per colour
+        // built each from the colours before the Save — the last one kept only its own change.
+        const changes: Record<string, { hex: string; name: string }> = {};
         for (const d of departments) {
-          if (draft[d.id] !== departmentColor(d.id, state.departmentColors, ids)) actions.setDepartmentColor(d.id, draft[d.id], d.name);
+          if (draft[d.id] !== departmentColor(d.id, state.departmentColors, ids)) changes[d.id] = { hex: draft[d.id], name: d.name };
         }
+        if (Object.keys(changes).length) actions.setDepartmentColors(changes);
         onClose();
       }}
     >

@@ -94,7 +94,7 @@ export function MobileFloorPicker() {
         <div className={styles.handle} />
         <div className={styles.headRow}>
           {canBack && (
-            <button className={styles.back} onClick={onBack} data-tip="Back">
+            <button type="button" className={styles.back} onClick={onBack} data-tip="Back" aria-label={building ? `Back to ${site!.name}` : 'Back to sites'}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M15 18l-6-6 6-6" />
               </svg>
@@ -104,7 +104,7 @@ export function MobileFloorPicker() {
         </div>
         <div className={styles.list}>
           {rows.map((r) => (
-            <div key={r.id} className={styles.row} onClick={r.onTap}>
+            <button key={r.id} type="button" className={styles.row} aria-current={r.active ? 'true' : undefined} onClick={r.onTap}>
               <LevelIcon kind={r.kind} />
               <div className={styles.rowText}>
                 <div className={[styles.rowName, r.active ? styles.rowNameActive : ''].join(' ')}>{r.name}</div>
@@ -120,7 +120,7 @@ export function MobileFloorPicker() {
                   <path d="M9 18l6-6-6-6" />
                 </svg>
               )}
-            </div>
+            </button>
           ))}
         </div>
       </div>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   badgeLetters,
+  fewNames,
   holdersOf,
   newRoleId,
   peopleOnFloor,
@@ -231,5 +232,13 @@ describe('responderDataFrom', () => {
     expect(responderDataFrom(null)).toBeNull();
     expect(responderDataFrom({ roles: [] })).toBeNull();
     expect(responderDataFrom('[]')).toBeNull();
+  });
+});
+
+describe('fewNames', () => {
+  it('shows the first three and counts the rest', () => {
+    expect(fewNames(['A', 'B', 'C', 'D', 'E', 'F'])).toEqual({ names: ['A', 'B', 'C'], more: 3 });
+    expect(fewNames(['A', 'B', 'C'])).toEqual({ names: ['A', 'B', 'C'], more: 0 });
+    expect(fewNames([])).toEqual({ names: [], more: 0 });
   });
 });

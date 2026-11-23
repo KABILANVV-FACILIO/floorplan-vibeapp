@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent as ReactDragEvent, FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent } from 'react';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplan, useFloorplanData } from '../../state/FloorplanContext';
 import { clamp, polyAreaM2, polygonCentroid, toNorm, unitCenter } from '../../lib/geometry';
 import { IMG_H, IMG_W } from '../../lib/mockData';
 import { FloorplanBackground } from './FloorplanBackground';
@@ -38,7 +38,10 @@ function useStablePlacements(next: Map<string, LabelPlacement>): Map<string, Lab
   const out = new Map<string, LabelPlacement>();
   for (const [id, p] of next) {
     const q = prev.get(id);
-    out.set(id, q && q.name === p.name && q.sub === p.sub && q.dept === p.dept && q.pill === p.pill && q.pos === p.pos && q.w === p.w && q.h === p.h && q.deptLines === p.deptLines && q.half === p.half ? q : p);
+    out.set(
+      id,
+      q && q.name === p.name && q.sub === p.sub && q.dept === p.dept && q.pill === p.pill && q.pos === p.pos && q.w === p.w && q.h === p.h && q.deptLines === p.deptLines && q.half === p.half && q.subSmall === p.subSmall && q.subLines === p.subLines ? q : p,
+    );
   }
   prevRef.current = out;
   return out;
@@ -108,6 +111,29 @@ export function Canvas() {
     marqueeRef.current = m;
     setMarquee(m);
   };
+  /**
+   * The window listeners of the gesture in progress (a pan, a marker, room, vertex or group drag, a
+   * marquee), and how to take them off. Each gesture's mouseup takes them off as before; this also
+   * does when the plan goes away mid-gesture — a view or floor switch, or a mouseup that never
+   * arrives inside Facilio's frame — so a pan can't go on following the pointer afterwards.
+   */
+  const detachGestureRef = useRef<(() => void) | null>(null);
+  function listenGesture(move: (e: MouseEvent) => void, up: (e: MouseEvent) => void) {
+    // A gesture whose mouseup was lost is over once another starts.
+    detachGestureRef.current?.();
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+    detachGestureRef.current = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      detachGestureRef.current = null;
+    };
+  }
+  const endGesture = () => detachGestureRef.current?.();
+  useEffect(() => () => detachGestureRef.current?.(), []);
+  // The latest actions, for listeners attached once (the wheel): each set reads the view it was built with.
+  const actionsRef = useRef(actions);
+  actionsRef.current = actions;
   // Multi-selection lives in app state (the Edit panel's inspector reads it); keep a Set view
   // locally for the O(1) membership checks the render path does per marker.
   const multiSel = useMemo(() => new Set(state.multiSelected), [state.multiSelected]);
@@ -162,6 +188,8 @@ export function Canvas() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.panels.portfolio.open, state.panels.details.open]);
 
+  // Attached once: the zoom goes through the latest actions, which carry the view as it is now — it
+  // used to be taken off and put back on every pan and zoom frame for that.
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
@@ -169,12 +197,11 @@ export function Canvas() {
       e.preventDefault();
       const r = el!.getBoundingClientRect();
       const factor = Math.exp(-e.deltaY * 0.0015);
-      actions.zoomAtPoint(factor, e.clientX - r.left, e.clientY - r.top);
+      actionsRef.current.zoomAtPoint(factor, e.clientX - r.left, e.clientY - r.top);
     }
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.view]);
+  }, []);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -230,14 +257,12 @@ export function Canvas() {
       const r = wrapRef.current!.getBoundingClientRect();
       gestureRef.current = { kind: 'marquee', sx: e.clientX, sy: e.clientY };
       updateMarquee({ x1: e.clientX - r.left, y1: e.clientY - r.top, x2: e.clientX - r.left, y2: e.clientY - r.top });
-      window.addEventListener('mousemove', onMarqueeMove);
-      window.addEventListener('mouseup', onMarqueeUp);
+      listenGesture(onMarqueeMove, onMarqueeUp);
       e.preventDefault();
       return;
     }
     panRef.current = { sx: e.clientX, sy: e.clientY, otx: state.view.tx, oty: state.view.ty, moved: false, far: false };
-    window.addEventListener('mousemove', onPanMove);
-    window.addEventListener('mouseup', onPanUp);
+    listenGesture(onPanMove, onPanUp);
   }
   function onPanMove(e: MouseEvent) {
     const p = panRef.current;
@@ -249,8 +274,7 @@ export function Canvas() {
     actions.setView({ ...state.view, tx: p.otx + dx, ty: p.oty + dy });
   }
   function onPanUp() {
-    window.removeEventListener('mousemove', onPanMove);
-    window.removeEventListener('mouseup', onPanUp);
+    endGesture();
     if (panRef.current?.moved) {
       suppressClickRef.current = true;
       jitterPanRef.current = !panRef.current.far;
@@ -268,8 +292,7 @@ export function Canvas() {
     if (m) updateMarquee({ ...m, x2: e.clientX - r.left, y2: e.clientY - r.top });
   }
   function onMarqueeUp(e: MouseEvent) {
-    window.removeEventListener('mousemove', onMarqueeMove);
-    window.removeEventListener('mouseup', onMarqueeUp);
+    endGesture();
     gestureRef.current = null;
     suppressClickRef.current = true;
     setTimeout(() => (suppressClickRef.current = false), 0);
@@ -303,8 +326,7 @@ export function Canvas() {
     }
     actions.selectUnit(unit.id);
     dragUnitIdRef.current = unit.id;
-    window.addEventListener('mousemove', onMarkerDragMove);
-    window.addEventListener('mouseup', onMarkerDragUp);
+    listenGesture(onMarkerDragMove, onMarkerDragUp);
   }
   function onMarkerDragMove(e: MouseEvent) {
     const id = dragUnitIdRef.current;
@@ -335,8 +357,7 @@ export function Canvas() {
     return best;
   }
   function onMarkerDragUp() {
-    window.removeEventListener('mousemove', onMarkerDragMove);
-    window.removeEventListener('mouseup', onMarkerDragUp);
+    endGesture();
     const last = lastDragClientRef.current;
     lastDragClientRef.current = null;
     dragUnitIdRef.current = null;
@@ -377,8 +398,7 @@ export function Canvas() {
     e.preventDefault();
     if (loneMultiSel) actions.selectUnit(unit.id);
     gestureRef.current = { kind: 'room', id: unit.id, sx: e.clientX, sy: e.clientY };
-    window.addEventListener('mousemove', onRoomDragMove);
-    window.addEventListener('mouseup', onRoomDragUp);
+    listenGesture(onRoomDragMove, onRoomDragUp);
   }
   function onRoomDragMove(e: MouseEvent) {
     const g = gestureRef.current;
@@ -387,8 +407,7 @@ export function Canvas() {
     updateEditPreview({ kind: 'room', id: g.id!, dx, dy });
   }
   function onRoomDragUp() {
-    window.removeEventListener('mousemove', onRoomDragMove);
-    window.removeEventListener('mouseup', onRoomDragUp);
+    endGesture();
     gestureRef.current = null;
     suppressClickRef.current = true;
     setTimeout(() => (suppressClickRef.current = false), 0);
@@ -403,8 +422,7 @@ export function Canvas() {
   /** Marquee selection moved as one — commits a single bulk update. */
   function startGroupDrag(e: ReactMouseEvent) {
     gestureRef.current = { kind: 'group', sx: e.clientX, sy: e.clientY };
-    window.addEventListener('mousemove', onGroupDragMove);
-    window.addEventListener('mouseup', onGroupDragUp);
+    listenGesture(onGroupDragMove, onGroupDragUp);
   }
   function onGroupDragMove(e: MouseEvent) {
     const g = gestureRef.current;
@@ -413,8 +431,7 @@ export function Canvas() {
     updateEditPreview({ kind: 'group', dx, dy });
   }
   function onGroupDragUp() {
-    window.removeEventListener('mousemove', onGroupDragMove);
-    window.removeEventListener('mouseup', onGroupDragUp);
+    endGesture();
     gestureRef.current = null;
     suppressClickRef.current = true;
     setTimeout(() => (suppressClickRef.current = false), 0);
@@ -434,8 +451,7 @@ export function Canvas() {
     e.stopPropagation();
     e.preventDefault();
     gestureRef.current = { kind: 'vertex', id: unit.id, vertexIndex: index, sx: e.clientX, sy: e.clientY, origPts: unit.geom.pts };
-    window.addEventListener('mousemove', onVertexDragMove);
-    window.addEventListener('mouseup', onVertexDragUp);
+    listenGesture(onVertexDragMove, onVertexDragUp);
   }
   function onVertexDragMove(e: MouseEvent) {
     const g = gestureRef.current;
@@ -447,8 +463,7 @@ export function Canvas() {
     updateEditPreview({ kind: 'vertex', id: g.id!, pts });
   }
   function onVertexDragUp() {
-    window.removeEventListener('mousemove', onVertexDragMove);
-    window.removeEventListener('mouseup', onVertexDragUp);
+    endGesture();
     gestureRef.current = null;
     suppressClickRef.current = true;
     setTimeout(() => (suppressClickRef.current = false), 0);
@@ -570,10 +585,19 @@ export function Canvas() {
   // The chip's footprint on the plan, in plan px: a share of the spacing between the floor's desks
   // (lockers and stalls count, amenities do not; see chipPitch). Null with fewer than two. And each
   // desk's own nearest neighbour, which a chip never draws over (see chipSizeNear).
-  const { chipFootprint, nearest } = useMemo(() => {
+  // Keyed on the desks' positions, not on `markers` — a fresh array on every data change (a click, a
+  // toast) — so the every-desk-against-every-other comparison runs only when a desk moves or the
+  // floor changes; and once per change, shared by the pitch and each chip's own size.
+  const deskPoints = useMemo(() => {
     const pts = markers.filter((m) => m.geom.kind === 'point' && m.type !== 'amenity').map((m) => ({ id: m.id, x: (m.geom as { x: number }).x * IMG_W, y: (m.geom as { y: number }).y * IMG_H }));
-    return { chipFootprint: pts.length >= 2 ? chipPitch(pts) * CHIP_FOOTPRINT_OF_PITCH : null, nearest: nearestDistances(pts) };
+    return { pts, key: pts.map((p) => `${p.id}:${p.x}:${p.y}`).join('|') };
   }, [markers]);
+  const { chipFootprint, nearest } = useMemo(() => {
+    const pts = deskPoints.pts;
+    const nearest = nearestDistances(pts);
+    return { chipFootprint: pts.length >= 2 ? chipPitch(pts, nearest) * CHIP_FOOTPRINT_OF_PITCH : null, nearest };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deskPoints.key]);
   // How big a chip is at this zoom (see chipScreenSize): with its footprint a share of the desk
   // pitch, chips grow with the drawing and sit proportionate to the desks on it — but for the few
   // set closer together than that, which take just under their gap instead.
@@ -687,6 +711,12 @@ export function Canvas() {
   };
   const markerHandlersRef = useRef(markerHandlersNow);
   markerHandlersRef.current = markerHandlersNow;
+  // The rooms get handlers that never change too (they read the latest through a ref), so a pan
+  // re-renders no room (RoomPolygon is memoised).
+  const startRoomDragRef = useRef(startRoomDrag);
+  startRoomDragRef.current = startRoomDrag;
+  const onRoomEditDown = useCallback((u: Unit, e: ReactMouseEvent) => startRoomDragRef.current(u, e), []);
+  const roomClickSuppressed = useCallback(() => suppressClickRef.current && !jitterPanRef.current, []);
   const markerHandlers = useMemo<MarkerHandlers>(
     () => ({
       onClick: (u, e) => markerHandlersRef.current.onClick(u, e),
@@ -782,7 +812,7 @@ export function Canvas() {
       >
         <FloorplanBackground imageUrl={state.floorImages[floorImageKey(state.floorId, state.planId)]} />
         {rooms.map((r) => (
-          <RoomPolygon key={r.id} unit={r} onEditDown={startRoomDrag} clickSuppressed={() => suppressClickRef.current && !jitterPanRef.current} />
+          <RoomPolygon key={r.id} unit={r} onEditDown={onRoomEditDown} clickSuppressed={roomClickSuppressed} />
         ))}
         <DraftOverlay draft={state.draft} calib={state.calib} />
         {rooms.map((r) => {
@@ -907,8 +937,12 @@ export function Canvas() {
   );
 }
 
-export function RoomLabel({ unit, placement }: { unit: Unit; placement: RoomLabelPlacement }) {
-  const { state } = useFloorplan();
+/**
+ * A room's name on the plan. Reads the view-less store and is memoised: nothing here depends on
+ * where the plan is, so a pan frame re-renders no room name — on the plan or on the print sheet.
+ */
+export const RoomLabel = memo(function RoomLabel({ unit, placement }: { unit: Unit; placement: RoomLabelPlacement }) {
+  const { state } = useFloorplanData();
   if (unit.geom.kind !== 'poly') return null;
   const geom = unit.geom as PolyGeom;
   const { x, y } = polygonCentroid(geom.pts);
@@ -983,4 +1017,4 @@ export function RoomLabel({ unit, placement }: { unit: Unit; placement: RoomLabe
       )}
     </div>
   );
-}
+});

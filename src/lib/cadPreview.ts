@@ -1,10 +1,9 @@
 /**
- * Worker URLs resolved against the app's ACTUAL served location, not the host
- * root. Hardcoded '/workers/...' broke the connected-app embed: mounted under
- * a subpath (e.g. …/iwms-floor-plan/), '/workers/x.js' hit the host root and
- * 404'd, so the CAD engine failed to init → "Could not render this CAD file".
- * `import.meta.env.BASE_URL` ('./' with our base config) resolved against the
- * document base yields the right path wherever the app is mounted.
+ * Worker URLs built from Vite's `base` (`import.meta.env.BASE_URL`), resolved against the document
+ * — never a hardcoded '/workers/...', which once 404'd under a subpath mount (e.g.
+ * …/iwms-floor-plan/) and left the CAD engine unable to start ("Could not render this CAD file").
+ * vite.config.ts sets no `base`, so it is '/' in a build: the workers load from the same root as
+ * the bundle's own assets, and a `base` set later moves both together.
  */
 export function cadWorkerUrls() {
   const base = import.meta.env.BASE_URL || './';
@@ -34,8 +33,10 @@ export async function renderCadToDataUrl(file: File): Promise<string> {
   container.style.height = '1054px';
   document.body.appendChild(container);
 
+  // Destroyed however this ends, as in cadAnalyze: a failed render used to leave its viewer running.
+  let manager: ReturnType<typeof AcApDocManager.createInstance> | null = null;
   try {
-    const manager = AcApDocManager.createInstance({
+    manager = AcApDocManager.createInstance({
       container,
       width: 1492,
       height: 1054,
@@ -76,12 +77,21 @@ export async function renderCadToDataUrl(file: File): Promise<string> {
 
     const canvas = container.querySelector('canvas');
     if (!canvas) throw new Error('CAD viewer produced no canvas');
-    const dataUrl = cadCanvasToLightSnapshot(canvas);
-
-    await manager.destroy();
-    return dataUrl;
+    return cadCanvasToLightSnapshot(canvas);
   } finally {
+    await destroyViewer(manager);
     container.remove();
+  }
+}
+
+/** Tear a CAD viewer down; a failure to do so is logged, never thrown over the result (or the error) it ends. */
+export async function destroyViewer(manager: { destroy(): unknown } | null | undefined): Promise<void> {
+  if (!manager) return;
+  try {
+    await manager.destroy();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[cad] the viewer could not be torn down', err);
   }
 }
 

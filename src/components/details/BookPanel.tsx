@@ -1,11 +1,14 @@
-import { useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { useFloorplanData } from '../../state/FloorplanContext';
 import { bookedUnitIds, conflictsFor, contactName, isBookable, unitById, visibleUnits } from '../../state/selectors';
 import { fmtTime } from '../../lib/geometry';
+import type { Booking } from '../../lib/types';
 import { DatePicker } from '../primitives/DatePicker';
 import { Select } from '../primitives/Select';
 import { Button } from '../primitives/Button';
+import { ButtonSpinner } from '../primitives/ButtonSpinner';
+import { ConfirmDialog } from '../primitives/ConfirmDialog';
 import { SkeletonRows } from '../primitives/Skeleton';
 import { PeopleCard } from './AssignPanel';
 import card from './Card.module.css';
@@ -86,7 +89,7 @@ export function BookPanel() {
           </div>
           <div className={card.cardBody}>
             {state.schedView === 'list' ? <ScheduleList unitId={sel.id} /> : <DayTimeline unitId={sel.id} />}
-            {!bookedUnitIds(state).has(sel.id) || conflictsFor(state.bookings, sel.id, state.date, state.start, state.end).length === 0 ? (
+            {!bookedIds.has(sel.id) || conflictsFor(state.bookings, sel.id, state.date, state.start, state.end).length === 0 ? (
               <Button variant="primary" fullWidth style={{ marginTop: 12 }} onClick={() => actions.openBookingForm({ unitId: sel.id, date: state.date, start: state.start, end: state.end })}>
                 New booking
               </Button>
@@ -116,15 +119,52 @@ export function BookPanel() {
   );
 }
 
+/**
+ * The selected space's bookings for the day. Cancel asks "are you sure?" first — one click used to
+ * cancel the booking on the org — and a row's Cancel stays disabled while its cancel is on its way,
+ * so a double click can't send it twice and report "cancelled" then "not cancelled".
+ */
 function ScheduleList({ unitId }: { unitId: string }) {
   const { state, actions } = useFloorplanData();
+  const [confirming, setConfirming] = useState<Booking | null>(null);
+  const [cancelling, setCancelling] = useState<Set<string>>(new Set());
   const dayBookings = state.units.length
     ? state.bookings.filter((b) => b.unitId === unitId && b.date === state.date).sort((a, b) => a.start - b.start)
     : [];
+
+  async function cancel(b: Booking) {
+    setCancelling((s) => new Set(s).add(b.id));
+    try {
+      await actions.cancelBooking(b.id);
+    } finally {
+      setCancelling((s) => {
+        const n = new Set(s);
+        n.delete(b.id);
+        return n;
+      });
+    }
+  }
+
   if (state.loading) return <SkeletonRows rows={3} />;
   if (!dayBookings.length) return <p className={card.helper}>No bookings for this date.</p>;
   return (
     <div className={styles.list}>
+      {confirming && (
+        <ConfirmDialog
+          title="Cancel this booking?"
+          confirmLabel="Cancel booking"
+          cancelLabel="Keep booking"
+          onCancel={() => setConfirming(null)}
+          onConfirm={() => {
+            const b = confirming;
+            setConfirming(null);
+            void cancel(b);
+          }}
+        >
+          {fmtTime(confirming.start)}–{fmtTime(confirming.end)}
+          {contactName(state, confirming.by) ? `, booked by ${contactName(state, confirming.by)}` : ''}. The space is free for others to book again.
+        </ConfirmDialog>
+      )}
       {dayBookings.map((b) => (
         <div key={b.id} className={styles.listRow}>
           <div className={styles.listTime}>
@@ -134,7 +174,14 @@ function ScheduleList({ unitId }: { unitId: string }) {
             <div className={styles.listBy}>{contactName(state, b.by)}</div>
             {b.purpose && <div className={styles.listPurpose}>{b.purpose}</div>}
           </div>
-          <button className={styles.cancelLink} onClick={() => actions.cancelBooking(b.id)}>
+          <button
+            type="button"
+            className={styles.cancelLink}
+            disabled={cancelling.has(b.id)}
+            aria-label={`Cancel the ${fmtTime(b.start)}–${fmtTime(b.end)} booking`}
+            onClick={() => setConfirming(b)}
+          >
+            {cancelling.has(b.id) && <ButtonSpinner />}
             Cancel
           </button>
         </div>
@@ -161,6 +208,9 @@ function DayTimeline({ unitId }: { unitId: string }) {
   const hours = Array.from({ length: (WIN_E - WIN_S) / 60 + 1 }, (_, i) => WIN_S + i * 60);
   const timelineRef = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<{ edge: 'top' | 'bottom' } | null>(null);
+  /** Takes a resize's window listeners off again — on release, or if the panel goes mid-drag. */
+  const detachRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => detachRef.current?.(), []);
 
   function onClick(e: ReactMouseEvent<HTMLDivElement>) {
     if (resizeRef.current) return;
@@ -181,13 +231,19 @@ function DayTimeline({ unitId }: { unitId: string }) {
       if (edge === 'top') actions.setTimeRange(Math.min(m, state.end - 15), state.end);
       else actions.setTimeRange(state.start, Math.max(m, state.start + 15));
     };
-    const onUp = () => {
+    const detach = () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
+      detachRef.current = null;
+    };
+    const onUp = () => {
+      detach();
       setTimeout(() => (resizeRef.current = null), 0);
     };
+    detachRef.current?.();
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
+    detachRef.current = detach;
   }
 
   return (

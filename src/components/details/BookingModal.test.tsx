@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { Unit } from '../../lib/types';
 
 /**
@@ -38,8 +38,11 @@ const state = {
   bookingsNonce: 0,
 };
 
+// One set of actions for the whole file, so a test can read back what the form called.
+const acts = vi.hoisted(() => ({ showToast: (() => {}) as (...a: unknown[]) => void, submitBooking: (() => {}) as (...a: unknown[]) => unknown, closeBookingForm: (() => {}) as () => void }));
+
 vi.mock('../../state/FloorplanContext', () => ({
-  useFloorplanData: () => ({ state, actions: { showToast: vi.fn(), submitBooking: vi.fn(), closeBookingForm: vi.fn() } }),
+  useFloorplanData: () => ({ state, actions: acts }),
 }));
 
 vi.mock('../../state/selectors', () => ({
@@ -63,10 +66,18 @@ vi.mock('../../lib/facilioApiDataSource', () => ({
 }));
 
 import { BookingModal } from './BookingModal';
+import * as orgData from '../../lib/facilioApiDataSource';
+
+beforeEach(() => {
+  acts.showToast = vi.fn();
+  acts.submitBooking = vi.fn();
+  acts.closeBookingForm = vi.fn();
+});
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.restoreAllMocks();
 });
 
 describe('BookingModal with a loaded form', () => {
@@ -81,5 +92,113 @@ describe('BookingModal with a loaded form', () => {
     // The form's own resource field, rendered from its `rooms` lookup.
     expect(screen.getByText('Location')).toBeTruthy();
     expect(screen.getByText('Meeting Room 2')).toBeTruthy();
+  });
+});
+
+describe('BookingModal while it saves, and for a screen reader', () => {
+  it('cannot be closed while the booking is being made — Escape and the X do nothing', async () => {
+    // The window opens at 09:00 on 13 October; "now" is the day before, so the start is ahead.
+    vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 9, 12));
+    acts.submitBooking = vi.fn(() => new Promise(() => {})); // still saving
+    render(<BookingModal />);
+    await waitFor(() => expect(screen.getByText('Purpose')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Submit Details' }));
+    await waitFor(() => expect(acts.submitBooking).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('button', { name: /Saving/ })).toBeTruthy();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(acts.closeBookingForm).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeTruthy();
+  });
+
+  it('comes off hold when the save throws — Submit works again, the failure is said, and Escape closes', async () => {
+    // Close is a no-op while submitting, and a throw used to skip `setSubmitting(false)`: the form
+    // could then never be closed until the page was reloaded.
+    vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 9, 12));
+    acts.submitBooking = vi.fn(() => Promise.reject(new Error('network down')));
+    render(<BookingModal />);
+    await waitFor(() => expect(screen.getByText('Purpose')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Submit Details' }));
+    await waitFor(() => expect(acts.submitBooking).toHaveBeenCalledTimes(1));
+    const submit = (await screen.findByRole('button', { name: 'Submit Details' })) as HTMLButtonElement;
+    expect(submit.disabled).toBe(false);
+    expect(acts.showToast).toHaveBeenCalledWith(expect.stringContaining('network down'));
+    expect(acts.closeBookingForm).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(acts.closeBookingForm).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets go of the hold after a minute without an answer, says so, and then closes', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 9, 12));
+    acts.submitBooking = vi.fn(() => new Promise(() => {})); // never answers
+    const timers = vi.spyOn(globalThis, 'setTimeout');
+    render(<BookingModal />);
+    await waitFor(() => expect(screen.getByText('Purpose')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Submit Details' }));
+    await waitFor(() => expect(acts.submitBooking).toHaveBeenCalledTimes(1));
+    const hold = timers.mock.calls.find(([, ms]) => ms === 60_000);
+    expect(hold).toBeTruthy();
+    timers.mockRestore();
+    await act(async () => (hold![0] as () => void)());
+
+    const submit = (await screen.findByRole('button', { name: 'Submit Details' })) as HTMLButtonElement;
+    expect(submit.disabled).toBe(false);
+    expect(acts.showToast).toHaveBeenCalledWith(expect.stringContaining('not been confirmed yet'));
+    expect(acts.closeBookingForm).not.toHaveBeenCalled();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(acts.closeBookingForm).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes on Escape as before when nothing is being saved', async () => {
+    render(<BookingModal />);
+    await waitFor(() => expect(screen.getByText('Purpose')).toBeTruthy());
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(acts.closeBookingForm).toHaveBeenCalledTimes(1);
+  });
+
+  it('ties each text field to its label, so it is announced by name', async () => {
+    render(<BookingModal />);
+    const purpose = await screen.findByLabelText('Purpose');
+    expect(purpose.tagName).toBe('INPUT');
+  });
+
+  it('names a lookup it cannot show in the console once per form, not on every keystroke', async () => {
+    vi.mocked(orgData.fetchBookingFormById).mockResolvedValueOnce({
+      ...formMeta,
+      fields: [...formMeta.fields, { name: 'costCentre', label: 'Cost centre', required: false, type: 'LOOKUP_SIMPLE', lookupModule: 'costcentre', sequence: 3 }],
+    });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    render(<BookingModal />);
+    const purpose = await screen.findByLabelText('Purpose');
+    for (const v of ['a', 'ab', 'abc']) fireEvent.change(purpose, { target: { value: v } });
+    const skipped = info.mock.calls.filter((c) => String(c[0]).includes('costCentre'));
+    expect(skipped.length).toBe(1);
+  });
+});
+
+describe('the clash line', () => {
+  it('reads the resource’s bookings strictly, and shows the clashes a part-way read did find — saying there may be others', async () => {
+    const { IncompleteListError } = await import('../../lib/rateLimit');
+    vi.mocked(orgData.fetchOrgBookingsForRange).mockRejectedValue(
+      new IncompleteListError([{ id: '1', unitId: room.id, date: '2026-10-13', start: 540, end: 570, by: '9' }], true, 'page 2 refused'),
+    );
+    render(<BookingModal />);
+    const line = await screen.findByText(/Already booked/, {}, { timeout: 2000 });
+    expect(line.textContent).toContain('09:00');
+    expect(line.textContent).toContain('Some bookings could not be loaded');
+    expect(orgData.fetchOrgBookingsForRange).toHaveBeenCalledWith('2026-10-13', '2026-10-13', expect.objectContaining({ strict: true, resourceIds: [room.id] }));
+  });
+
+  it('says the bookings could not all be loaded when a part-way read found no clash', async () => {
+    const { RateLimitedError } = await import('../../lib/rateLimit');
+    vi.mocked(orgData.fetchOrgBookingsForRange).mockRejectedValue(new RateLimitedError('refused'));
+    render(<BookingModal />);
+    expect(await screen.findByText(/Some bookings could not be loaded — this time may already be taken/, {}, { timeout: 2000 })).toBeTruthy();
+    expect(screen.queryByText(/Already booked/)).toBeNull();
   });
 });

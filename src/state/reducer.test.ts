@@ -148,7 +148,7 @@ describe('reducer: responder roles', () => {
 });
 
 /**
- * In a deployed app the responders come from the app database (lib/responderStore), loaded in
+ * In a deployed app the responders come from the app database (lib/sharedSettings), loaded in
  * parallel with the settings blob. Whichever arrives second must not decide: once the database has
  * answered, it is the only source, and the blob neither overrides nor stores the responders.
  */
@@ -248,5 +248,164 @@ describe('reducer: the access grid in the app database', () => {
     s = reducer(s, { type: 'ACCESS_STORED' });
     expect(s.accessStoredInDb).toBe(false);
     expect(settingsFromState(s)).toHaveProperty('access', {});
+  });
+});
+
+/**
+ * Answers that land after the user has moved to another floor (v77 review): they carry the floor
+ * they were read for, and the reducer drops them rather than put another floor's holders, day or
+ * plan type on screen.
+ */
+describe('reducer: answers for a floor the user has left', () => {
+  const on = (floorId: string) => ({ ...buildInitialState(), floorId, planId: 'workstation' as const, assignments: { u1: 'e1' }, date: '2026-11-20', bookings: [], floorImageLoading: true });
+
+  it('ignores holders re-read for another floor, and applies this floor’s', () => {
+    expect(reducer(on('f2'), { type: 'ASSIGNMENTS_LOADED', floorId: 'f1', assignments: { u9: 'e9' } }).assignments).toEqual({ u1: 'e1' });
+    expect(reducer(on('f1'), { type: 'ASSIGNMENTS_LOADED', floorId: 'f1', assignments: { u9: 'e9' } }).assignments).toEqual({ u9: 'e9' });
+  });
+
+  it('ignores a plan type resolved by a floor left behind; a plan picked by the user always applies', () => {
+    expect(reducer(on('f2'), { type: 'SET_PLAN', planId: 'parking', floorId: 'f1' }).planId).toBe('workstation');
+    expect(reducer(on('f1'), { type: 'SET_PLAN', planId: 'parking', floorId: 'f1' }).planId).toBe('parking');
+    expect(reducer(on('f2'), { type: 'SET_PLAN', planId: 'parking' }).planId).toBe('parking');
+  });
+
+  it('keeps the skeleton up when a floor left behind finishes its image load', () => {
+    expect(reducer(on('f2'), { type: 'SET_FLOOR_IMAGE_LOADING', value: false, floorId: 'f1' }).floorImageLoading).toBe(true);
+    expect(reducer(on('f2'), { type: 'SET_FLOOR_IMAGE_LOADING', value: false, floorId: 'f2' }).floorImageLoading).toBe(false);
+    expect(reducer(on('f2'), { type: 'SET_FLOOR_IMAGE_LOADING', value: false }).floorImageLoading).toBe(false);
+  });
+
+  it('ignores a day’s bookings read for another floor', () => {
+    const b = [{ id: 'b1', unitId: 'u1', date: '2026-11-21', start: 540, end: 600 }] as never[];
+    const left = reducer(on('f2'), { type: 'SET_DATE', value: '2026-11-21', bookings: b, floorId: 'f1' });
+    expect(left.date).toBe('2026-11-20');
+    expect(left.bookings).toEqual([]);
+    expect(reducer(on('f1'), { type: 'SET_DATE', value: '2026-11-21', bookings: b, floorId: 'f1' }).date).toBe('2026-11-21');
+  });
+});
+
+describe('reducer: a floor load that failed', () => {
+  const units = [{ id: 'd1', type: 'workstation', label: 'WS-1', room: null, geom: { kind: 'point', x: 0.5, y: 0.5 }, floor: 'f1', plan: 'workstation' }] as never[];
+  const loaded = () => reducer({ ...buildInitialState(), floorId: 'f0' }, { type: 'SELECT_FLOOR_START', floorId: 'f1' });
+  const onF1 = () => reducer(loaded(), { type: 'SELECT_FLOOR_DONE', floorId: 'f1', units, assignments: { d1: 'e1' }, bookings: [] });
+
+  it('goes back to the floor it was switching away from, with its data still on screen', () => {
+    const switching = reducer({ ...onF1(), floorImageLoading: false }, { type: 'SELECT_FLOOR_START', floorId: 'f2' });
+    const back = reducer(switching, { type: 'SELECT_FLOOR_FAILED', floorId: 'f2', revertTo: 'f1' });
+    expect(back.floorId).toBe('f1');
+    expect(back.units.map((u) => u.id)).toEqual(['d1']);
+    expect(back.assignments).toEqual({ d1: 'e1' });
+    expect(back.loading).toBe(false);
+    expect(back.floorImageLoading).toBe(false);
+  });
+
+  it('goes back with its own day and bookings, not a day picked while the switch loaded', () => {
+    const mine = [{ id: 'b1', unitId: 'd1', date: '2026-11-20', start: 540, end: 600 }] as never[];
+    const theirs = [{ id: 'b9', unitId: 'x9', date: '2026-11-21', start: 540, end: 600 }] as never[];
+    const shown = { ...onF1(), date: '2026-11-20', bookings: mine };
+    const switching = reducer(shown, { type: 'SELECT_FLOOR_START', floorId: 'f2' });
+    const picked = reducer(switching, { type: 'SET_DATE', value: '2026-11-21', bookings: theirs, floorId: 'f2' });
+    const back = reducer(picked, { type: 'SELECT_FLOOR_FAILED', floorId: 'f2', revertTo: 'f1' });
+    expect(back.date).toBe('2026-11-20');
+    expect(back.bookings).toBe(mine);
+  });
+
+  it('keeps this floor’s own data on a failed Refresh, and takes the skeleton down', () => {
+    const refreshing = { ...onF1(), floorImageLoading: true };
+    const kept = reducer(refreshing, { type: 'SELECT_FLOOR_FAILED', floorId: 'f1', keep: true });
+    expect(kept.units.map((u) => u.id)).toEqual(['d1']);
+    expect(kept.floorImageLoading).toBe(false);
+    expect(kept.loading).toBe(false);
+  });
+
+  it('never shows another floor’s markers under this floor’s name', () => {
+    const switching = reducer(onF1(), { type: 'SELECT_FLOOR_START', floorId: 'f2' });
+    const cleared = reducer(switching, { type: 'SELECT_FLOOR_FAILED', floorId: 'f2' });
+    expect(cleared.floorId).toBe('f2');
+    expect(cleared.units).toEqual([]);
+    expect(cleared.savedUnits).toEqual([]);
+    expect(cleared.assignments).toEqual({});
+    expect(cleared.loading).toBe(false);
+  });
+
+  it('is ignored once the user has moved on to another floor', () => {
+    const moved = reducer(reducer(onF1(), { type: 'SELECT_FLOOR_START', floorId: 'f2' }), { type: 'SELECT_FLOOR_START', floorId: 'f3' });
+    expect(reducer(moved, { type: 'SELECT_FLOOR_FAILED', floorId: 'f2', revertTo: 'f1' })).toBe(moved);
+  });
+});
+
+/**
+ * The rest of the settings followed into the app database (lib/sharedSettings): the settings and
+ * the print settings as two parts, and the colour scheme. A part the database holds is its alone,
+ * whichever load lands last; a part it does not hold still comes from the file store's copy.
+ */
+describe('reducer: the settings in the app database', () => {
+  const fromDb = (settings: object | null, print: object | null = null, colors: object | null = null) =>
+    reducer(buildInitialState(), { type: 'SHARED_SETTINGS_LOADED', settings: settings as never, print: print as never, colors: colors as never });
+
+  it("keeps the database's parts over the file store's, and takes the file's for a part it does not hold", () => {
+    let s = fromDb({ colorBy: 'department', enabledModules: { locker: false } });
+    s = reducer(s, { type: 'APPLY_SETTINGS', config: { colorBy: 'status', enabledModules: { parking: false } as never, printScope: 'view' } });
+    expect(s.colorBy).toBe('department');
+    expect(s.enabledModules.locker).toBe(false);
+    expect(s.enabledModules.parking).toBe(true);
+    expect(s.printScope).toBe('view');
+    expect(s.settingsDb).toEqual({ answered: true, settings: true, print: false, colors: false });
+  });
+
+  it("lets the database's part replace what the file store loaded first, and leaves the other part alone", () => {
+    let s = reducer(buildInitialState(), { type: 'APPLY_SETTINGS', config: { colorBy: 'status', printScope: 'view', printRegisters: { room: { register: true } } } });
+    s = reducer(s, { type: 'SHARED_SETTINGS_LOADED', settings: { colorBy: 'department' }, print: null, colors: null });
+    expect(s.colorBy).toBe('department');
+    expect(s.printScope).toBe('view');
+    expect(s.printRegisters.room.register).toBe(true);
+  });
+
+  it('applies only the keys a part carries — a print part never resets modules or labels, nor the other way round', () => {
+    let s = reducer(buildInitialState(), { type: 'SET_MODULE_ENABLED', module: 'locker', enabled: false });
+    s = reducer(s, { type: 'SET_PRINT_REGISTER', kind: 'room', value: { register: true, cols: ['name'], rows: 'all', sort: 'name' } });
+    s = reducer(s, { type: 'SHARED_SETTINGS_LOADED', settings: { colorBy: 'department' }, print: { printScope: 'floor' }, colors: null });
+    expect(s.enabledModules.locker).toBe(false);
+    expect(s.printRegisters.room.register).toBe(true);
+    expect(s.printScope).toBe('floor');
+  });
+
+  it('holds each part to its keys: a print key in the settings part, or a setting in the print part, is not applied', () => {
+    const s = fromDb({ printScope: 'floor' }, { colorBy: 'department' });
+    expect(s.printScope).toBe(buildInitialState().printScope);
+    expect(s.colorBy).toBe(buildInitialState().colorBy);
+  });
+
+  it("takes the database's colours, and no file-store scheme after them", () => {
+    let s = fromDb(null, null, { '10': { name: 'Finance', color: '#b0006e' } });
+    expect(s.departmentColors).toEqual({ '10': '#b0006e' });
+    s = reducer(s, { type: 'DEPARTMENT_COLORS_LOADED', colors: { '10': '#000000' } });
+    expect(s.departmentColors).toEqual({ '10': '#b0006e' });
+  });
+
+  it('marks a part held once a save of it is stored, and leaves the file store its source until then', () => {
+    let s = fromDb(null);
+    expect(s.settingsDb).toEqual({ answered: true, settings: false, print: false, colors: false });
+    s = reducer(s, { type: 'SETTINGS_STORED', part: 'print' });
+    expect(s.settingsDb.print).toBe(true);
+    s = reducer(s, { type: 'APPLY_SETTINGS', config: { printScope: 'view' } });
+    expect(s.printScope).toBe(buildInitialState().printScope);
+  });
+});
+
+/**
+ * R7: a module switched off in Settings › Modules is hidden everywhere — nothing is left pointing
+ * at it. (That the last one cannot be switched off is the window's rule, not the reducer's: see
+ * components/settings/ModulesSettings.test.tsx.)
+ */
+describe('reducer: switching modules off', () => {
+  it('hides a module everywhere it is pointed at', () => {
+    let s = { ...buildInitialState(), planId: 'locker' as const, spaceFilter: 'locker' as const, settingsTab: 'locker' as const };
+    s = reducer(s, { type: 'SET_MODULE_ENABLED', module: 'locker', enabled: false }) as typeof s;
+    expect(s.enabledModules.locker).toBe(false);
+    expect(s.planId).toBe('workstation');
+    expect(s.spaceFilter).toBe('all');
+    expect(s.settingsTab).toBe('permissions');
   });
 });

@@ -89,7 +89,8 @@
   background: rgba(255, 255, 255, 0.1);
   color: #fff;
   padding: 0 12px;
-  font: 400 14px/1 var(--font-sans);
+  /* 16px: a phone zooms the whole page into any field smaller than that when it takes the focus. */
+  font: 400 16px/1 var(--font-sans);
 }
 
 .manualInput::placeholder {

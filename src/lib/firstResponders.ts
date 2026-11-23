@@ -194,6 +194,14 @@ export function holdersOf<T extends { responder: FirstResponder }>(list: T[], ro
   return list.filter((x) => x.responder.roles.includes(role));
 }
 
+/** How many names a summary line shows before "+N others". */
+export const FEW_NAMES = 3;
+
+/** The first few of a list of names and how many more — a summary line that never runs to a paragraph. */
+export function fewNames(names: string[], shown = FEW_NAMES): { names: string[]; more: number } {
+  return { names: names.slice(0, shown), more: Math.max(0, names.length - shown) };
+}
+
 /** "2 First aiders · 1 Floor warden" — what the plan's responder chip says. */
 export function responderCountLabel(list: FloorResponder[], roles: ResponderRoleDef[]): string {
   return roles

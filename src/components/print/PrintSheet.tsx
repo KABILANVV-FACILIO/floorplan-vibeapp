@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Ref } from 'react';
 import { flushSync } from 'react-dom';
-import { useFloorplan } from '../../state/FloorplanContext';
+import { useFloorplan, useFloorplanData } from '../../state/FloorplanContext';
 import { activeDepartments, bookedUnitIds, floorMeta, markerLabelInputs, planMarkers, planRooms, roomLabelInputs, unitDepartment } from '../../state/selectors';
 import { floorImageKey } from '../../lib/types';
 import type { RegisterKind, Unit } from '../../lib/types';
@@ -97,7 +97,9 @@ const DETAIL_NOUN: Record<string, [string, string]> = { workstation: ['desk', 'D
  */
 
 export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; pagesRef?: Ref<HTMLDivElement> } = {}) {
-  const { state } = useFloorplan();
+  // The store without the view: always mounted, this sheet must not re-render on every pan and zoom
+  // frame of the plan (only "Current view" reads the view — PrintViewPlan, below).
+  const { state } = useFloorplanData();
   const meta = floorMeta(state, state.floorId);
   const booked = bookedUnitIds(state);
 
@@ -148,6 +150,7 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
   // or the lockers of a locker plan — on a page of its own, zoomed so each carries its name above,
   // and its holder and their department below (see lib/printAreas). A car park's stalls sit too
   // close for their holders to fit on the whole floor; these pages are where they all print.
+  // Keyed on the view-less state: what it reads is the floor's data, never where the plan is.
   const detailAreas = useMemo(() => {
     if (!showPlan || scope !== 'detail') return [];
     const markers = planMarkers(state);
@@ -237,7 +240,7 @@ export function PrintSheet({ preview = false, pagesRef }: { preview?: boolean; p
       <div className={styles.legend}>
         {/* The viewer's own key — the colours on this plan mean what they meant on screen. */}
         {legendItems(state).map((it) => (
-          <span key={it.label} className={styles.legendItem}>
+          <span key={it.key} className={styles.legendItem}>
             {it.glyph ? <LegendSwatch item={it} size={7} /> : <span className={styles.legendDot} style={{ background: it.color }} />}
             {it.label}
           </span>
@@ -373,10 +376,65 @@ export function printFileName(floorTitle: string, dateISO: string): string {
  */
 function printChipSize(markers: Unit[], zoom: number): { size: number; sizeOf: (id: string) => number } {
   const pts = markers.filter((m) => m.geom.kind === 'point' && m.type !== 'amenity').map((m) => ({ id: m.id, x: (m.geom as { x: number }).x * IMG_W, y: (m.geom as { y: number }).y * IMG_H }));
-  const footprint = pts.length >= 2 ? chipPitch(pts) * CHIP_FOOTPRINT_OF_PITCH : null;
-  const size = Math.min(CHIP_PX, chipScreenSize(zoom, footprint));
+  // Every desk against every other once, for both the pitch and each chip's own size.
   const nearest = nearestDistances(pts);
+  const footprint = pts.length >= 2 ? chipPitch(pts, nearest) * CHIP_FOOTPRINT_OF_PITCH : null;
+  const size = Math.min(CHIP_PX, chipScreenSize(zoom, footprint));
   return { size, sizeOf: (id) => chipSizeNear(size, zoom, nearest.get(id)) };
+}
+
+/**
+ * A printed plan's layout, worked out from the floor's data as it is NOW: the rooms and markers
+ * drawn, each marker's model, and where the labels go — all from the same state, at a given zoom.
+ *
+ * Keyed on the view-less state (useFloorplanData), so it is laid out again only when the floor's
+ * data changes, never on a pan. It used to be built once when the page mounted while the markers
+ * were read on every render: a desk arriving afterwards (a big floor's later pages, FLOOR_UNITS_MORE)
+ * had no model, and the page — and with no error boundary, the whole app — crashed.
+ */
+function usePrintLayout(state: AppState, zoom: number, labelScale = 1) {
+  const rooms = useMemo(() => planRooms(state), [state]);
+  const markers = useMemo(() => planMarkers(state), [state]);
+  // Chips and labels `labelScale`× their screen size: laid out as the screen would at
+  // zoom / labelScale (same geometry, everything divided by the scale), drawn at labelScale / zoom.
+  const z = zoom / labelScale;
+  const chips = useMemo(() => printChipSize(markers, z), [markers, z]);
+  return useMemo(() => {
+    const typography = typographyOf(state.labelStyle);
+    // As on screen, the ticked departments' desks are labelled and the rest faded (activeDepartments).
+    const departments = activeDepartments(state);
+    // Chips first, then the room names clear of them, then the desk cards clear of both — as on screen.
+    const inputs = markerLabelInputs(state, markers, { personal: false, departments, keepSelected: false, chipSize: chips.size, chipSizeOf: chips.sizeOf, measure: sharedLabelTextMeasurer() });
+    const chipBoxes = inputs.map((i) => ({ x: i.x * IMG_W * z - i.size / 2, y: i.y * IMG_H * z - i.size / 2, w: i.size, h: i.size }));
+    const roomLabelPlan = planRoomLabels(roomLabelInputs(state, rooms, { measure: sharedLabelTextMeasurer() }), { planW: IMG_W, planH: IMG_H, zoom: z, reserved: chipBoxes });
+    const labelPlan = planMarkerLabels(inputs, { planW: IMG_W, planH: IMG_H, zoom: z, typography, reserved: [...roomLabelPlan.values()].map((p) => p.box) });
+    // Each marker's model (chip colours, holder, title) — see lib/markerModel.
+    const models = new Map(markers.map((m) => [m.id, markerModel(state, m, { personal: false, departments })]));
+    return { rooms, markers, typography, chipSize: chips.size, chipSizeOf: chips.sizeOf, roomLabelPlan, labelPlan, models };
+  }, [state, rooms, markers, chips, z]);
+}
+
+/** The plan's drawing on a page: the image, room outlines and names, and every marker with its label. */
+function PrintPlane({ layout, transform, invZ, imageUrl }: { layout: ReturnType<typeof usePrintLayout>; transform: string; invZ: number; imageUrl?: string }) {
+  const { rooms, markers, typography, chipSize, chipSizeOf, roomLabelPlan, labelPlan, models } = layout;
+  return (
+    <div className={styles.plane} style={{ width: IMG_W, height: IMG_H, transform, ['--inv' as string]: invZ, ['--chip' as string]: chipSize / CHIP_PX }}>
+      <FloorplanBackground imageUrl={imageUrl} />
+      {rooms.map((r) => (
+        <RoomPolygon key={r.id} unit={r} />
+      ))}
+      {rooms.map((r) => {
+        const placement = roomLabelPlan.get(r.id);
+        return placement ? <RoomLabel key={`l-${r.id}`} unit={r} placement={placement} /> : null;
+      })}
+      {markers.map((m) => {
+        // Never a marker without its model: the two come from the same state, but a page is never
+        // worth a crash.
+        const model = models.get(m.id);
+        return model ? <Marker key={m.id} model={model} labels={labelPlan.get(m.id)} typography={typography} chipScale={chipSizeOf(m.id) < chipSize ? chipSizeOf(m.id) / CHIP_PX : undefined} /> : null;
+      })}
+    </div>
+  );
 }
 
 /**
@@ -400,68 +458,13 @@ function PrintViewPlan() {
  * land exactly as the viewer places them at that zoom. Used by "Current view" and the detail pages.
  */
 function PrintZoomedPlan({ cx, cy, zoom, labelScale = 1 }: { cx: number; cy: number; zoom: number; labelScale?: number }) {
-  const { state } = useFloorplan();
-  const rooms = planRooms(state);
-  const markers = planMarkers(state);
-  // Chips and labels `labelScale`× their screen size: laid out as the screen would at
-  // zoom / labelScale (same geometry, everything divided by the scale), drawn at labelScale / zoom.
-  const typography = typographyOf(state.labelStyle);
-  // Chips first, then the room names clear of them, then the desk cards clear of both — as on screen.
-  // As on screen, the ticked departments' desks are labelled and the rest faded (activeDepartments).
-  const departments = activeDepartments(state);
-  const { size: chipSize, sizeOf: chipSizeOf } = printChipSize(markers, zoom / labelScale);
-  const inputs = useMemo(
-    () => markerLabelInputs(state, markers, { personal: false, departments, keepSelected: false, chipSize, chipSizeOf, measure: sharedLabelTextMeasurer() }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [zoom, labelScale],
-  );
-  const roomLabelPlan = useMemo(
-    () => {
-      const z = zoom / labelScale;
-      const chipBoxes = inputs.map((i) => ({ x: i.x * IMG_W * z - i.size / 2, y: i.y * IMG_H * z - i.size / 2, w: i.size, h: i.size }));
-      return planRoomLabels(roomLabelInputs(state, rooms, { measure: sharedLabelTextMeasurer() }), { planW: IMG_W, planH: IMG_H, zoom: z, reserved: chipBoxes });
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [zoom, labelScale],
-  );
-  const labelPlan = useMemo(
-    () =>
-      planMarkerLabels(inputs, {
-        planW: IMG_W,
-        planH: IMG_H,
-        zoom: zoom / labelScale,
-        typography,
-        reserved: [...roomLabelPlan.values()].map((p) => p.box),
-      }),
-    // Built once per page, from the state at that moment.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [zoom, labelScale],
-  );
-  // Each marker's model (chip colours, holder, title), once per page — see lib/markerModel.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const models = useMemo(() => new Map(markers.map((m) => [m.id, markerModel(state, m, { personal: false, departments })])), [zoom, labelScale]);
-  const invZ = labelScale / zoom;
+  // The view arrives as props (PrintViewPlan, the detail pages), so the drawing itself reads the
+  // view-less store and is laid out again only when the floor's data changes.
+  const { state } = useFloorplanData();
+  const layout = usePrintLayout(state, zoom, labelScale);
   const ox = VIEW_FRAME_W / 2 - cx * zoom;
   const oy = VIEW_FRAME_H / 2 - cy * zoom;
-
-  return (
-    <div
-      className={styles.plane}
-      style={{ width: IMG_W, height: IMG_H, transform: `translate(${ox}px, ${oy}px) scale(${zoom})`, ['--inv' as string]: invZ, ['--chip' as string]: chipSize / CHIP_PX }}
-    >
-      <FloorplanBackground imageUrl={state.floorImages[floorImageKey(state.floorId, state.planId)]} />
-      {rooms.map((r) => (
-        <RoomPolygon key={r.id} unit={r} />
-      ))}
-      {rooms.map((r) => {
-        const placement = roomLabelPlan.get(r.id);
-        return placement ? <RoomLabel key={`l-${r.id}`} unit={r} placement={placement} /> : null;
-      })}
-      {markers.map((m) => (
-        <Marker key={m.id} model={models.get(m.id)!} labels={labelPlan.get(m.id)} typography={typography} chipScale={chipSizeOf(m.id) < chipSize ? chipSizeOf(m.id) / CHIP_PX : undefined} />
-      ))}
-    </div>
-  );
+  return <PrintPlane layout={layout} transform={`translate(${ox}px, ${oy}px) scale(${zoom})`} invZ={labelScale / zoom} imageUrl={state.floorImages[floorImageKey(state.floorId, state.planId)]} />;
 }
 
 /**
@@ -484,7 +487,7 @@ function DetailPage({
   pageNo: number;
   pageCount: number;
 }) {
-  const { state } = useFloorplan();
+  const { state } = useFloorplanData();
   const departments = activeDepartments(state);
   const [one, many] = DETAIL_NOUN[state.planId] ?? DETAIL_NOUN.workstation;
   return (
@@ -503,7 +506,7 @@ function DetailPage({
 
       <div className={styles.legend}>
         {legendItems(state).map((it) => (
-          <span key={it.label} className={styles.legendItem}>
+          <span key={it.key} className={styles.legendItem}>
             {it.glyph ? <LegendSwatch item={it} size={7} /> : <span className={styles.legendDot} style={{ background: it.color }} />}
             {it.label}
           </span>
@@ -663,57 +666,8 @@ function RegisterPage({
  * layout — only the zoom is fixed (PRINT_ZOOM) instead of wherever the user left it.
  */
 function PrintPlan() {
-  const { state } = useFloorplan();
-  const rooms = planRooms(state);
-  const markers = planMarkers(state);
-  const typography = typographyOf(state.labelStyle);
-  // As on screen, the ticked departments' desks are labelled and the rest faded (activeDepartments).
-  const departments = activeDepartments(state);
-  const { size: chipSize, sizeOf: chipSizeOf } = printChipSize(markers, PRINT_ZOOM);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const inputs = useMemo(() => markerLabelInputs(state, markers, { personal: false, departments, keepSelected: false, chipSize, chipSizeOf, measure: sharedLabelTextMeasurer() }), []);
-  const roomLabelPlan = useMemo(
-    () => {
-      const chipBoxes = inputs.map((i) => ({ x: i.x * IMG_W * PRINT_ZOOM - i.size / 2, y: i.y * IMG_H * PRINT_ZOOM - i.size / 2, w: i.size, h: i.size }));
-      return planRoomLabels(roomLabelInputs(state, rooms, { measure: sharedLabelTextMeasurer() }), { planW: IMG_W, planH: IMG_H, zoom: PRINT_ZOOM, reserved: chipBoxes });
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  );
-  const labelPlan = useMemo(
-    () =>
-      planMarkerLabels(inputs, {
-        planW: IMG_W,
-        planH: IMG_H,
-        zoom: PRINT_ZOOM,
-        typography,
-        reserved: [...roomLabelPlan.values()].map((p) => p.box),
-      }),
-    // Built once per print, from the state at that moment.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  );
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const models = useMemo(() => new Map(markers.map((m) => [m.id, markerModel(state, m, { personal: false, departments })])), []);
-  const invZ = 1 / PRINT_ZOOM;
-
-  return (
-    <div
-      className={styles.plane}
-      style={{ width: IMG_W, height: IMG_H, transform: `scale(${PRINT_ZOOM})`, ['--inv' as string]: invZ, ['--chip' as string]: chipSize / CHIP_PX }}
-    >
-      <FloorplanBackground imageUrl={state.floorImages[floorImageKey(state.floorId, state.planId)]} />
-      {rooms.map((r) => (
-        <RoomPolygon key={r.id} unit={r} />
-      ))}
-      {rooms.map((r) => {
-        const placement = roomLabelPlan.get(r.id);
-        return placement ? <RoomLabel key={`l-${r.id}`} unit={r} placement={placement} /> : null;
-      })}
-      {markers.map((m) => (
-        <Marker key={m.id} model={models.get(m.id)!} labels={labelPlan.get(m.id)} typography={typography} chipScale={chipSizeOf(m.id) < chipSize ? chipSizeOf(m.id) / CHIP_PX : undefined} />
-      ))}
-    </div>
-  );
+  const { state } = useFloorplanData();
+  const layout = usePrintLayout(state, PRINT_ZOOM);
+  return <PrintPlane layout={layout} transform={`scale(${PRINT_ZOOM})`} invZ={1 / PRINT_ZOOM} imageUrl={state.floorImages[floorImageKey(state.floorId, state.planId)]} />;
 }
 

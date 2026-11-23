@@ -127,7 +127,7 @@ describe('what goes to the org', () => {
 });
 
 describe('the demo tier, filtered in the browser', () => {
-  const amr = { id: 'c1', name: 'Amrithya', email: 'amrithya@enec.ae', hrmsEmployeeId: 'ENEC-10231', department: 'Finance' };
+  const amr = { id: 'c1', name: 'Amrithya', email: 'amrithya@example.com', hrmsEmployeeId: 'ENEC-10231', department: 'Finance' };
 
   it('matches a department by name, and excludes with "isn\'t"', () => {
     expect(matchesLocally(amr, [{ field: 'department', operatorId: 36, values: ['Finance', 'HR'] }], DEMO_FILTER_FIELDS)).toBe(true);
@@ -135,7 +135,7 @@ describe('the demo tier, filtered in the browser', () => {
   });
 
   it('matches text with contains and is', () => {
-    expect(matchesLocally(amr, [{ field: 'email', operatorId: 5, values: ['@enec'] }], DEMO_FILTER_FIELDS)).toBe(true);
+    expect(matchesLocally(amr, [{ field: 'email', operatorId: 5, values: ['@example'] }], DEMO_FILTER_FIELDS)).toBe(true);
     expect(matchesLocally(amr, [{ field: 'hrmsEmployeeId', operatorId: 3, values: ['enec-10231'] }], DEMO_FILTER_FIELDS)).toBe(true);
     expect(matchesLocally(amr, [{ field: 'hrmsEmployeeId', operatorId: 3, values: ['ENEC-1'] }], DEMO_FILTER_FIELDS)).toBe(false);
   });
